@@ -1,0 +1,89 @@
+schema: spec-driven
+
+# ----------------------------------------------------------------------------
+# 项目上下文（每个工件创建时都会注入给 AI）
+# ----------------------------------------------------------------------------
+context: |
+  项目：Hostlens —— LLM 驱动的服务器巡检 Agent
+
+  愿景：用户用自然语言描述意图（"为什么今早 CPU 飙高"），
+  Agent 自动规划→并行采集→关联分析→输出带根因假设的报告，
+  并按调度定时把报告推送到 Telegram / 飞书等多通道。
+  区别于 Zabbix/Prom 的"规则匹配 + 告警"，
+  定位是"理解意图 + 推理诊断"。
+
+  技术栈（已锁定，提案与设计禁止偏离）：
+  - Python 3.11+，async-first
+  - Anthropic SDK 原生 tool use + prompt caching（禁用 LangChain / LlamaIndex）
+  - Pydantic v2 强类型，structured output 走 tool_use schema
+  - AsyncSSH / docker-py / kubernetes-python
+  - Typer + Rich (CLI)
+  - 官方 mcp SDK
+  - APScheduler（cron + interval 调度）
+  - Jinja2（通知/报告模板）
+  - pytest + pytest-asyncio + VCR（LLM cassette 回放）
+  - structlog + OpenTelemetry
+
+  核心架构：
+  - 双层 Agent：Planner（拆解+调度 Inspector）+ Diagnostician（关联+根因）
+  - Inspector 插件体系：YAML manifest + 可选 Python hook，是 SOT
+  - ExecutionTarget 抽象：SSH / Local / Docker / K8s 统一接口
+  - Notifier 抽象 + 适配器：内置 Telegram / 飞书（Lark），
+    预留钉钉 / 企业微信 / Slack / Email / 通用 Webhook
+  - Scheduler：YAML 描述定时任务（schedules/*.yaml），APScheduler 驱动
+  - 写操作严格走 plan → approve → execute → rollback
+  - 双交付：CLI（hostlens ...）+ MCP Server（stdio / http）
+
+  交付目标：可写在简历上的 Agent 工程项目。
+  优先级：架构清晰度 > 功能广度 > 性能极致。
+
+# ----------------------------------------------------------------------------
+# 每个工件的规则（OpenSpec 在生成 proposal / tasks / spec 时会附加这些约束）
+# ----------------------------------------------------------------------------
+rules:
+  proposal:
+    - 用中文撰写；核心术语保留英文（Inspector / ExecutionTarget / Notifier / MCP / Planner Agent 等）
+    - 必须有"非目标（Non-Goals）"小节，防止范围蔓延
+    - 必须显式列出"对外契约影响"（Inspector schema / Agent tool schema / MCP tool schema / Notifier Protocol / Schedule manifest / CLI 命令）
+    - 涉及新 Inspector 时，至少给出 1 个完整 YAML manifest 示例
+    - 涉及 Agent 行为变更时，必须说明 prompt caching 策略与 token 影响
+    - 涉及新通知通道时，必须给出 1 个完整 channel 配置 + 1 个 Jinja2 模板示例
+    - 涉及写操作（Remediation）时，必须显式描述审批 / 回滚 / 非 root 校验机制
+    - 涉及 Scheduler 改动时，必须说明对历史 run 记录的兼容性
+    - 涉及新 LLM Backend 时，必须含：(a) BackendCapabilities 完整声明 (b) ToS 与合规评估 (c) daemon-safe 行为说明 (d) Failure Semantics 表 (§9) 应如何扩展 (e) 是否需要 BackendDiagnostics 实现
+    - 必须含"Failure Modes"小节：列出 3-5 个本提案最可能的故障场景与降级行为（参考 docs/OPERABILITY.md §9）
+    - 必须含"Operational Limits"小节：并发预算 / 内存预算 / 超时设置（参考 docs/OPERABILITY.md §1）
+    - 必须含"Security & Secrets"小节：是否引入新密钥、是否需要脱敏、是否扩大攻击面（参考 docs/OPERABILITY.md §7）
+    - 必须含"Cost / Quota Impact"小节：预计 token 消耗、API 调用频次、对 Anthropic 配额的影响（参考 docs/OPERABILITY.md §3）
+    - 必须含"Demo Path"小节：交付后如何在 5 分钟内本地 reproduce 出效果（无 SSH / 无付费 API 的 cassette replay 路径优先）
+
+  tasks:
+    - 任务粒度：单个任务不超过 2 小时；超出要拆
+    - 每个任务必须可独立验证（带验收命令或测试路径）
+    - 涉及 LLM 调用的任务必须包含"prompt cache hit rate 验证"子任务
+    - 涉及 ExecutionTarget 的任务必须包含"非 root 用户跑通"验收
+    - 涉及 Notifier 的任务必须包含"webhook 签名校验通过"、"模板渲染 snapshot 测试"、"死信落盘 + 重试 honor retry-after"验收
+    - 涉及 Scheduler 的任务必须包含"优雅停机 (SIGTERM) 行为验证"、"单实例锁防双开"、"misfire 合并不补跑"验收
+    - 涉及 CLI 的任务必须包含"--json 输出 schema 稳定性"和"非交互环境无 --yes 退出 1"验收
+    - 涉及并发的任务必须包含"超过 max_concurrent_targets 时背压而非崩溃"验收
+    - 涉及存储的任务必须包含"保留策略生效"和"压缩降存储"验收
+    - 涉及密钥的任务必须包含"密钥不进日志/报告/Notifier payload"脱敏测试
+    - 涉及 Anthropic API 的任务必须包含"429 with retry-after 严格 honor"和"API 完全宕机时输出 degraded 报告"验收
+
+  specs:
+    - Inspector spec 必须含：name / version / targets / collect / parse / output_schema / findings；findings 用 for_each / when / severity / message DSL（详见 docs/ARCHITECTURE.md §4 Finding DSL 求值语义），不允许直接 simpleeval 表达式作为顶层 rule
+    - LLM 调用必须走 LLMBackend Protocol（详见 docs/ARCHITECTURE.md §9 模型层 + ADR-008）；禁止 Agent loop / Inspector / Tool handler 直接 `import anthropic` 或调 `anthropic.AsyncAnthropic()`
+    - LLMBackend 是 AgentLoop 私有依赖，禁止注入 ToolContext 或注册到 Tool Registry（参考 §13 反模式与 ADR-008）
+    - 新增 backend 实现必须声明 BackendCapabilities（prompt_caching / tool_use / structured_output / vision / streaming / parallel_tool_use / extended_thinking）；按需扩展原则——其他能力 (cache_control_ttl / multimodal / 等) 在 Agent loop 真实使用时再加字段
+    - Agent loop 必须在调用前根据 capability 决定是否注入特性参数（如 cache_control）；backend 严格透传，不做静默丢弃；不一致时 backend raise `BackendCapabilityViolation` 暴露 bug
+    - ClaudeSubscriptionBackend（或任何 OAuth 订阅 backend）必须在 BackendDiagnostics.ensure_safe_for_daemon() 中检测 daemon 模式并 raise；配置必须显式 accept_subscription_risks: true 才能加载
+    - ToolSpec（Agent / MCP / CLI 共享的 capability spec）是 host-agnostic：不存 Anthropic / MCP JSON Schema，必须由 adapter 在投影时从 Pydantic input_schema 生成
+    - ToolSpec.surfaces 是 policy gate 不是 hint：side_effects / requires_approval / permissions / sensitive_output / target_constraints 必须显式声明
+    - ToolSpec.handler 必须接受 ToolContext 做依赖注入，禁止从 module-level singleton 拿 target / inspector registry
+    - 三个 surface 文案必须分开：agent_description / mcp_description / cli_help 不允许复用同一字符串
+    - 新增"Agent 可调用的能力"必须走 @tool 注册到 ToolRegistry，不能在 prompt 里写死或绕过 registry 调函数
+    - MCP 暴露的 ToolSpec 必须显式声明 sensitive_output，缺省禁止暴露
+    - mcp_description 必须面向远程 LLM 调用者书写（不要写"开发者怎么用"）
+    - Notifier Protocol 必须保证：新增通道 = 新增一个文件 + 一个模板目录，不改主流程；Notifier 不进 ToolRegistry
+    - Schedule manifest 必须支持：cron + interval、timezone、only_if 路由表达式、diff_with_last
+    - 任何对外契约变更（Inspector / ToolSpec / MCP tool / Notifier / Schedule / CLI）都视为 breaking，必须走新版本

@@ -1,0 +1,228 @@
+# Hostlens 运维约束（Operability）
+
+> 把 Hostlens **自己**当成一个生产服务来思考：daemon 跑起来后会面对什么？
+>
+> 本文档定义并发约束、连接复用、API 配额、存储管理、密钥处理、调度行为、健康检查、降级与脱敏策略。
+> 这些约束在 M0-M5 实施时分散落实，本文档是单一事实来源；任何 OpenSpec proposal 涉及对应主题必须引用本文档。
+
+---
+
+## 1. 并发约束（Concurrency Budgets）
+
+### 1.1 默认配额
+
+| 维度 | 默认值 | 配置键 | 说明 |
+|---|---|---|---|
+| 同时巡检的 target 数 | 8 | `concurrency.max_concurrent_targets` | 一次 inspect / 一次定时任务的横向并行上限 |
+| 单个 target 上并行的 Inspector 数 | 4 | `concurrency.max_concurrent_inspectors_per_target` | 防止单台机器被同时压垮 |
+| 单个 Inspector 的最长 wall-clock | 60s | `concurrency.inspector_timeout_seconds` | 超时取消，结果标记 `timeout` |
+| 单个 Agent loop 的最大 turn 数 | 20 | `agent.max_turns` | 防失控 |
+| 单个 Agent loop 的最大 token | 100K input + 30K output | `agent.token_budget` | 防失控烧钱 |
+
+### 1.2 背压（Backpressure）
+
+- Inspector Runner 用 `asyncio.Semaphore` 实现 per-target 与全局两级并发门
+- Agent 的并行 `tool_use` 调用走同一组信号量 —— **Agent 不能绕过并发约束**
+- 信号量等待超过 30s 触发 `BackpressureWarning` 进入报告 meta
+
+---
+
+## 2. SSH 连接复用
+
+### 2.1 必须复用
+
+每个 target 维护一个 **per-process SSH connection pool**：
+
+- 一个 target 同时只开 1 个 control connection（类似 OpenSSH `ControlMaster auto`）
+- channel 在该连接上多路复用
+- 空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭
+
+### 2.2 健壮性
+
+- 连接中断 → 1 次自动重连（指数退避 1s→4s→16s），再失败 → 该 target 本次巡检全部 Inspector 标记 `target_unreachable`
+- 不允许"每个 Inspector 重新 SSH 一次"—— 这是 M1 实施 SSH target 时必须 enforced 的硬约束
+- AsyncSSH `tunnel` 配置必须显式禁用 X11 forwarding 与 agent forwarding（最小权限）
+
+---
+
+## 3. Anthropic API 配额与限流
+
+### 3.1 配额预算
+
+- 启动时读取 `agent.api_budget`：`per_minute_input_tokens` / `per_minute_output_tokens` / `per_day_total_tokens`
+- 内置 token bucket，预算耗尽时**新巡检请求排队**而非失败（超 5 分钟仍未拿到配额则报 `BudgetExhausted`）
+- `hostlens doctor --json` 输出当前配额剩余
+
+### 3.2 限流（429 / 529 / 订阅软限制）处理
+
+- **429**：必须读取 `retry-after` header 并严格 honor
+- **529 (overloaded)**：无 retry-after 时固定退避 30s，最多 2 次
+- **订阅模式软限制**（仅 `ClaudeSubscriptionBackend`）：无 429 信号，表现为响应变慢 / 内容长度异常 / 静默降质；不可靠重试，只能靠 timeout 兜底 + 触发后整个 Run 标 `degraded_rate_limited` + 强烈提示用户切回 API key backend
+- 不允许"立即重试三次"这种暴力策略
+- 超过 3 次 429 / 2 次 529 / 1 次订阅软限制检测 → 本次 Agent loop 报 `RateLimited` 并把当前已采集的 finding 写进 partial 报告（见 §6）；详见 [ARCHITECTURE.md §9 Failure Semantics 表](ARCHITECTURE.md#9-agent-loop) 与 §3.4 Backend 选型
+
+### 3.4 Backend 选型与 ToS 风险（关键）
+
+详见 [ARCHITECTURE.md §9 模型层](ARCHITECTURE.md#9-agent-loop)。要点：
+
+| Backend | 生产 daemon | 临时 / dev | 备注 |
+|---|---|---|---|
+| `AnthropicAPIBackend` | ✓ 默认推荐 | ✓ | `ANTHROPIC_API_KEY`，最简单 |
+| `BedrockBackend` | ✓✓ 企业首选 | ✓ | AWS IAM，ToS 干净，CloudTrail audit |
+| `VertexBackend` | ✓✓ GCP 企业 | ✓ | GCP Service Account |
+| `ClaudeSubscriptionBackend` | ❌ **强制禁止** | ⚠️ 仅 dev/demo | OAuth；`BackendDiagnostics.ensure_safe_for_daemon()` 检测 daemon 模式直接 raise；并发上限 1；账号有被封风险 |
+
+**`ClaudeSubscriptionBackend` 运维红线**：
+- daemon 模式启动时如检测到该 backend → 进程直接 exit 1（不只是 warn）
+- 配置必须显式 `backend.accept_subscription_risks: true`，否则加载失败
+- 不允许并发请求超过 1（单 in-flight call）
+- `hostlens doctor` 必须在 banner 中显示该 backend 已激活 + 何时切回 API key
+
+### 3.3 模型降级（待 M2 后评估）
+
+- 计划：高峰期可选 fallback 到 Claude Haiku 跑 Planner，Opus 只在最终诊断使用
+- 但默认全程 Opus 4.7，降级是可选项
+
+---
+
+## 4. 存储增长与保留
+
+### 4.1 报告存储
+
+- 默认存 SQLite `~/.local/share/hostlens/reports.db`
+- 报告 JSON 用 `zstd` 压缩存 `BLOB`，预期单份 5-50KB
+- **保留策略**（可配）：
+  - 最近 30 天全保留
+  - 30-90 天保留每天最后一份 + 所有 critical
+  - 90 天以上仅保留 critical 与人工 pin 标记
+- 后台清理任务 daily 00:30 跑
+
+### 4.2 增长上限
+
+- DB 文件超过 1GB 触发 `StorageWarning` 进入 doctor 输出
+- 用户可执行 `hostlens reports prune --older-than 90d --dry-run` 手动清理
+
+### 4.3 Audit log
+
+- Remediation audit log 存 `~/.local/share/hostlens/audit.log`，**永远不轮转、永远不删除**
+- 如需归档：用户责任，文档明示
+
+---
+
+## 5. Daemon 健康（schedule daemon 模式）
+
+### 5.1 单实例锁
+
+- 启动时获取 `~/.local/share/hostlens/scheduler.pid` 文件锁（flock）
+- 已有实例 → 直接退出 1 + 提示 pid
+- 进程崩溃留下的 stale lock：进程不存在则自动清理
+
+### 5.2 健康检查端点（M4 daemon 时引入）
+
+- 可选 HTTP `:8765/healthz`（默认绑 `127.0.0.1`）
+- 返回：`{"status": "ok", "scheduler_running": bool, "next_fire": ..., "last_run_age_seconds": int, "memory_mb": int}`
+- 内存超过 `daemon.memory_limit_mb`（默认 500MB）触发 `MemoryPressure` 警告
+
+### 5.3 优雅停机
+
+- SIGTERM：停止接受新触发，等当前 job 完成（超过 `daemon.shutdown_grace_seconds`，默认 120s）→ SIGKILL
+- 当前 job 信息在停机 banner 中显式打印（防止"我以为停了其实还在跑"）
+
+---
+
+## 6. 调度器行为（APScheduler 配置）
+
+### 6.1 错过触发（misfire）
+
+- 每个 job `misfire_grace_time=300`（5 分钟）
+- 错过窗口：**合并不补跑**（避免 daemon 重启后"补"出几十次巡检洪水）
+- 错过的触发记录到 run store，状态 `missed`
+
+### 6.2 并发抑制
+
+- 每个 job `max_instances=1`：同一 schedule 上一次还没跑完，新触发**跳过**而非排队
+- 跳过的触发记录到 run store，状态 `skipped_due_to_running`
+
+### 6.3 时区
+
+- Schedule manifest 必须显式 `timezone`，**禁止默认 UTC 或本地时区**
+- daemon 启动时打印解析后的时区，方便排错
+- DST 切换边界由 APScheduler 处理，但 daily diff 必须用 `timezone-aware datetime`，否则 diff 会错位
+
+---
+
+## 7. 密钥管理与脱敏
+
+### 7.1 密钥来源（优先级递减）
+
+1. 环境变量（`${ENV_VAR}` 在 yaml 中占位）
+2. macOS Keychain / Linux Secret Service（M5 后可选）
+3. SOPS + age 加密文件（M10 后路线）
+4. 明文 yaml（**仅开发用**，doctor 会警告）
+
+### 7.2 报告与日志脱敏
+
+- 任何写入 SQLite / 日志 / Notifier payload 的字符串都过 `core/redact.py`
+- 默认脱敏规则：
+  - 任何匹配 `(password|secret|token|api[_-]?key|bearer)\s*[:=]\s*\S+` 的串
+  - 任何形如 JWT 的 `eyJ...`
+  - 任何匹配 `sk-[a-zA-Z0-9-]{20,}` 的 Anthropic / OpenAI key 形式
+  - 配置可附加自定义正则
+- 脱敏后保留前 4 + 后 4 字符（`sk-xxxx...xxxx`），方便排错
+
+### 7.3 Notifier 中的脱敏
+
+- Webhook URL 本身不在报告里出现
+- 飞书签名 secret、Telegram bot token 永不出现在任何日志（即使 debug level）
+- `hostlens notify ...` 命令的 stderr 永不打印 channel 完整配置
+
+---
+
+## 8. Notifier 可靠性合约
+
+详见 [ARCHITECTURE.md §6](ARCHITECTURE.md#6-notifier-适配器模式)。本节定义运维参数：
+
+| 维度 | 默认值 | 配置键 |
+|---|---|---|
+| 单条消息发送超时 | 10s | `notifier.send_timeout_seconds` |
+| 失败重试次数 | 3 | `notifier.max_retries` |
+| 重试退避 | 1s, 4s, 16s | `notifier.retry_backoff` |
+| 限流（429/503 with retry-after） | 严格 honor | — |
+| 死信存储 | `~/.local/share/hostlens/dead_letters/` | `notifier.dead_letter_dir` |
+| 死信保留 | 30 天 | `notifier.dead_letter_retention_days` |
+
+`hostlens notify retry <run_id>` 可手动重发死信。
+
+---
+
+## 9. 降级路径
+
+按"故障域 → 行为"明确每种降级：
+
+| 故障 | 行为 | 用户可见状态 |
+|---|---|---|
+| Anthropic API 完全宕机 | Planner 跳过，按 manifest 显式列出的 Inspector 跑（如有），输出无根因报告 | report status: `degraded_no_planner` |
+| 部分 Inspector 超时 | 该 Inspector 标记 `timeout`，其余照常 | finding-level: `inspector_status: timeout` |
+| 单个 target 不可达 | 该 target 全部 Inspector 标记 `target_unreachable`，其他 target 不受影响 | run status: `partial` |
+| Notifier 通道失败 | 其它通道不受影响；失败写入死信 | notify_result.<channel>.status: `dead_lettered` |
+| SQLite 写失败 | 报告临时写到 `~/.local/share/hostlens/orphan_reports/<run_id>.json`，doctor 提示 | doctor: `orphan_reports_count > 0` |
+| 配额耗尽（API budget） | 新巡检请求排队 5 分钟；超时则 `RunStatus.BUDGET_EXHAUSTED`（无 Report 产出） | `RunStatus.BUDGET_EXHAUSTED`（详见 ARCHITECTURE.md §7 RunStatus enum） |
+
+---
+
+## 10. 已知限制（诚实清单）
+
+记录"我们没解决"的事项，不假装覆盖：
+
+- **不是高可用调度器**：单实例 daemon。要 HA 调度请用 Kubernetes CronJob + `hostlens inspect`，不要 `hostlens schedule daemon`
+- **不是指标存储**：报告是离散事件，不适合做时序分析。把 Hostlens 摆在 Prometheus 旁边
+- **不做秒级巡检**：Token 成本 + API rate limit 让秒级巡检不经济
+- **离线环境受限**：Anthropic API 必须可达。1.0 后规划本地 LLM 接入，但不在 M0-M10 范围
+- **多租户 / RBAC 缺失**：单用户单进程，多人共用请各自跑独立 daemon
+
+---
+
+**相关文档**：
+- [ARCHITECTURE.md](ARCHITECTURE.md) —— 架构与设计决策
+- [../CLAUDE.md](../CLAUDE.md) —— 设计约定（含写操作硬约束）
+- [../TODO.md](../TODO.md) —— 10 期路线（M0-M10）

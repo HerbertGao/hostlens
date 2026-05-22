@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checking / linting
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Claude Code (local overrides only; project-level config is committed)
+.claude/settings.local.json
+.claude/.credentials.json
+
+# Hostlens runtime artifacts (when implemented)
+~/.config/hostlens/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.hostlens/
+hostlens.log
+
+# Secrets (defensive)
+*.pem
+*.key
+.env.local
+.env.*.local
+credentials.json
