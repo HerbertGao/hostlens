@@ -74,9 +74,28 @@ def test_doctor_human_output_never_contains_key(
 def test_doctor_debug_log_level_never_contains_key(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify the secret never leaks even when doctor configures structlog.
+
+    Asserts both the runtime invariant (no secret in any output stream) AND
+    the contract that run_doctor() actually calls configure_logging() — so
+    this test is no longer vacuous (per Codex review). If a future refactor
+    drops the configure_logging() call, the call_count assertion fails.
+    """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secretkey")
     monkeypatch.setenv("HOSTLENS_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("HOSTLENS_LOG_MODE", "dev")
+
+    calls: list[str] = []
+
+    def _spy(mode: str) -> None:
+        calls.append(mode)
+
+    monkeypatch.setattr("hostlens.cli.doctor.configure_logging", _spy)
+
     result = runner.invoke(app, ["doctor"])
-    # stderr should never carry the env value even at DEBUG verbosity.
+
+    # 1. Contract: doctor wired core/logging into the CLI path.
+    assert calls == ["dev"], f"configure_logging not invoked correctly: {calls}"
+    # 2. Runtime invariant: secret never reaches any output stream.
     assert "secretkey" not in result.stderr
     assert "secretkey" not in result.stdout

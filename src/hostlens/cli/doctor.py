@@ -38,6 +38,8 @@ from rich.console import Console
 from rich.table import Table
 
 from hostlens.cli._doctor_schema import CheckResult, DoctorReport
+from hostlens.core.config import load_settings
+from hostlens.core.logging import configure_logging
 
 __all__ = [
     "check_anthropic_key",
@@ -161,7 +163,18 @@ def _emit_remediation(report: DoctorReport, stderr: Console) -> None:
 
 
 def run_doctor(json_output: bool) -> int:
-    """Run all checks, emit output, return process exit code."""
+    """Run all checks, emit output, return process exit code.
+
+    Wires core/config + core/logging into the CLI entrypoint so that
+    `HOSTLENS_LOG_MODE` / `HOSTLENS_LOG_LEVEL` take effect for any
+    structlog calls made during checks (and from M1+ checkers that may
+    emit diagnostics). `load_settings()` raises `ConfigError` on invalid
+    user config; we let that propagate so the user sees the validated
+    error with sensitive-field redaction (see core/config.py).
+    """
+
+    settings = load_settings()
+    configure_logging(settings.log_mode)
 
     report = _build_report()
     stdout = Console(highlight=False, soft_wrap=True)
