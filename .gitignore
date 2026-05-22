@@ -15,7 +15,6 @@ pip-wheel-metadata/
 .venv/
 venv/
 env/
-.env
 .python-version
 
 # Testing
@@ -53,18 +52,17 @@ coverage.xml
 .claude/settings.local.json
 .claude/.credentials.json
 
-# Hostlens runtime artifacts (when implemented)
-~/.config/hostlens/
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+# Hostlens runtime artifacts (when implemented; ~/.config/hostlens/ is outside repo so omitted)
+*.db*
 .hostlens/
 hostlens.log
 
 # Secrets (defensive)
-*.pem
-*.key
+.env
+.env.*
 .env.local
 .env.*.local
+*.pem
+*.key
 credentials.json
+!.env.example

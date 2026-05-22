@@ -4,6 +4,7 @@
 >
 > *An LLM-powered server inspection agent that reasons about infrastructure like a senior SRE.*
 
+[![CI](https://github.com/HerbertGao/hostlens/actions/workflows/ci.yml/badge.svg)](https://github.com/HerbertGao/hostlens/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 [![Powered by Claude](https://img.shields.io/badge/Powered_by-Claude-orange.svg)](https://www.anthropic.com/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -323,6 +324,19 @@ findings:
 ```
 
 复杂逻辑可以选配同目录 `hook.py`，用 Python 接管解析/判定。
+
+## 测试与覆盖率
+
+跑本地完整测试管线（M0 阶段）：
+
+```bash
+pip install -e ".[dev]"
+pytest --cov=hostlens --cov-report=term
+pre-commit run --all-files
+mypy --strict src/
+```
+
+**Coverage policy（M0 透明声明）**：M0 阶段 `pytest --cov` 仅生成覆盖率报告但**不设强制门槛**——目前测试集主要覆盖脚手架与 doctor，门槛此刻定低无意义、定高反而误导；**M2 引入 Agent loop 后会引入 80% 覆盖率门槛**（届时 Agent 行为逻辑足够丰富，覆盖率指标才有约束力）。
 
 ## 路线图
 

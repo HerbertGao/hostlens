@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from hostlens.core.config import Settings, load_settings
+from hostlens.core.exceptions import ConfigError, HostlensError
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Clear HOSTLENS_* env vars and run each test in a clean cwd.
+
+    `BaseSettings` reads from CWD-relative `.env`; running tests inside
+    `tmp_path` keeps any developer-local `.env` out of the picture.
+    """
+
+    for key in list(__import__("os").environ):
+        if key.startswith("HOSTLENS_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+
+def test_defaults_apply_when_no_env_set() -> None:
+    settings = load_settings()
+    assert settings.log_level == "INFO"
+    assert settings.log_mode == "prod"
+    assert isinstance(settings.config_dir, Path)
+
+
+def test_env_var_overrides_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOSTLENS_LOG_LEVEL", "INFO")
+    settings = load_settings()
+    assert settings.log_level == "INFO"
+
+
+def test_env_var_overrides_log_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOSTLENS_LOG_MODE", "dev")
+    settings = load_settings()
+    assert settings.log_mode == "dev"
+
+
+def test_invalid_log_level_raises_config_error_with_field_and_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOSTLENS_LOG_LEVEL", "NotALevel")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings()
+
+    msg = str(excinfo.value)
+    # Field name present
+    assert "log_level" in msg
+    # Actual offending value preserved (non-sensitive field => keep value for debugging)
+    assert "NotALevel" in msg
+    # Expected enum values surfaced so the user knows what to fix
+    for valid in ("DEBUG", "INFO", "WARNING", "ERROR"):
+        assert valid in msg
+
+
+def test_config_error_chains_original_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOSTLENS_LOG_LEVEL", "NotALevel")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings()
+
+    # ConfigError(original=...) preserves the underlying ValidationError so
+    # advanced callers can introspect raw error metadata.
+    original = excinfo.value.original
+    assert original is not None
+    assert original.__class__.__name__ == "ValidationError"
+
+
+def test_config_error_is_hostlens_error() -> None:
+    err = ConfigError("boom")
+    assert isinstance(err, HostlensError)
+
+
+def test_settings_direct_construction_raises_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per spec: bare `Settings()` is the lib-internal path and emits
+    `pydantic.ValidationError`; only `load_settings()` converts to ConfigError.
+    """
+
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("HOSTLENS_LOG_LEVEL", "NotALevel")
+    with pytest.raises(ValidationError):
+        Settings()
