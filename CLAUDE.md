@@ -281,6 +281,60 @@ class LLMBackend(Protocol):
 - **实现完成后归档**：把 `openspec/changes/` 下的提案推进到 `openspec/specs/`
 - **proposal 必须有「非目标」**，防止范围蔓延
 
+### 5.1 Git 分支与 PR 工作流（强制）
+
+`main` 分支已设 **branch protection**，**禁止直接 push**。任何代码 / 文档 / 配置改动必须走：
+
+1. **从最新 main 切 feature branch**：
+   ```bash
+   git checkout main && git pull origin main
+   git checkout -b <type>/<short-kebab-name>
+   ```
+   分支命名约定（与 OpenSpec change name 对齐）：
+   - `feat/<change-name>` —— 新功能 / 新提案实施（如 `feat/add-tool-registry-capability-layer`）
+   - `fix/<change-name>` —— bug 修复
+   - `docs/<short-name>` —— 仅文档
+   - `chore/<short-name>` —— 工具配置 / dependabot 等
+   - `refactor/<short-name>` —— 重构无行为变更
+
+2. **commit + push branch**：
+   ```bash
+   git add <explicit files>     # 禁用 git add -A 避免误带本地配置/secrets
+   git commit -m "<conventional commit msg>"
+   git push -u origin <branch>
+   ```
+
+3. **开 PR 到 main**：用 `\gh pr create --base main --title "..." --body "..."`；PR 描述含 spec 引用（`openspec/changes/<change-name>/`）与 Demo Path
+
+4. **等 CI 全绿 + review**（如适用）后 **squash merge 到 main**：
+   ```bash
+   \gh pr merge <num> --squash --delete-branch
+   ```
+
+5. **每个 OpenSpec change 一个 feature branch**：M0 之后所有 OpenSpec 提案（add-tool-registry-capability-layer / add-llm-backend-protocol / add-agent-loop-skeleton 等）都按此走；**不允许**多个提案合到同一 branch 混淆 PR scope
+
+**反模式**：
+
+- ❌ **直接 push 到 main**（branch protection 在 push 阶段拒绝，触发 fatal error；注意 git 分布式，本地 commit 永远不会被拒，但 `git push origin main` 必失败 —— 必须走 feature branch + PR）
+- ❌ 一个 branch 同时改两个不相关提案（拆分 PR）
+- ❌ commit message 与 branch 名 / OpenSpec change name 不对齐（让 PR 历史可追溯）
+- ❌ PR 不写 spec 引用 / Demo Path（reviewer 无法快速验证）
+- ❌ merge commit 而非 squash（保持 main history 线性，每个 PR 一个 commit 易于回滚 / cherry-pick）
+- ❌ **对 dependabot PR 用 `@dependabot squash and merge` / `@dependabot merge`** —— 这两个指令把合并权交给 dependabot，绕开人类 review；只允许 `@dependabot rebase`（让 dependabot 把 PR rebase 到最新 main 触发 CI 重跑），CI 绿后**人类**用 `\gh pr merge <num> --squash --delete-branch` 手动合并
+
+### 5.2 Dependabot PR 处理流程（dependabot 也走 PR，不是例外）
+
+GitHub dependabot 自动开 PR 升级依赖，但 **dependabot PR 与人类 PR 走相同流程，没有自动合并特权**：
+
+1. **CI 红时**：发 `@dependabot rebase` 指令（让 dependabot 把 PR rebase 到最新绿 main，CI 重跑）
+2. **CI 绿后**：人类 review PR diff（dependabot 通常只改 1-3 行 yaml / pyproject 但仍需快速 scan）
+3. **合并**：人类用 `\gh pr merge <num> --squash --delete-branch`（**不要**用 `@dependabot squash and merge`，那会让 dependabot 在 CI 绿后自动 merge 绕开人类 review）
+
+风险分级：
+- **低风险**（patch / minor 升级、GH Actions、stdlib hooks）：CI 绿即可合
+- **中风险**（major bump 但只影响 dev / test 环境如 mypy `additional_dependencies`）：CI 绿 + spot check 改了什么
+- **高风险**（major bump 影响 runtime 如 pydantic / typer / structlog 的 pyproject dependencies）：CI 绿 + 手动跑一次 demo path
+
 ---
 
 ## 6. 代码风格
