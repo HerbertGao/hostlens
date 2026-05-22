@@ -320,8 +320,20 @@ class LLMBackend(Protocol):
 - ❌ commit message 与 branch 名 / OpenSpec change name 不对齐（让 PR 历史可追溯）
 - ❌ PR 不写 spec 引用 / Demo Path（reviewer 无法快速验证）
 - ❌ merge commit 而非 squash（保持 main history 线性，每个 PR 一个 commit 易于回滚 / cherry-pick）
+- ❌ **对 dependabot PR 用 `@dependabot squash and merge` / `@dependabot merge`** —— 这两个指令把合并权交给 dependabot，绕开人类 review；只允许 `@dependabot rebase`（让 dependabot 把 PR rebase 到最新 main 触发 CI 重跑），CI 绿后**人类**用 `\gh pr merge <num> --squash --delete-branch` 手动合并
 
-**例外**：dependabot 自动开 PR（`@dependabot rebase` / `squash and merge`）由 dependabot 管理 branch，人类只需 review + 合并。
+### 5.2 Dependabot PR 处理流程（dependabot 也走 PR，不是例外）
+
+GitHub dependabot 自动开 PR 升级依赖，但 **dependabot PR 与人类 PR 走相同流程，没有自动合并特权**：
+
+1. **CI 红时**：发 `@dependabot rebase` 指令（让 dependabot 把 PR rebase 到最新绿 main，CI 重跑）
+2. **CI 绿后**：人类 review PR diff（dependabot 通常只改 1-3 行 yaml / pyproject 但仍需快速 scan）
+3. **合并**：人类用 `\gh pr merge <num> --squash --delete-branch`（**不要**用 `@dependabot squash and merge`，那会让 dependabot 在 CI 绿后自动 merge 绕开人类 review）
+
+风险分级：
+- **低风险**（patch / minor 升级、GH Actions、stdlib hooks）：CI 绿即可合
+- **中风险**（major bump 但只影响 dev / test 环境如 mypy `additional_dependencies`）：CI 绿 + spot check 改了什么
+- **高风险**（major bump 影响 runtime 如 pydantic / typer / structlog 的 pyproject dependencies）：CI 绿 + 手动跑一次 demo path
 
 ---
 
