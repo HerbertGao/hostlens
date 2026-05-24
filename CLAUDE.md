@@ -210,13 +210,13 @@ class ToolSpec(BaseModel):
 **依赖注入（强制）**：handler 通过 `ToolContext` 拿依赖，禁止从 module-level singleton 取：
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class ToolContext:
     target_registry: TargetRegistry
     inspector_registry: InspectorRegistry
     config: Settings
     logger: structlog.BoundLogger
-    approval_service: ApprovalService | None
+    approval_service: ApprovalService
     cancel: asyncio.Event
 ```
 
@@ -224,7 +224,7 @@ class ToolContext:
 
 1. `surfaces` 是 policy gate 不是 hint —— 多注册一个 surface = 一次显式的安全决定
 2. `ToolSpec` 不存 host 专有 JSON Schema —— 一律由 adapter 在投影时从 Pydantic 生成
-3. 新增 Agent 可调用能力必须走 `@tool` 注册，不允许 prompt 里写死或绕过 registry 直调函数
+3. 新增 Agent 可调用能力必须声明为 `ToolSpec`：`@tool` 只能作为纯 spec factory 包装 handler 并返回 `ToolSpec`，不得 mutate module-level/global registry；默认工具集必须通过 `register_default_tools(registry)` 之类的显式装配函数注册到具体 `ToolRegistry` 实例；不允许在 prompt 里写死能力或绕过 registry 直调函数
 4. **Notifier 不进 Tool Registry** —— 它是 Scheduler / Reporter 触发的输出通道，不是 Agent 主动调用的能力
 5. 危险操作必须 `side_effects ∈ {write, destructive}` 且 `requires_approval=True`，adapter 在 dispatch 前强制校验
 6. MCP 暴露的工具必须显式声明 `sensitive_output`，缺省禁止暴露
