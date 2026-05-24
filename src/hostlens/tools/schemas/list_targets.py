@@ -125,7 +125,7 @@ _SKIP_PATH_PATTERN: Final[re.Pattern[str]] = re.compile(
 # \d{1,3}.\d{1,3}... form rather than a strict 0-255 validator: false
 # positives in inventory strings (e.g. version numbers like "10.0.0.5"
 # masquerading as IPs) are acceptable, false negatives are not.
-_SKIP_IPV4_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+_SKIP_IPV4_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
 
 # Simplified IPv6 detector: at least two `::` groups OR a hex+colon
 # cluster long enough to be unmistakable. Avoids regex tarpit while

@@ -46,6 +46,7 @@ def test_path_substrings_return_none(value: str) -> None:
     "value",
     [
         "prod-10.0.0.5",
+        "prod10.0.0.5",  # no word boundary — glued to alphanumeric
         "192.168.1.42",
         "login as admin@10.0.0.5",
         "fe80::1",
