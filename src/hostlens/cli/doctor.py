@@ -426,14 +426,18 @@ def _check_inspectors(settings: Settings) -> InspectorsHealth:
                 detail=str(exc),
             )
         )
-        # The builder scans builtins before user paths, so a fatal
-        # duplicate_inspector raised on the user-path leg leaves the
-        # builtins already-registered. Re-derive that count from disk so
-        # the JSON doesn't under-report the number of inspectors the
-        # operator can actually invoke once the duplicate is resolved.
+        # Builder raises in two cases (see registry.build_registry_from_search_paths):
+        #   - duplicate_inspector on the user-path leg → builtins all registered
+        #     before the duplicate fires; report disk count so JSON doesn't
+        #     under-report what's actually available.
+        #   - any other fatal kind (e.g. builtin manifest broken) → builder
+        #     aborted while scanning builtins; the registry state is incomplete
+        #     and nothing is usable. Report 0 — the JSON must not show a
+        #     "healthy loaded count" when registry build failed entirely.
+        loaded_count = _count_builtin_manifests() if exc.kind == "duplicate_inspector" else 0
         return InspectorsHealth(
             status="fail",
-            loaded=_count_builtin_manifests(),
+            loaded=loaded_count,
             errors=errors,
             missing_secrets=[],
         )

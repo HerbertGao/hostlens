@@ -591,6 +591,44 @@ def test_doctor_duplicate_inspector_reports_builtin_loaded_count(
     assert payload["inspectors"]["loaded"] >= 2, payload["inspectors"]
 
 
+def test_doctor_builtin_failure_reports_loaded_zero(
+    runner: CliRunner,
+    targets_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Builtin-path fatal failure reports ``loaded=0`` (not the disk count).
+
+    When ``build_registry_from_search_paths`` raises while scanning builtins
+    (e.g. broken builtin manifest), the registry state is incomplete; the
+    JSON contract must NOT show a "healthy loaded count" while build failed.
+    Cursor Bugbot review on PR #15 commit b8fcf60.
+    """
+
+    # Simulate a builtin-path failure by patching the builder to raise a
+    # non-duplicate fatal kind. We can't easily corrupt the on-disk builtin
+    # tree (it's part of the package), so we patch at the module boundary.
+    from hostlens.core.exceptions import InspectorError as RealInspectorError
+
+    def _raise_builtin_error(*args: object, **kwargs: object) -> None:
+        raise RealInspectorError(
+            kind="manifest_parse_error",
+            path=Path("/fake/builtin/broken.yaml"),
+        )
+
+    monkeypatch.setattr(
+        "hostlens.cli.doctor.build_registry_from_search_paths",
+        _raise_builtin_error,
+    )
+
+    result = runner.invoke(app, ["doctor", "--json"])
+    assert result.exit_code == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["inspectors"]["status"] == "fail"
+    assert payload["inspectors"]["errors"][0]["kind"] == "manifest_parse_error"
+    # MUST be 0 — registry build aborted, nothing actually loaded.
+    assert payload["inspectors"]["loaded"] == 0, payload["inspectors"]
+
+
 def test_doctor_inspectors_fail_with_healthy_targets_still_exits_1(
     runner: CliRunner,
     user_inspectors_dir: Path,
