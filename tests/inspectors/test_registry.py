@@ -1,4 +1,4 @@
-"""Tests for ``hostlens.inspectors.registry`` (Group 6 — Tasks 7.1 + 7.2).
+"""Tests for ``hostlens.inspectors.registry``.
 
 The registry has two surfaces:
 
@@ -12,10 +12,10 @@ The registry has two surfaces:
     builtin is a documented security risk.
 
 The builtin fixtures are the real ``hello.echo`` / ``system.uptime``
-manifests shipped under ``src/hostlens/inspectors/builtin/`` — Group 9's
-test file pins their end-to-end content, but here we only assert
-"registry assembly with empty user paths surfaces both names with no
-errors" which is a contract test, not a content test.
+manifests shipped under ``src/hostlens/inspectors/builtin/`` —
+``test_builtin_inspectors.py`` pins their end-to-end content; here we
+only assert "registry assembly with empty user paths surfaces both
+names with no errors" which is a contract test, not a content test.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def _write_user_manifest(directory: Path, name: str, file_name: str | None = Non
 
 
 # --------------------------------------------------------------------------- #
-# Task 7.1 — InspectorRegistry API
+# InspectorRegistry API
 # --------------------------------------------------------------------------- #
 
 
@@ -190,7 +190,7 @@ class TestInspectorRegistry:
 
 
 # --------------------------------------------------------------------------- #
-# Task 7.2 — build_registry_from_search_paths
+# build_registry_from_search_paths
 # --------------------------------------------------------------------------- #
 
 

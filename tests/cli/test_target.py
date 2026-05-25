@@ -58,7 +58,7 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 6.1 — `target add`
+# `target add`
 # ---------------------------------------------------------------------------
 
 
@@ -214,7 +214,7 @@ def test_target_add_name_conflict_exits_2(
 
     assert result.exit_code == 2, result.stdout + result.stderr
     assert "already exists" in result.stderr
-    # Data on stdout, error on stderr (task 6.5 contract).
+    # Data on stdout, errors on stderr.
     assert "already exists" not in result.stdout
 
 
@@ -241,7 +241,7 @@ def test_target_add_root_refused_yaml_untouched(
 
 
 # ---------------------------------------------------------------------------
-# Task 6.2 — `target list`
+# `target list`
 # ---------------------------------------------------------------------------
 
 
@@ -306,7 +306,7 @@ def test_target_list_empty_registry_human_hint(
 
 
 # ---------------------------------------------------------------------------
-# Task 6.3 — `target remove`
+# `target remove`
 # ---------------------------------------------------------------------------
 
 
@@ -389,7 +389,7 @@ def test_target_remove_unknown_target_exits_2(
 
 
 # ---------------------------------------------------------------------------
-# Task 6.4 — `target test`
+# `target test`
 # ---------------------------------------------------------------------------
 
 
@@ -470,7 +470,7 @@ def test_target_test_ssh_unreachable_exits_1(
 
 
 # ---------------------------------------------------------------------------
-# Task 6.5 — stderr / stdout separation
+# stderr / stdout separation
 # ---------------------------------------------------------------------------
 
 
@@ -479,7 +479,7 @@ def test_stderr_carries_errors_stdout_only_data(
     targets_yaml: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Errors go to stderr; data goes to stdout (task 6.5)."""
+    """Errors go to stderr; data goes to stdout."""
 
     monkeypatch.setattr("hostlens.cli.target.os.geteuid", lambda: 0)
     result = runner.invoke(app, ["target", "add", "x", "--type", "local"])
@@ -490,7 +490,7 @@ def test_stderr_carries_errors_stdout_only_data(
 
 
 # ---------------------------------------------------------------------------
-# Task 6.6 — typo / unknown flag rejection
+# typo / unknown flag rejection
 # ---------------------------------------------------------------------------
 
 

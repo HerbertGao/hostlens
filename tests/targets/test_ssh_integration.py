@@ -183,7 +183,7 @@ def sshd_endpoint(docker_ip: str, docker_services: Any) -> tuple[str, int]:
 
 @pytest.fixture
 def unique_username() -> str:
-    """Return a fresh username per test (spec task 5.11 isolation rule)."""
+    """Return a fresh username per test (test-isolation invariant)."""
 
     return f"test_{uuid.uuid4().hex[:8]}"
 
@@ -243,7 +243,7 @@ def _build_target(
 
 
 # ---------------------------------------------------------------------------
-# Tasks 5.10 / 5.13 — exec + env + scrub end-to-end on real sshd
+# exec + env + scrub end-to-end on real sshd
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +276,7 @@ async def test_exec_non_zero_exit(sshd_endpoint: tuple[str, int]) -> None:
 async def test_exec_signal_killed_returns_128_plus_signum(
     sshd_endpoint: tuple[str, int],
 ) -> None:
-    """Spec §需求 task 5.10: signal-killed exit (128+signum).
+    """signal-killed exit (128+signum).
 
     We use ``exec kill -KILL $$`` so the remote shell replaces itself
     with the kill command before the signal lands — that way asyncssh
@@ -317,7 +317,7 @@ async def test_exec_timeout_closes_channel_not_connection(
 
 
 # ---------------------------------------------------------------------------
-# Task 5.10 — env passthrough is governed by AcceptEnv
+# env passthrough is governed by AcceptEnv
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +363,7 @@ async def test_env_silently_dropped_when_not_in_acceptenv(
 
 
 # ---------------------------------------------------------------------------
-# Task 5.14 — control-connection reuse (single ESTABLISHED socket)
+# control-connection reuse (single ESTABLISHED socket)
 # ---------------------------------------------------------------------------
 
 
@@ -440,7 +440,7 @@ def _count_sshd_established() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.10 — SFTP read_file
+# SFTP read_file
 # ---------------------------------------------------------------------------
 
 
@@ -495,7 +495,7 @@ async def test_read_file_over_10mb_raises(
 
 
 # ---------------------------------------------------------------------------
-# Task 5.13 — credential scrub end-to-end
+# credential scrub end-to-end
 # ---------------------------------------------------------------------------
 
 
@@ -528,7 +528,7 @@ async def test_password_not_in_error_message_on_auth_failure(
 
 
 # ---------------------------------------------------------------------------
-# Task 5.10 — assert no asyncssh mocks in this file
+# assert no asyncssh mocks in this file
 # ---------------------------------------------------------------------------
 
 

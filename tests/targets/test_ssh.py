@@ -115,7 +115,7 @@ def _attach_entry(target: SSHTarget, entry: FakeEntry) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.1 — construction + lazy connect + control connection reuse
+# construction + lazy connect + control connection reuse
 # ---------------------------------------------------------------------------
 
 
@@ -168,7 +168,7 @@ async def test_exec_reuses_single_connection_across_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.2 — idle timeout closes + re-opens
+# idle timeout closes + re-opens
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +223,7 @@ async def test_within_idle_window_keeps_connection() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.3 — reconnect path
+# reconnect path
 # ---------------------------------------------------------------------------
 
 
@@ -373,7 +373,7 @@ async def test_first_connect_failure_does_not_enter_reconnect_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.4 — exec + parallel channels share the connection
+# exec + parallel channels share the connection
 # ---------------------------------------------------------------------------
 
 
@@ -468,7 +468,7 @@ async def test_exec_timeout_returns_timed_out() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.5 — first-connect exception classification
+# first-connect exception classification
 # ---------------------------------------------------------------------------
 
 
@@ -563,7 +563,7 @@ async def test_first_connect_other_asyncssh_error_maps_to_connect_failed() -> No
 
 
 # ---------------------------------------------------------------------------
-# Task 5.6 — read_file SFTP branches
+# read_file SFTP branches
 # ---------------------------------------------------------------------------
 
 
@@ -727,7 +727,7 @@ async def test_read_file_missing_file_raises_filenotfound() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.7 — env injection is asyncssh-only
+# env injection is asyncssh-only
 # ---------------------------------------------------------------------------
 
 
@@ -791,7 +791,7 @@ def test_connect_kwargs_expands_tilde_in_key_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.8 — three-layer credential scrub
+# three-layer credential scrub
 # ---------------------------------------------------------------------------
 
 
@@ -854,7 +854,7 @@ async def test_auth_failure_scrubs_bare_credential_keywords() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.9 — aclose + destructor warning
+# aclose + destructor warning
 # ---------------------------------------------------------------------------
 
 

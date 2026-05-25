@@ -95,7 +95,7 @@ def _valid_manifest_payload(
 
 
 # ---------------------------------------------------------------------------
-# Task 10.1 — `inspectors list`
+# `inspectors list`
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +239,7 @@ def test_list_bad_user_yaml_emits_stderr_and_exits_1(
 
 
 # ---------------------------------------------------------------------------
-# Task 10.2 — `inspectors show`
+# `inspectors show`
 # ---------------------------------------------------------------------------
 
 
@@ -386,7 +386,7 @@ def test_show_json_redacts_secrets_to_names_only(
 
 
 # ---------------------------------------------------------------------------
-# Task 10.3 — stderr / stdout separation
+# stderr / stdout separation
 # ---------------------------------------------------------------------------
 
 
@@ -394,7 +394,7 @@ def test_stderr_carries_load_errors_stdout_carries_table(
     runner: CliRunner,
     user_inspectors_dir: Path,
 ) -> None:
-    """Task 10.3: data on stdout, diagnostics on stderr.
+    """Data on stdout, diagnostics on stderr.
 
     The bad-yaml scenario already exercises the dual-stream split; this
     test pins it down explicitly so the contract can't regress quietly

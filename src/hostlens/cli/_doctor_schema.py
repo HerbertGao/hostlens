@@ -174,16 +174,15 @@ class DoctorReport(BaseModel):
     timestamp: datetime
     checks: dict[str, CheckResult]
     ready: bool
-    # M1 additive field — optional so a missing ``targets`` key in older
-    # snapshots does not break the schema test (the field defaults to
-    # an empty list, which renders as ``"targets": []`` in JSON).
+    # Optional so a missing ``targets`` key in older snapshots does not
+    # break the schema test; defaults to ``[]`` which renders as
+    # ``"targets": []`` in JSON.
     targets: list[TargetHealth] = Field(default_factory=list)
-    # M1.4 (`add-inspector-plugin-system`) additive field — optional with
-    # a sentinel default so the M0 snapshot tests that only assert on
-    # ``checks`` / ``ready`` keep working. Real ``run_doctor`` calls
-    # always populate this. ``default_factory`` ensures a fresh
-    # ``InspectorsHealth`` (with its own ``errors`` / ``missing_secrets``
-    # lists) per ``DoctorReport`` rather than a class-level shared instance.
+    # Optional with a sentinel default so legacy snapshot tests that only
+    # assert on ``checks`` / ``ready`` keep working. ``default_factory``
+    # ensures a fresh ``InspectorsHealth`` (with its own ``errors`` /
+    # ``missing_secrets`` lists) per ``DoctorReport`` rather than a
+    # class-level shared instance.
     inspectors: InspectorsHealth = Field(
         default_factory=lambda: InspectorsHealth(status="ok", loaded=0)
     )

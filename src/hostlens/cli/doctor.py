@@ -14,7 +14,7 @@ M1 (`add-execution-target-abstraction`) adds:
 table or strict JSON), and returns the process exit code.
 
 ================================================================
-SECURITY REVIEW CHECKLIST — `check_anthropic_key()` (M0 task 7.4)
+SECURITY REVIEW CHECKLIST — `check_anthropic_key()`
 ================================================================
 Do NOT regress these invariants without an explicit spec update:
 
@@ -264,8 +264,7 @@ def _check_targets(settings: Settings) -> list[TargetHealth]:
     # TargetsConfig") which the PrintLogger routes to **stdout** — that
     # would corrupt our strict-JSON output stream. Skipping the call
     # entirely on the absent-file path keeps the JSON contract intact
-    # for M0's snapshot tests (task 7.4: "M0 doctor tests must pass
-    # without modification").
+    # for the snapshot tests that pin the base doctor output schema.
     if not settings.targets_config_path.exists():
         return []
 
@@ -362,7 +361,7 @@ async def _probe_enabled_targets(
 
 
 # ---------------------------------------------------------------------------
-# M1.4 (`add-inspector-plugin-system`): inspector registry health
+# Inspector registry health
 # ---------------------------------------------------------------------------
 
 
@@ -570,7 +569,7 @@ def _render_human(report: DoctorReport, console: Console) -> None:
             "no targets configured; run `hostlens target add` to start.",
         )
 
-    # M1.4 — inspector registry summary. Always rendered (even on status=ok)
+    # Inspector registry summary is always rendered (even on status=ok)
     # so operators see ``loaded`` count and can spot a missing builtin
     # at a glance.
     itable = Table(title="inspectors")
@@ -619,9 +618,9 @@ def _emit_remediation(report: DoctorReport, stderr: Console) -> None:
                 f"hint: target {row.name!r} connectivity failed (kind={kind})",
             )
 
-    # M1.4 — per-inspector load errors and missing secrets. ``errors``
-    # flips exit 1 via ``_is_ready`` so we also print remediation hints
-    # for each failed manifest; ``missing_secrets`` stays warn-only.
+    # Per-inspector load errors and missing secrets. ``errors`` flips
+    # exit 1 via ``_is_ready`` so we also print remediation hints for
+    # each failed manifest; ``missing_secrets`` stays warn-only.
     for err_row in report.inspectors.errors:
         stderr.print(
             f"hint: inspector load error: {err_row.path}: {err_row.kind}: {err_row.detail}",
