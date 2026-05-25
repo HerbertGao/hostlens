@@ -303,6 +303,31 @@ def test_show_unknown_inspector_exits_1_with_stderr(
     assert "inspector_not_found" in result.stderr
 
 
+def test_show_known_inspector_with_load_errors_exits_1(
+    runner: CliRunner,
+    user_inspectors_dir: Path,
+) -> None:
+    """Show flips exit code to 1 when sibling manifests fail to load.
+
+    Matches ``inspectors list`` semantics + design.md decision 6: a
+    malformed user manifest must surface to the operator even when the
+    requested-by-name inspector itself loads cleanly. Silent ignore would
+    let an attacker drop a same-named manifest under the user path with
+    no visible failure signal.
+    """
+
+    bad = user_inspectors_dir / "bad.yaml"
+    bad.write_text("name: [unclosed bracket")
+
+    result = runner.invoke(app, ["inspectors", "show", "hello.echo"])
+    assert result.exit_code == 1, result.stdout + result.stderr
+    # The requested manifest still renders to stdout.
+    assert "hello.echo" in result.stdout
+    # The failed sibling surfaces on stderr.
+    assert "manifest_parse_error" in result.stderr
+    assert "bad.yaml" in result.stderr
+
+
 def test_show_redacts_secrets_to_names_only(
     runner: CliRunner,
     user_inspectors_dir: Path,

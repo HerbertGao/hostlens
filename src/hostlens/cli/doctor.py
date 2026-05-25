@@ -47,7 +47,7 @@ from typing import Any, Literal
 # rationale. We only need raw yaml parsing here (no schema validation)
 # to detect `${VAR}` placeholders that the loader would otherwise have
 # expanded into real secret values by the time it returns.
-import yaml  # type: ignore[import-untyped]
+import yaml
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import jinja2
-import yaml  # type: ignore[import-untyped]
+import yaml
 from jinja2 import nodes
 from pydantic import ValidationError
 

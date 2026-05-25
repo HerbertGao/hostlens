@@ -226,10 +226,10 @@ def show_cmd(
     """
 
     result = _build_registry_or_fatal("show")
-    # Per-file user-path failures still emit to stderr so the operator
-    # notices them even when running ``show``; they do not by themselves
-    # flip the exit code — only a missing inspector does.
-    _emit_load_errors("show", result)
+    # Per-file user-path failures emit to stderr AND flip exit code to 1
+    # — matches ``inspectors list`` semantics and design.md decision 6
+    # (silent override of builtin manifests must remain visible).
+    had_load_errors = _emit_load_errors("show", result)
 
     try:
         manifest = result.registry.get(name)
@@ -243,6 +243,8 @@ def show_cmd(
         sys.stdout.write(json.dumps(payload, indent=2))
         sys.stdout.write("\n")
         sys.stdout.flush()
-        return
+    else:
+        _render_manifest_human(payload, Console(highlight=False, soft_wrap=True))
 
-    _render_manifest_human(payload, Console(highlight=False, soft_wrap=True))
+    if had_load_errors:
+        raise typer.Exit(code=1)

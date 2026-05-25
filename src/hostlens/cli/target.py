@@ -32,7 +32,7 @@ import typer
 # ``PyYAML`` ships no PEP 561 marker; ``types-PyYAML`` is a separate dist
 # the project does not depend on. Suppress at the import site instead of
 # polluting the global mypy config.
-import yaml  # type: ignore[import-untyped]
+import yaml
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table

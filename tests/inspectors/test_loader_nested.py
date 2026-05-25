@@ -9,7 +9,7 @@ rules as a top-level parameter:
   * array(string-items) leaf → must flow through `| map('sh') | join(...)`
   * array(undetermined-items) leaf → raise `array_parameter_items_type_undetermined`
   * undeclared leaf along the chain → raise `unquoted_parameter_in_command`
-  * dynamic subscript (`{{ root[name_var] }}`) → raise
+  * dynamic subscript (`{{ root[name_var] }}`) → raise `unquoted_parameter_in_command`
 
 Numeric/boolean leaves carry no filter requirement (same as top-level).
 """
