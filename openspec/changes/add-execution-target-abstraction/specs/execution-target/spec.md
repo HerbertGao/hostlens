@@ -32,54 +32,67 @@ Protocol 必须支持 mypy `--strict` 静态校验。
 - **当** 调用 `await target.read_file("/var/log/huge.log")` 且文件 ≥10 MB
 - **那么** 必须 raise `TargetError`，错误 kind 为 `"file_too_large"`，含 target name 与 path（**不含**文件内容）
 
-### 需求:`Capability` Enum 必须含 M1 最小集与扩展守则
+### 需求:`Capability` Enum 必须含 M1 最小集且与 ToolRegistry allowlist 严格相等
 
-`hostlens.targets.base.Capability` 必须是 `enum.Enum`，M1 阶段**至少**含以下成员：
+`hostlens.targets.base.Capability` 必须是 `enum.Enum`，M1 阶段**恰好**含以下 5 个成员（不多不少）：
 
-- `SHELL = "shell"`：能跑 shell 命令（所有 target 都有）
+- `SHELL = "shell"`：能跑 shell 命令（所有 M1 target 都有）
 - `FILE_READ = "file_read"`：能读文件（所有 M1 target 都有）
 - `SSH = "ssh"`：通过 SSH 协议访问（仅 SSHTarget）
 - `SYSTEMD = "systemd"`：远端有 systemd（运行时探测）
 - `DOCKER_CLI = "docker_cli"`：远端能跑 `docker` CLI（运行时探测）
 
+未来扩展由对应里程碑提案负责（**禁止**本提案预留 `K8S_EXEC` / `FILE_WRITE` 等 M8/M9 才用的 placeholder）：M8 加 `K8S_EXEC` 等；M9 加 `FILE_WRITE` 等。
+
 Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTURE.md §5 一致）。**禁止**在加载 Inspector manifest 时接受 Enum 之外的 capability token —— 未知 capability 必须在 manifest 加载时 raise（防止 silent skip）。
 
-#### 场景:Capability 含 M1 最小集
+#### 场景:Capability 恰好含 M1 最小集
 
 - **当** 检查 `set(Capability.__members__.keys())`
-- **那么** 必须**至少**含 `{"SHELL", "FILE_READ", "SSH", "SYSTEMD", "DOCKER_CLI"}`
+- **那么** 必须**恰好**为 `{"SHELL", "FILE_READ", "SSH", "SYSTEMD", "DOCKER_CLI"}`（不多不少；防止偷偷预留未来 milestone 才用的 placeholder）
 
 #### 场景:Capability 值是小写 string
 
 - **当** 检查每个 `Capability` 成员的 `.value`
 - **那么** 必须是该成员名的 lower case（如 `Capability.SSH.value == "ssh"`）
 
-#### 场景:capabilities 集合与 tool-registry TargetSummary allowlist 一致
+#### 场景:capabilities 与 `CAPABILITY_ALLOWLIST` 严格相等
 
-- **当** 同时检查 `Capability` 所有 `.value` 集合与 `tool-registry-capability-layer` spec 中 `TargetSummary.capabilities` allowlist
-- **那么** 两者**必须严格相等**（防止 Tool Registry 投影漂移：本 Enum 是 SOT）
+- **当** 同时检查 `frozenset({c.value for c in Capability})` 与 `hostlens.tools.schemas.list_targets.CAPABILITY_ALLOWLIST`
+- **那么** 两者**必须严格相等**（M1 Capability Enum 是 SOT；M1 落地后 allowlist 必须更新为 `frozenset({c.value for c in Capability})`；原 M2 占位值 `file_write` / `docker` / `k8s_exec` 必须删除，到对应 milestone 才回填）
 
-### 需求:`ExecResult` 必须把 `timed_out` 与 `exit_code` 字段分离
+### 需求:`ExecResult` 必须把 `timed_out` 与 `exit_code` 字段分离，超时时 `exit_code=None`
 
 `hostlens.targets.base.ExecResult` 必须是 Pydantic v2 模型，含以下字段：
 
-- `exit_code: int`：命令返回码；**超时时必须为 `-1`**（约定值），调用方应**优先**通过 `timed_out` 字段判断超时
+- `exit_code: int | None`：命令的 OS-level 返回码；**`None` 表示 "无 OS-level exit code"**（超时被 hostlens 主动取消 / 远端连接断开未拿到 exit code 等）；非 None 时是真实 wait status（含 signal-killed 时的 `128 + signum`）。**禁止**用 `-1` 魔数表达超时（与 Python subprocess 在某些平台返回的 signal exit code 冲突，语义不清）
 - `stdout: str`：UTF-8 解码后的标准输出（非 UTF-8 字节用 `errors="replace"` 容错）
 - `stderr: str`：同上
 - `duration_seconds: float`：实际执行时长（含连接 + 等待）
-- `timed_out: bool`：是否因 `timeout` 参数到期被取消；超时与非零退出**互斥但同字段不能合并**
+- `timed_out: bool`：是否因 `timeout` 参数到期被取消；调用方判断超时**必须**用此字段，**不**用 `exit_code` 值判断
+- **不变量**：`timed_out is True` 蕴含 `exit_code is None`（模型层 `model_validator` 强制；违反 raise `ValidationError`）；反之 `exit_code is None and not timed_out` 也允许（如远端断开未拿到 exit code）
 
 `model_config = ConfigDict(frozen=True, extra="forbid")` 必须设置。
 
-#### 场景:超时时 timed_out=True 且 exit_code=-1
+#### 场景:超时时 timed_out=True 且 exit_code=None
 
 - **当** 调用 `await target.exec("sleep 100", timeout=1)`
-- **那么** 返回 `ExecResult.timed_out is True`、`exit_code == -1`、`duration_seconds >= 1.0`
+- **那么** 返回 `ExecResult.timed_out is True`、`exit_code is None`、`duration_seconds >= 1.0`
 
 #### 场景:正常返回非零 exit_code
 
 - **当** 调用 `await target.exec("exit 42", timeout=10)`
 - **那么** 返回 `ExecResult.timed_out is False`、`exit_code == 42`
+
+#### 场景:signal-killed 命令返回 128+signum
+
+- **当** 调用 `await target.exec("sh -c 'kill -SEGV $$'", timeout=10)`
+- **那么** 返回 `ExecResult.timed_out is False`、`exit_code == 139`（128 + SIGSEGV=11）；**禁止**与超时的 `None` 混淆
+
+#### 场景:模型层强制 timed_out 蕴含 exit_code=None
+
+- **当** 试图构造 `ExecResult(timed_out=True, exit_code=0, ...)`
+- **那么** 必须 raise `pydantic.ValidationError`（不变量违反）
 
 #### 场景:stdout/stderr 非 UTF-8 字节不 raise
 
@@ -91,25 +104,33 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 - **当** 已构造的 `result` 试图赋值 `result.exit_code = 0`
 - **那么** 必须 raise `pydantic.ValidationError`（frozen=True 生效）
 
-### 需求:`LocalTarget` 必须基于 `asyncio.create_subprocess_shell` 实现
+### 需求:`LocalTarget` 必须基于 `asyncio.create_subprocess_shell` 实现且超时杀整个进程组（POSIX-only）
 
 `hostlens.targets.local.LocalTarget` 必须：
 
+- **POSIX-only**：M1 LocalTarget **只**支持 POSIX 宿主（Linux / macOS）；用的 `os.killpg` / `os.getpgid` / `start_new_session=True` 都是 POSIX 专有 API。Windows 宿主**禁止**在 import 时 silent fallback，必须在 `hostlens.targets.local` 模块 import 时检查 `sys.platform == "win32"` 并 raise `ImportError("LocalTarget requires POSIX host (Linux/macOS); Windows support is not in M1 scope")`，给清晰错误（不是运行时 cryptic 错误）
 - `type == "local"`
 - `capabilities` 至少含 `{SHELL, FILE_READ}`；运行时探测：如 `which docker` 成功则加 `DOCKER_CLI`；如 `which systemctl` 成功则加 `SYSTEMD`（探测结果在 target 构造时缓存，**不**每次 exec 都重新探测）
-- `exec` 实现走 `asyncio.create_subprocess_shell(cmd, env=...)`，**禁止**走 `create_subprocess_exec`（M1 Inspector 命令含 pipe / redirect 必须 shell 解析）
-- 超时实现走 `asyncio.wait_for` 包裹 `proc.communicate()`；超时时必须发 `SIGKILL` 终止 subprocess（不只是 SIGTERM）
+- `exec` 实现走 `asyncio.create_subprocess_shell(cmd, env=..., start_new_session=True)`，**禁止**走 `create_subprocess_exec`（M1 Inspector 命令含 pipe / redirect 必须 shell 解析）；`start_new_session=True` 是必需的——shell 会 fork 子进程（如 `sh -c 'sleep 60'` 实际进程树是 `sh → sleep`），只 SIGKILL 顶层 shell 不会回收 sleep
+- 超时实现：`asyncio.wait_for` 包裹 `proc.communicate()` 抛 `TimeoutError` 时，**必须**调用 `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组，然后 `await proc.wait()` 确保 reaped；**禁止**只 `proc.kill()`（只杀顶层 shell，留下 zombie sleep）
 - `env` 参数传入时**合并**到 `os.environ.copy()` 之上（不是替换），保留 PATH 等关键 env var
+
+#### 场景:Windows 宿主 import 时 raise ImportError
+
+- **当** 在 Windows（`sys.platform == "win32"`）python 进程里 `import hostlens.targets.local`
+- **那么** 必须 raise `ImportError`，消息含 "LocalTarget requires POSIX host (Linux/macOS)"；**禁止**模块加载成功但 exec 时才 cryptic 失败
 
 #### 场景:LocalTarget exec 走 shell 解析
 
 - **当** 调用 `await local.exec("echo a | wc -c", timeout=5)`
 - **那么** 必须返回 `exit_code=0`、`stdout` 含 `"2\n"`（pipe 被 shell 解析，不是被当作字面字符串）
 
-#### 场景:LocalTarget 超时发 SIGKILL
+#### 场景:LocalTarget 超时回收整个进程组无 zombie
 
 - **当** 调用 `await local.exec("sleep 60", timeout=1)`
-- **那么** 必须在 ~1s 后返回 `ExecResult(timed_out=True)`；subprocess 必须已被回收（无 zombie 进程）；后续 `ps` 看不到该 `sleep` 进程
+- **那么** 必须在 ~1s 后返回 `ExecResult(timed_out=True, exit_code=None)`
+- **且** 用 `psutil.Process(...).children(recursive=True)` 在 hostlens 父进程下检查，**禁止**有 `sleep` 残留进程
+- **且** subprocess 必须已被 `await proc.wait()` reaped（无 defunct/zombie）
 
 #### 场景:LocalTarget env 合并而非替换
 
@@ -122,20 +143,24 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 - **那么** `local.capabilities ⊇ {Capability.SHELL, Capability.FILE_READ, Capability.DOCKER_CLI}`
 - **且** 在无 docker 的机器上构造 → `Capability.DOCKER_CLI ∉ local.capabilities`
 
-### 需求:`TargetRegistry` 必须按 name 索引且禁止重复注册
+### 需求:`TargetRegistry` 必须按 name 索引且同时持有 target 实例与配置元数据
 
 `hostlens.targets.registry.TargetRegistry` 必须提供：
 
-- `register(target: ExecutionTarget) -> None`：name 冲突 raise `TargetError("duplicate_target", name=name)`
+- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；name 冲突 raise `TargetError("duplicate_target", name=name)`
 - `get(name: str) -> ExecutionTarget`：未找到 raise `KeyError`
+- `get_entry(name: str) -> TargetEntry`：返回配置元数据；未找到 raise `KeyError`
 - `names() -> set[str]`：返回所有已注册 target 的 name 集合
 - `list() -> list[ExecutionTarget]`：按 name 字典序返回（保证测试 / Tool Registry 投影可复现）
+- `list_entries() -> list[TargetEntry]`：按 name 字典序返回所有 `TargetEntry`（供 `list_targets_handler` 投影 `TargetSummary` 时拿元数据使用）
 
-Registry **不**持有连接状态 —— 它只是 name → target 实例的索引；连接生命周期由各 target 实现内部管理。
+Registry **不**持有连接状态 —— 它只是 (name → target 实例 + name → TargetEntry 元数据) 双索引；连接生命周期由各 target 实现内部管理。
+
+**配套契约**：`ExecutionTarget` Protocol **不暴露** `display_name` / `description` / `tags` / `enabled` 字段（只有 `name` / `type` / `capabilities` / `exec` / `read_file`）。任何需要这些 metadata 的调用方（如 `list_targets_handler`）**必须**通过 `TargetRegistry.get_entry(name)` / `list_entries()` 从 `TargetEntry` 读取；具体行为契约由 `tool-registry-capability-layer` spec §场景:TargetSummary metadata 字段必须来自 TargetEntry 而不是 ExecutionTarget Protocol 规定（用"有意分歧"的 target/entry 对作为可测试断言，避免依赖"handler 源码不含 `getattr`"这种脆弱的实现细节检查）。
 
 #### 场景:register 冲突 raise
 
-- **当** registry 已含 `name="prod-web"` target，再次 `registry.register(another_target_named_prod_web)`
+- **当** registry 已含 `name="prod-web"` target，再次 `registry.register(another_target_named_prod_web, entry)`
 - **那么** 必须 raise `TargetError`，错误 kind 为 `"duplicate_target"`，含 name；**不**覆盖原 target
 
 #### 场景:list 按 name 字典序
@@ -148,15 +173,31 @@ Registry **不**持有连接状态 —— 它只是 name → target 实例的索
 - **当** `registry.get("not-exist")`
 - **那么** 必须 raise `KeyError`（**不是** `TargetError` —— 这是 lookup miss 不是业务错误）
 
+#### 场景:get_entry 与 list_entries 返回元数据
+
+- **当** 注册 `target` + `entry=TargetEntry(name="prod-web", display_name="Prod Web", tags=["prod"], enabled=True, ...)`
+- **那么** `registry.get_entry("prod-web")` 必须返回该 entry；`registry.list_entries()` 必须按 name 字典序返回 entries，能让调用方拿到 `display_name` / `description` / `tags` / `enabled`
+
 ### 需求:`TargetsConfig` 必须从 yaml 加载且环境变量占位展开
 
 `hostlens.targets.config.TargetsConfig` 必须是 Pydantic v2 模型：
 
 - 顶层结构：`version: Literal["1"]` + `targets: list[TargetEntry]`
-- `TargetEntry`：`name: str` + `type: Literal["local", "ssh"]` + `enabled: bool = True` + type-specific 字段
+- `TargetEntry` 通用字段（**所有 type 共有**）：
+  - `name: str`（必填）
+  - `type: Literal["local", "ssh"]`（必填，discriminator）
+  - `enabled: bool = True`（默认 enabled；可在 yaml 显式设 false 暂停某 target）
+  - `display_name: str | None = None`（人类友好名，可选；缺省时 list_targets 投影用 `name`）
+  - `description: str | None = None`（可选说明）
+  - `tags: list[str] = Field(default_factory=list)`（默认空 list；Pydantic v2 必须用 `default_factory` 而不是可变默认值 `[]` 避免实例间共享；list_targets 投影直接透传）
+- `TargetEntry` SSH-specific 字段集**恰好**为 `{host, user, port, key_path, password, passphrase}`（不多不少，且都来自 SSH 协议本身需要的字段；通用元数据走上面的通用字段）
+- **凭据字段命名约定**（与 CLI 参数 + proposal Demo Path 严格一致）：
+  - `key_path: str | None` —— SSH 私钥文件路径（路径本身非 secret，文件内容才是）；CLI 参数 `--key-path PATH`
+  - `password: str | None` —— SSH 密码；CLI 参数 `--password-env VAR`（CLI 不接受明文 `--password`，仅 env 占位）；yaml 中可以是 `${VAR}` 占位或字面值（字面值触发 doctor warn）
+  - `passphrase: str | None` —— 加密私钥的 passphrase；CLI 参数 `--passphrase-env VAR`；yaml 同 `password` 规则
 - yaml 中 `${VAR_NAME}` 占位必须在加载时展开（从 `os.environ` 读取）；未设置时 raise `ConfigError("missing_env_var", var=VAR_NAME, target=target_name)`
-- `${...}` 占位**仅**允许出现在 secret 字段（`password` / `passphrase`）—— 出现在 `host` / `user` / `port` 等字段时 raise `ConfigError("env_placeholder_not_allowed_here")`
-- 加载文件不存在时**不**raise —— 返回空 `TargetsConfig(version="1", targets=[])`，让 doctor 引导用户跑 `hostlens target add`
+- `${...}` 占位**仅**允许出现在 secret 字段（`password` / `passphrase`）—— 出现在 `host` / `user` / `port` / `key_path` 等字段时 raise `ConfigError("env_placeholder_not_allowed_here")`
+- 加载文件不存在时返回空 `TargetsConfig(version="1", targets=[])`，但 `load_targets_config` 必须**同时**通过 structlog 输出 INFO 级日志「config file not found, returning empty registry」+ doctor 会以 hint 状态显示「没有任何已配置 target，跑 `hostlens target add` 开始」—— 不 raise 但也不静默通过
 
 加载入口：`hostlens.targets.config.load_targets_config(path: Path) -> TargetsConfig`
 
@@ -185,25 +226,52 @@ Registry **不**持有连接状态 —— 它只是 name → target 实例的索
 - **当** yaml 含 `type: vm`
 - **那么** 加载必须 raise `pydantic.ValidationError`（type 字段是 Literal）
 
-### 需求:`hostlens target` CLI 命令集
+### 需求:`hostlens target` CLI 命令集且写命令拒绝 root
 
 `hostlens target` Typer 子命令组必须提供：
 
-- `add <name> --type local|ssh [--host ... --user ... --port 22 --key-path ... --password-env VAR]`：写 `targets.yaml` + 校验；name 已存在时 raise + exit 2（参数错误）
-- `list [--json]`：表格（默认）或 JSON 输出已配置 target + 每个 target 当前 capabilities + enabled 状态
-- `remove <name>`：默认交互确认 y/N；`--yes` 跳过；非交互无 TTY 无 `--yes` 必须 exit 1（按 CLAUDE.md §4.5）
-- `test <name>`：跑 `echo hostlens-probe-$$` 验证连通性；输出 ExecResult + 探测到的 capabilities；连通失败 exit 1
+- `add <name> --type local|ssh [--host HOST --user USER --port PORT --key-path PATH --password-env VAR --passphrase-env VAR]`：写 `targets.yaml` + 校验；name 已存在时 raise + exit 2（参数错误）；**写操作命令在 EUID==0 时直接 exit 1**（CLAUDE.md §4.5 + 全局"写操作必须拒绝 root"）
+- `list [--json]`：表格（默认）或 JSON 输出已配置 target + 每个 target 当前 capabilities + enabled 状态（只读，允许 root）
+- `remove <name>`：默认交互确认 y/N；`--yes` 跳过；非交互无 TTY 无 `--yes` 必须 exit 1；**EUID==0 时直接 exit 1**
+- `test <name>`：跑 `echo hostlens-probe-$$` 验证连通性；输出 ExecResult + 探测到的 capabilities；连通失败 exit 1（只读，允许 root）
+
+CLI 参数命名约定（**禁止**漂移；与 proposal Demo Path 与 `TargetEntry` 字段严格一致）：
+
+- `--key-path PATH` 对应 `TargetEntry.key_path`（**禁止**用 `--key-env` / `--key` / `--identity-file` 等别名）
+- `--password-env VAR` 对应在 yaml 写 `password: ${VAR}`（CLI 不接受明文 `--password STR`）
+- `--passphrase-env VAR` 对应在 yaml 写 `passphrase: ${VAR}`
 
 所有命令必须使用 M0 已落地的 structlog logger；错误输出走 stderr，数据走 stdout。
 
+#### 场景:target add EUID==0 直接 exit 1
+
+- **当** 以 root（`os.geteuid() == 0`）跑 `hostlens target add my-local --type local`
+- **那么** 命令必须**立即** exit 1（**先于**参数校验和 yaml 写入），stderr 含修复建议（"请用普通用户运行；如必须以 root 部署 daemon，先在普通用户下创建配置文件再 chown"）
+- **且** `targets.yaml` 必须**未**被创建或修改
+
+#### 场景:target remove EUID==0 直接 exit 1
+
+- **当** 以 root 跑 `hostlens target remove my-local --yes`
+- **那么** 命令必须 exit 1；`targets.yaml` 必须**未**被修改
+
+#### 场景:target list / test 允许 root
+
+- **当** 以 root 跑 `hostlens target list --json` 或 `hostlens target test my-local`
+- **那么** 命令必须正常执行（**不**因 EUID==0 拒绝）；只读语义无 root-owned 配置污染风险
+
 #### 场景:target add 名称冲突 exit 2
 
-- **当** `targets.yaml` 已有 `name: prod-web`，跑 `hostlens target add prod-web --type local`
+- **当** `targets.yaml` 已有 `name: prod-web`，**以非 root** 跑 `hostlens target add prod-web --type local`
 - **那么** 命令必须 exit 2（参数错误），stderr 含 `"target 'prod-web' already exists"`
+
+#### 场景:target add 凭据参数命名一致
+
+- **当** 跑 `hostlens target add my-ssh --type ssh --host x --user y --key-path /tmp/id_rsa --password-env PWD --passphrase-env PASS`
+- **那么** 必须成功（参数命名匹配 `TargetEntry` 字段名）；**禁止** CLI 接受 `--key-env` / `--password` / `--passphrase` 等别名（参数 typo 必须 exit 2）
 
 #### 场景:target remove 无 TTY 无 --yes exit 1
 
-- **当** 在非交互环境跑 `hostlens target remove prod-web`（无 stdin TTY，且未传 `--yes`）
+- **当** 在非交互环境跑 `hostlens target remove prod-web`（非 root，无 stdin TTY，且未传 `--yes`）
 - **那么** 必须 exit 1，stderr 提示 `"--yes required in non-interactive mode"`；**禁止**默默执行删除
 
 #### 场景:target list --json 输出结构化

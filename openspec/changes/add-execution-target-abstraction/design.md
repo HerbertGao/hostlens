@@ -27,12 +27,13 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 **非目标：**
 
 1. DockerTarget / KubernetesTarget —— M8 单独提案
-2. SSH 连接复用（`ControlMaster` / multiplex）—— 性能优化；M1 每次 exec 新建连接，benchmark 验证有性能问题后再做
+2. **跨进程 SSH 连接共享**（OpenSSH `ControlMaster` 用 unix socket 共享给其它进程）—— 进程内 per-target connection pool 是 M1 必做（见决策 6 + OPERABILITY §2），但跨进程共享留到 M6+ 基于真实部署形态再决定
 3. macOS Keychain / Linux Secret Service / SOPS 加密密钥来源 —— M5+ 路线
 4. SSH bastion / jump host / agent forwarding —— 用户需求出现后再做
 5. `exec` 的写操作语义（"返回的 exit_code 之外允许修改远端状态"）—— M9 Remediation 才扩展；M1 `exec` 用于读类命令，与 Tool Registry `side_effects ∈ {none, read}` 一致
 6. Target 自动 health 监控 / 自动 disable 失败 target —— 失败由调用方处理，不做后台守护
 7. Capability 自动发现的完备性 —— M1 只做基础探测（SSH 默认 + 运行时 `systemctl --version` / `docker --version` probe），false negative 可接受
+8. **Windows 宿主支持** —— M1 LocalTarget 用 `os.killpg` + `start_new_session`（POSIX 专有 API），明确**只支持 POSIX 宿主（Linux / macOS）**；Windows 落地推到有用户需求时（届时实现路径走 `CREATE_NEW_PROCESS_GROUP` + `TerminateProcess`，是独立工作量）；M1 在 import 时跑 `if sys.platform == "win32": raise ImportError("LocalTarget requires POSIX host")` 给清晰错误
 
 ## 决策
 
@@ -67,19 +68,21 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 - ❌ 两个 API（`exec_shell(str)` + `exec_argv(list)`）：增加复杂度无收益；M1 Inspector 全部走 shell 模式
 - ❌ 自己实现 mini shell parser：重复造轮子，且容易和真实 shell 行为分歧
 
-### 决策 3：`ExecResult.timed_out` 与 `exit_code` 字段分离
+### 决策 3：`ExecResult.timed_out` 与 `exit_code: int | None` 字段分离
 
-**选择**：`timed_out: bool` 与 `exit_code: int` 是独立字段，超时时 `timed_out=True, exit_code=-1`
+**选择**：`timed_out: bool` 与 `exit_code: int | None` 是独立字段；超时时 `timed_out=True, exit_code=None`；signal-killed 时 `exit_code=128+signum`（POSIX 约定）；模型层 `model_validator` 强制不变式 `timed_out is True → exit_code is None`。
 
 **理由**：
 
 - 调用方区分"命令跑完但返回非零"与"命令被 hostlens 主动取消"的语义需求强（前者 = 业务诊断信号，后者 = hostlens 自身配额信号）
-- 单字段方案（用 `exit_code=-1` 表示超时）会让调用方写 `if result.exit_code != 0` 时把超时也当业务失败处理
+- **`exit_code: int | None`**（不是 `int`+魔数 `-1`）：Linux subprocess 在 signal-killed 时返回 `128+signum`（SIGSEGV → 139、SIGKILL → 137）—— 用 `-1` 表达 "hostlens 主动超时" 会与某些信号场景的真实负值或 256-补码 wrap 冲突，语义不清；`None` 表达 "无 OS-level exit code"（hostlens 主动取消 / 远端断开未拿到 status）则语义干净
 - 显式 `timed_out` 配合 M4 Scheduler 的 RunStatus 与 M3 Diagnostician 的 finding `inspector_status: timeout` 自然对齐
+- 调用方判断超时**必须**用 `timed_out` 字段，**不**用 `exit_code` 值
 
 **替代**：
 
-- ❌ 单字段 `exit_code` 用魔数（-1 / -2 / -3）区分超时 / 取消 / 系统错误：语义不清
+- ❌ `exit_code: int` 用 `-1` 表达超时：与 Python subprocess 在某些平台/信号场景的真实负值或 wrap 后的 unsigned 255 冲突；调用方写 `if exit_code != 0` 也会把超时混进业务失败
+- ❌ 单字段 `exit_code: int | None` 不要 `timed_out`：调用方无法区分"超时取消"与"远端断开未拿到状态"
 - ❌ raise 异常表达超时：和 `exit_code != 0` 一致性差；调用方必须 try/except；并行调用时统计聚合变难
 
 ### 决策 4：`Capability` 是 Enum 不是 set[str] 自由字面量
@@ -118,41 +121,65 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 - ❌ 强制 keychain：M1 范围爆炸
 - ❌ 仅支持 key 认证：用 docker `linuxserver/openssh-server` 起测试容器配 key 比配 password 复杂得多，CI 集成测试体验差
 
-### 决策 6：SSHTarget 每次 exec 新建连接（M1 不复用）
+### 决策 6：SSHTarget 维护 per-target control connection pool（M1 必须复用）
 
-**选择**：每次 `await target.exec()` 调用走 `asyncssh.connect()` → run → close 完整生命周期
+**选择**：每个 `SSHTarget` 实例持有**一个** asyncssh control connection（首次 `exec` 时建立）；每次 `exec` 在该连接上**新建 channel**（`conn.run`）；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才 close；连接断开 / EOF / 心跳失败时按指数退避自动重连最多 3 次。**对齐 docs/OPERABILITY.md §2.1 的硬约束**「不允许『每个 Inspector 重新 SSH 一次』」。
 
 **理由**：
 
-- 实现简单，并行 exec 不竞争同一 channel
-- M1 demo 路径每次 inspect 跑 1-3 个 Inspector，连接建立成本（~100-300ms）相对 Inspector exec 时间（多数 1-30s）可接受
-- 连接复用引入的复杂性（pool / health check / per-target lock / 长连接 timeout）在没有 benchmark 数据前不值得做
-- M6+ Inspector 数量上来后，再基于真实 metric 决定是否引入 connection pool（届时 SSHTarget 内部加 pool，对外 Protocol 不变）
+- **OPERABILITY 已硬性规定**：§2.1 明确"每个 target 维护一个 per-process SSH connection pool（类似 OpenSSH ControlMaster auto）"+ §2.2 "不允许『每个 Inspector 重新 SSH 一次』—— 这是 M1 实施 SSH target 时必须 enforced 的硬约束"。本提案不可绕过
+- SSH connection 建立成本（key exchange + 认证）100-500ms；M6+ 一次巡检会跑 10+ Inspector，per-exec 建连会把单次巡检拖长几秒
+- asyncssh `connect()` 返回的 `SSHClientConnection` 原生支持并行多 channel；并行 4 个 Inspector 在同一连接上互不阻塞
+- 实现上其实并不复杂：一个 `asyncio.Lock` 保护"是否已建连 + 是否需重连"状态机；channel 创建本身无需加锁
+- 重连退避（1s/3s/9s 最多 3 次）防止反复打挂边缘性可用的 sshd
 
 **替代**：
 
-- ❌ ControlMaster / connection pool：复杂度高；M1 还看不出 ROI
-- ❌ 长连接 + keepalive：N×M 个 target × inspector 会爆连接数
+- ❌ 每次 exec 新建连接：违反 OPERABILITY §2 硬约束
+- ❌ 长连接 + 无 idle timeout：长跑 daemon 下连接数随 target 数线性增长；300s idle 是合理上限
 
-### 决策 7：SSH `env` 注入接受调用方的 dict 但 docs 说明远端 sshd `AcceptEnv` 限制
+### 决策 7：SSH `env` 注入只走 asyncssh `env=` 参数（**禁止** export 拼接）
 
 **选择**：
 
 - `SSHTarget.exec(env=...)` 内部把 dict 传给 `asyncssh.run(env=env)`
 - 远端 sshd 默认只 `AcceptEnv LANG LC_*` —— 大多数 env var 会被静默丢弃
 - docs 与 doctor 必须明确说明这一限制；M1 不在 runtime 验证（验证成本太高 + false alarm 率高）
-- 真正传 secret 的 Inspector：要么走 stdin（更安全），要么走 cmd 内 `export VAR=...; actual_cmd`（loader 校验拒绝 secret 直接进 cmd）
+- 真正传 secret 的 Inspector 必须走**以下三种方式之一**，**不允许**其它：
+  1. 用户在远端 sshd 配 `AcceptEnv HOSTLENS_*`（推荐） + Inspector 用 `HOSTLENS_` 前缀变量名
+  2. Inspector 通过 stdin 传 secret（asyncssh `stdin=...`）
+  3. M5+ 引入 secret transport 通道（未来）
 
 **理由**：
 
-- 假装"env 注入永远生效"会让用户配了 `PGPASSWORD` 跑 `mysql -p` 后失败但不知道为什么
-- M1 把限制写明文档，比沉默失败好
+- `export VAR=val; cmd` 拼接到 shell 命令字符串会让 secret 进入 `ps auxw` / shell history / 远端 audit log，与 docs/ARCHITECTURE.md §4 命令渲染安全规则的"secrets 必须走 env 路径而不是模板插值"明确冲突
+- 假装"env 注入永远生效"会让用户配了 `PGPASSWORD` 跑 `mysql -p` 后失败但不知道为什么 —— 明文限制比沉默失败好
 - 验证 sshd `AcceptEnv` 需要远端配置读取或试错探测，成本与价值不匹配
 
 **替代**：
 
-- ❌ 把 env 转换为 `export VAR=val; cmd` 拼到 cmd string：secret 会进 process list 与 shell history，安全倒退
-- ❌ 强制远端 sshd 加 `AcceptEnv *`：要求用户改 server 配置，体验差
+- ❌ 把 env 转换为 `export VAR=val; cmd` 拼到 cmd string：违反 ARCHITECTURE §4 secret 边界（安全倒退）
+- ❌ 强制远端 sshd 加 `AcceptEnv *`：通配符等于没限制，运维抗拒
+- ❌ 把 secret 写到远端临时文件再 `source`：临时文件残留 + 跨平台 cleanup 复杂
+
+### 决策 9：写操作 CLI（`add` / `remove`）EUID==0 拒绝
+
+**选择**：
+
+- `hostlens target add` / `hostlens target remove` 入口检查 `os.geteuid() == 0`，是则立即 exit 1，stderr 输出修复建议
+- `hostlens target list` / `test` / `hostlens doctor` 是只读，**不**拒绝 root
+- M0 已落地的 `hostlens.core.privilege.require_unprivileged()` 函数（如未落地则本提案在 §M0 兼容性中新增）作为统一入口
+
+**理由**：
+
+- 全局 `~/.claude/CLAUDE.md`「写操作必须拒绝 root（EUID==0）」+ 项目 CLAUDE.md §4.5「写操作的硬约束」明确要求
+- 写 `~/.config/hostlens/targets.yaml` 含凭据引用，以 root 跑会创建 root-owned 配置文件，后续普通用户跑命令时无法读 → 调试地狱
+- 只读命令以 root 跑无副作用，强制拒绝反而妨碍合法运维场景（如 root daemon 调 `doctor --check-targets`）
+
+**替代**：
+
+- ❌ 全部 CLI 都拒绝 root：阻塞 daemon 运维场景
+- ❌ 只 warn 不 exit：用户会忽视，留下 root-owned 文件雷区
 
 ### 决策 8：`TargetsConfig` 是 Pydantic 模型，targets.yaml 由 loader 显式校验
 
@@ -176,18 +203,21 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 
 ### 风险
 
-1. **SSH 集成测试的 CI 稳定性**：CI 起 docker sshd 容器有 cold start 时间（~10s）+ 偶发网络抖动 → 缓解：用 pytest-docker fixture 复用容器；测试用 `pytest.mark.timeout(60)`；CI 失败时 retry 1 次（不是无限）
+1. **SSH 集成测试的 CI 稳定性**：CI 起 docker sshd 容器有 cold start 时间（~10s）+ 偶发网络抖动 → 缓解：用 pytest-docker session-scoped fixture 复用容器；测试用 `pytest.mark.timeout(60)`；`pytest-rerunfailures` 仅对**显式标记** `@pytest.mark.flaky_ssh_integration` 的测试 retry 1 次（**禁止**全局 retry，避免掩盖真实 race 条件 bug）；retry 时必须保留首次失败日志 + container logs（pytest --capture=no 抓 stderr）
 2. **AsyncSSH 依赖体积**：~2 MB，含 cryptography 子依赖 → 缓解：在 `pyproject.toml` 的 `[project.optional-dependencies]` 里分组（`core` 必装 / `ssh` 可选）—— 但 M1 SSHTarget 是核心场景，最终决定还是放 `core`，体积可接受
 3. **明文密码 doctor warn 被忽略**：用户长期忽视 warning 把 prod 凭据明文写进 yaml → 缓解：M2+ 升级为加载时 error；M1 doctor warn 文本必须含修复步骤示例
 4. **SSH env 注入限制踩坑**：用户配了 env 但 Inspector 跑不通 → 缓解：docs 顶部突出说明 + Inspector 提案（下一个）的 `secrets` 字段加载时强制走 env 路径并给出 sshd `AcceptEnv` 配置示例
 5. **`exec` 收 string 引入 shell 注入风险**：本提案不做防御 → 缓解：本提案 spec 明确"shell 注入防御边界在 manifest 渲染层"；Inspector 提案必须实现 Jinja `| sh` filter 强制 + secret env-only 约束；本提案 docs 引用该边界
+6. **SSH connection pool 引入新风险面**：长连接断开 / 服务端 idle disconnect / FD 泄漏 → 缓解：必须有自动重连（指数退避 1s/3s/9s 最多 3 次）；必须有 `ssh.idle_timeout_seconds` 主动 close；测试覆盖"server 主动断开"场景；asyncssh 自带 `keepalive_interval` 默认 60s 帮助早发现
+7. **`Capability` Enum 与既有 `CAPABILITY_ALLOWLIST` 同 PR 切换**：M2 已上线代码用 `{shell, file_read, file_write, docker, k8s_exec}`，新 Enum 会改这套；任何已有测试 fixture 含老值会同时挂 → 缓解：tasks.md 显式列"更新 CAPABILITY_ALLOWLIST + 配套测试"；本提案 PR 不允许只改一头
 
 ### 权衡
 
 1. **`exec` shell-evaluated 换来 Inspector 表达力**：损失少量"argv 模式的安全感"，换来 manifest 可以写自然 shell 命令；M1 价值天平倾向后者
-2. **每次 SSH exec 新建连接换来实现简单**：损失性能（每次 +100-300ms），换来代码简洁与并行无锁；M1 demo 路径可接受
+2. **SSH connection pool 复杂度 vs OPERABILITY 合规**：要写状态机 + 重连 + idle close，但 OPERABILITY 已硬性规定不可不做；M6 多 Inspector 场景下也会自然受益
 3. **明文密码接受 + warn**：损失安全严格度，换来 demo 路径流畅；M1 不为安全洁癖牺牲上手体验
-4. **不实现 capability 自动发现的完备性**：损失"零配置识别远端能力"，换来实现简单；用户偶尔遇到 false negative 时可手动在 yaml 标 capabilities
+4. **SSH read_file 仅 SFTP（不 fallback cat）**：损失对禁用 sftp-server 的远端的支持，换来零 shell 注入 + 字节完整性；M1 用户面对的远端基本都启用 sftp-server，可接受
+5. **不实现 capability 自动发现的完备性**：损失"零配置识别远端能力"，换来实现简单；用户偶尔遇到 false negative 时可手动在 yaml 标 capabilities
 
 ## Migration Plan
 
