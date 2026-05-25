@@ -14,13 +14,13 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - `hostlens.targets.base.Capability` Enum：M1 最小集 = `{SHELL, FILE_READ, SSH, SYSTEMD, DOCKER_CLI}`（5 个；与 docs/ARCHITECTURE.md §5 锁定一致）。M8 DockerTarget / K8sTarget 提案再扩 `K8S_EXEC` 等；M9 Remediation 再扩 `FILE_WRITE` 等。这套值与 `hostlens.tools.schemas.list_targets.CAPABILITY_ALLOWLIST` 在 M1 落地后通过 `frozenset({c.value for c in Capability})` 严格相等，详见 §修订
 - `hostlens.targets.base.ExecResult` Pydantic 模型：`exit_code: int | None` / `stdout` / `stderr` / `duration_seconds` / `timed_out`（超时时 `exit_code=None` 且 `timed_out=True`；`None` 表示"无 OS-level exit code"，与"非零退出"语义完全分离；避免 Linux 上 `-1` 与 SIGHUP/signal 终止 exit code 冲突）
 - `hostlens.targets.local.LocalTarget`：`asyncio.create_subprocess_shell(cmd, env=..., start_new_session=True)` 实现；`type="local"`；capabilities = `{SHELL, FILE_READ}` + 运行时探测；**超时时必须用 `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组**（不只是 `proc.kill()`），保证 shell fork 的子进程（如 `sleep`）也被回收
-- `hostlens.targets.registry.TargetRegistry`：按 name 索引 target 实例；API 为 `register(target, entry)` / `get(name)` / `get_entry(name)` / `names()` / `list()` / `list_entries()`；**同时持有 ExecutionTarget 实例与对应 `TargetEntry` 元数据双索引**（让 `list_targets` handler 能拿到 `display_name`/`description`/`tags`/`enabled` 等 ExecutionTarget Protocol 上不暴露的字段）；name 冲突 raise `TargetError(kind="duplicate_target", name=name)`
+- `hostlens.targets.registry.TargetRegistry`：按 name 索引 target 实例；API 为 `register(target, entry)` / `get(name)` / `get_entry(name)` / `names()` / `list()` / `list_entries()`；**同时持有 ExecutionTarget 实例与对应 `TargetEntry` 元数据双索引**（让 `list_targets` handler 能拿到 `display_name`/`description`/`tags`/`enabled` 等 ExecutionTarget Protocol 上不暴露的字段）；name 冲突 raise `TargetError(kind="duplicate_target", target=name)`
 - `hostlens.targets.config.TargetsConfig` Pydantic 模型 + loader：从 `~/.config/hostlens/targets.yaml` 加载 target 配置（M1 LocalTarget 单条配置即可；SSHTarget 见下）
 
 **新增（ssh-execution-target 实现 + 凭据约束）：**
 
 - `hostlens.targets.ssh.SSHTarget`：基于 `asyncssh` 的实现；`type="ssh"`；**初始** capabilities = `{SSH, SHELL, FILE_READ}`（构造时即有）；`SYSTEMD` / `DOCKER_CLI` 在首次 `exec` 后通过 `which systemctl` / `which docker` 探测命中时加入并缓存（与 ssh-execution-target spec 一致）
-- **SSH connection pool（必须）**：每个 `SSHTarget` 实例维护**一个** asyncssh control connection（per-process per-target，类似 OpenSSH `ControlMaster auto`）；每次 `exec` 在该连接上**新建 channel**（`conn.create_session` / `conn.run`），不重新 SSH；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭；连接断开 / EOF 时**1 次自动重连**（指数退避 1s → 4s → 16s），仍失败 raise `TargetError(kind="ssh_connection_lost")`。**严格对齐 docs/OPERABILITY.md §2.2 硬约束**——「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」+「不允许『每个 Inspector 重新 SSH 一次』」
+- **SSH connection pool（必须）**：每个 `SSHTarget` 实例维护**一个** asyncssh control connection（per-process per-target，类似 OpenSSH `ControlMaster auto`）；每次 `exec` 在该连接上**新建 channel**（`conn.create_session` / `conn.run`），不重新 SSH；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭；连接断开 / EOF 时**1 次自动重连**（指数退避 1s → 4s → 16s），仍失败 raise `TargetError(kind="ssh_connection_lost", target=name)`。**严格对齐 docs/OPERABILITY.md §2.2 硬约束**——「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」+「不允许『每个 Inspector 重新 SSH 一次』」
 - 凭据加载：**仅支持 key 认证为主**（M1 也支持 password 但 doctor 必须 warn）；`password` / `passphrase` 字段通过 `${ENV_VAR}` 占位从环境读（明文落 yaml 触发 doctor warning）；`key_path` 字段是普通文件路径（路径本身非 secret，文件内容由 asyncssh 加载）
 - SSH env 传递的限制：远端 sshd 默认 `AcceptEnv` 仅允许 `LANG LC_*`；Hostlens 不假装能传任意 env，docs 与 doctor 必须明确说明——**禁止**通过 `export VAR=value; cmd` 拼到 cmd string 的方式传 secret（会进 process list / shell history，与 docs/ARCHITECTURE.md §4 secret 边界冲突）；推荐方式：(a) 用户在远端 sshd 配 `AcceptEnv HOSTLENS_*`；(b) Inspector 通过 stdin 传 secret
 - 集成测试：CI 起 `linuxserver/openssh-server` 容器跑真实 sshd（**不**mock `asyncssh`，按 CLAUDE.md §6 测试规则）；测试容器必须自带 `AcceptEnv HOSTLENS_TEST_*` 配置；env 注入测试**只**断言带 `HOSTLENS_TEST_` 前缀的 var 能透传（不假装任意 env 都能跑）
@@ -91,7 +91,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - ❌ DockerTarget / KubernetesTarget 实现（M8 单独提案）
 - ❌ macOS Keychain / Linux Secret Service / SOPS 加密密钥（M5+ 路线，本提案仅支持环境变量占位）
 - ❌ Bastion / Jump Host / Agent forwarding：M1 直连，bastion 推到有用户需求时
-- ❌ SSH password 加密存储：M1 password 必须走 `${ENV_VAR}` 占位（明文落 yaml → doctor warn）
+- ❌ SSH password 加密存储：M1 password **推荐**走 `${ENV_VAR}` 占位；**允许**字面明文落 yaml（loader 接受，仅 doctor warn，与决策 5 一致；M2+ 才考虑升级为加载时 error）
 - ❌ Inspector 调度逻辑：下一提案 `add-inspector-plugin-system` 处理
 - ❌ Capability 自动发现的完备性：M1 只做 SSH/LOCAL 基础检测；SYSTEMD / DOCKER_CLI 探测靠运行时跑 `which systemctl` / `which docker`（POSIX 标准、轻量；与 execution-target spec 一致），false negative 可接受
 - ❌ 写操作 target API：M1 `exec` 只用于读类命令（与 M2 ToolRegistry `side_effects ∈ {none, read}` 一致）；M9 Remediation 才扩展写语义
@@ -109,7 +109,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 | `targets.yaml` 引用的 `${ENV_VAR}` 未设置 | 加载时 raise `ConfigError(kind="missing_env_var", var_name=var_name, target=target_name)`（M1 落地需扩展 ConfigError 加 `kind` 与结构化 keyword 字段，详见 execution-target spec §需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段）；**禁止**默默用空 string 当 password | hostlens doctor exit 1，CLI 命令启动 fail-fast |
 | SSH env 注入但远端 sshd 拒收（`AcceptEnv` 限制） | env 被远端静默丢弃；本地无法检测；docs 必须说明；M1 不在 runtime 验证（成本太高）；推荐用户配 `AcceptEnv HOSTLENS_*` 前缀 | docs 警告 |
 | LocalTarget read_file 路径不存在 | raise `FileNotFoundError`；上层（Inspector）按 `requires_files` 自动 skip | finding-level: `requires_unmet` |
-| SSHTarget read_file SFTP 不可用 | raise `TargetError("sftp_unavailable")`；**禁止** fallback 到 `cat` shell 命令（含命令注入风险且无法保证字节完整性） | exit 1；用户需在远端启用 sftp-server subsystem |
+| SSHTarget read_file SFTP 不可用 | raise `TargetError(kind="sftp_unavailable", target=name)`；**禁止** fallback 到 `cat` shell 命令（含命令注入风险且无法保证字节完整性） | exit 1；用户需在远端启用 sftp-server subsystem |
 
 ## Operational Limits
 
@@ -122,7 +122,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - **SSH 连接建立超时**：10s（asyncssh `connect_timeout`），可在 targets.yaml per-target 配
 - **SSH idle timeout**：300s（`ssh.idle_timeout_seconds`），control connection 空闲超过后自动 close + 下次 exec 时按需重连；对齐 docs/OPERABILITY.md §2.1
 - **SSH 自动重连退避**：1s → 4s → 16s（指数）共 1 次重连尝试（对齐 OPERABILITY §2.2；超出 raise `TargetError(kind="ssh_connection_lost", target=name)`）
-- **read_file 大小上限**：M1 默认 10 MB，超出 raise `TargetError("file_too_large")`，防止 SSH 一次拉巨大日志 OOM
+- **read_file 大小上限**：M1 默认 10 MB，超出 raise `TargetError(kind="file_too_large", target=name, path=path, size=size)`，防止 SSH 一次拉巨大日志 OOM
 
 ## Security & Secrets
 

