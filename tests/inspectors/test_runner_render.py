@@ -35,9 +35,7 @@ def _logger() -> structlog.stdlib.BoundLogger:
 
 
 def _runner() -> InspectorRunner:
-    return InspectorRunner(
-        TargetRegistry(), settings=Settings(), logger=_logger()
-    )
+    return InspectorRunner(TargetRegistry(), settings=Settings(), logger=_logger())
 
 
 def _make_manifest(
@@ -117,9 +115,7 @@ async def test_undefined_parameter_propagates() -> None:
     # wouldn't raise. Use a stricter case: filter chain that depends on
     # parameter being defined.
     with pytest.raises((jinja2.UndefinedError, jinja2.TemplateError)):
-        await runner._render_command(
-            manifest, {"unrelated": "x"}
-        )
+        await runner._render_command(manifest, {"unrelated": "x"})
 
 
 async def test_sh_filter_rejects_none() -> None:
@@ -144,12 +140,8 @@ async def test_sh_filter_rejects_empty_list() -> None:
 
 async def test_sh_filter_with_array_via_map() -> None:
     runner = _runner()
-    manifest = _make_manifest(
-        command="ping {{ endpoints | map('sh') | join(' ') }}"
-    )
-    cmd, _ = await runner._render_command(
-        manifest, {"endpoints": ["host1", "host2"]}
-    )
+    manifest = _make_manifest(command="ping {{ endpoints | map('sh') | join(' ') }}")
+    cmd, _ = await runner._render_command(manifest, {"endpoints": ["host1", "host2"]})
     assert cmd == f"ping {shlex.quote('host1')} {shlex.quote('host2')}"
 
 

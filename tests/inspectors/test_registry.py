@@ -110,9 +110,7 @@ class TestInspectorRegistry:
         registry.register(manifest)
         assert registry.get("linux.cpu") is manifest
 
-    def test_register_with_source_path_remembered_on_duplicate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_register_with_source_path_remembered_on_duplicate(self, tmp_path: Path) -> None:
         registry = InspectorRegistry()
         first_path = tmp_path / "first.yaml"
         second_path = tmp_path / "second.yaml"
@@ -212,18 +210,14 @@ class TestBuildRegistryFromSearchPaths:
         assert "system.uptime" in result.registry.names()
         assert result.errors == []
 
-    def test_user_manifest_same_name_as_builtin_raises_duplicate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_user_manifest_same_name_as_builtin_raises_duplicate(self, tmp_path: Path) -> None:
         _write_user_manifest(tmp_path, "hello.echo")
         with pytest.raises(InspectorError) as exc:
             build_registry_from_search_paths([tmp_path], settings=Settings())
         assert exc.value.kind == "duplicate_inspector"
         assert exc.value.inspector == "hello.echo"
 
-    def test_two_user_paths_with_same_name_raise_duplicate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_two_user_paths_with_same_name_raise_duplicate(self, tmp_path: Path) -> None:
         path_a = tmp_path / "a"
         path_b = tmp_path / "b"
         path_a.mkdir()
@@ -231,14 +225,10 @@ class TestBuildRegistryFromSearchPaths:
         _write_user_manifest(path_a, "team.alpha")
         _write_user_manifest(path_b, "team.alpha")
         with pytest.raises(InspectorError) as exc:
-            build_registry_from_search_paths(
-                [path_a, path_b], settings=Settings()
-            )
+            build_registry_from_search_paths([path_a, path_b], settings=Settings())
         assert exc.value.kind == "duplicate_inspector"
 
-    def test_user_path_one_bad_yaml_two_good_collects_one_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_user_path_one_bad_yaml_two_good_collects_one_error(self, tmp_path: Path) -> None:
         # Two good manifests + one malformed yaml. Should load the two,
         # collect one parse-error entry, and NOT raise.
         _write_user_manifest(tmp_path, "team.good.one", file_name="good1.yaml")
@@ -246,9 +236,7 @@ class TestBuildRegistryFromSearchPaths:
         bad_path = tmp_path / "bad.yaml"
         bad_path.write_text("name: [unclosed\n")
 
-        result = build_registry_from_search_paths(
-            [tmp_path], settings=Settings()
-        )
+        result = build_registry_from_search_paths([tmp_path], settings=Settings())
 
         # Builtin set + the two good user manifests are registered.
         assert "team.good.one" in result.registry.names()

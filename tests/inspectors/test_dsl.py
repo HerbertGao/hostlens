@@ -260,9 +260,7 @@ class TestParseForEach:
 
 class TestFormatMessage:
     def test_simple_template_substitution(self) -> None:
-        assert (
-            dsl.format_message("hello {name}", {"name": "world"}) == "hello world"
-        )
+        assert dsl.format_message("hello {name}", {"name": "world"}) == "hello world"
 
     def test_attribute_access_via_simplenamespace(self) -> None:
         ctx = {"obj": SimpleNamespace(field="x")}

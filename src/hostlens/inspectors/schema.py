@@ -73,8 +73,10 @@ def _walk_subtree(subtree: Any) -> Any:
     `for child in subpattern` works fine.
     """
 
-    if isinstance(subtree, tuple) and len(subtree) == 2 and not isinstance(
-        subtree[0], (list, tuple)
+    if (
+        isinstance(subtree, tuple)
+        and len(subtree) == 2
+        and not isinstance(subtree[0], (list, tuple))
     ):
         # Looks like an `(op, args)` tuple — yield it then descend into args.
         yield subtree
@@ -150,22 +152,16 @@ def _is_empty_matchable_subtree(args: Any) -> bool:
     # matches → catastrophic backtracking.
     for op, sub_args in items:
         if op in empty_matchable_ops and (
-            isinstance(sub_args, tuple)
-            and len(sub_args) >= 2
-            and sub_args[0] == 0
+            isinstance(sub_args, tuple) and len(sub_args) >= 2 and sub_args[0] == 0
         ):
             return True
-        if op is _sc.SUBPATTERN and (
-            isinstance(sub_args, tuple) and len(sub_args) >= 4
-        ):
+        if op is _sc.SUBPATTERN and (isinstance(sub_args, tuple) and len(sub_args) >= 4):
             # SUBPATTERN args: (group, addflags, delflags, subpattern).
             # Walk the immediate subpattern looking for a min=0 quantifier.
             inner = sub_args[3]
             for inner_op, inner_args in inner:
                 if inner_op in empty_matchable_ops and (
-                    isinstance(inner_args, tuple)
-                    and len(inner_args) >= 2
-                    and inner_args[0] == 0
+                    isinstance(inner_args, tuple) and len(inner_args) >= 2 and inner_args[0] == 0
                 ):
                     return True
     return False
@@ -370,17 +366,13 @@ class ParseSpec(BaseModel):
 
             # Layer 1: length cap
             if len(regex) > 200:
-                raise ValueError(
-                    f"raw_extract_regex_too_long: max 200 chars, got {len(regex)}"
-                )
+                raise ValueError(f"raw_extract_regex_too_long: max 200 chars, got {len(regex)}")
 
             # Layer 2: re.compile must succeed
             try:
                 compiled = re.compile(regex)
             except re.error as exc:
-                raise ValueError(
-                    f"raw_extract_regex_invalid: re.compile failed: {exc}"
-                ) from exc
+                raise ValueError(f"raw_extract_regex_invalid: re.compile failed: {exc}") from exc
 
             # Layer 4 BEFORE layer 3 ordering: ReDoS detection runs before the
             # named-group / column-count check so a manifest that combines a
@@ -513,8 +505,7 @@ class FindingRule(BaseModel):
             ok, err = _is_compilable_simpleeval(iterable_expr)
             if not ok:
                 raise ValueError(
-                    f"finding_when_invalid: for_each iterable expression failed to "
-                    f"compile: {err}"
+                    f"finding_when_invalid: for_each iterable expression failed to compile: {err}"
                 )
 
         # ---- when must compile ----
@@ -565,9 +556,7 @@ class InspectorManifest(BaseModel):
     description: Annotated[str, Field(min_length=1)]
 
     # ---- compatibility / preflight ----
-    tags: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")]] = Field(
-        default_factory=list
-    )
+    tags: list[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")]] = Field(default_factory=list)
     targets: Annotated[list[Literal["local", "ssh"]], Field(min_length=1)]
     requires_capabilities: list[str] = Field(default_factory=list)
     requires_binaries: list[Annotated[str, Field(pattern=r"^[a-zA-Z0-9._-]+$")]] = Field(

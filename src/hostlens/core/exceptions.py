@@ -268,9 +268,7 @@ class InspectorError(HostlensError):
     ) -> None:
         if kind not in _INSPECTOR_ERROR_KINDS:
             allowed = tuple(sorted(_INSPECTOR_ERROR_KINDS))
-            raise ValueError(
-                f"InspectorError.kind must be one of {allowed}, got {kind!r}"
-            )
+            raise ValueError(f"InspectorError.kind must be one of {allowed}, got {kind!r}")
 
         # ``args[0]`` is the kind so debuggers / unittest output that print
         # ``exc.args`` show the machine-readable error code rather than an

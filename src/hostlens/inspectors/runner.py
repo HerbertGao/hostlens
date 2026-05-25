@@ -386,9 +386,7 @@ class InspectorRunner:
 
         # ---- Step 11: evaluate findings ------------------------------ #
         _check_cancel(cancel)
-        findings = await self._evaluate_findings(
-            manifest.findings, output, parameters
-        )
+        findings = await self._evaluate_findings(manifest.findings, output, parameters)
 
         return self._finish(
             manifest=manifest,
@@ -464,11 +462,7 @@ class InspectorRunner:
             return "requires_unmet", ["privilege_opt_in"], None
 
         # Step 4: env secrets ----------------------------------------- #
-        missing_secrets = [
-            f"env:{name}"
-            for name in manifest.secrets
-            if name not in os.environ
-        ]
+        missing_secrets = [f"env:{name}" for name in manifest.secrets if name not in os.environ]
         if missing_secrets:
             return "requires_unmet", missing_secrets, None
 
@@ -512,9 +506,7 @@ class InspectorRunner:
                 return "target_unreachable", [], exc.kind
             missing_files = [
                 f"file:{path}"
-                for path, exec_result in zip(
-                    manifest.requires_files, file_probes, strict=True
-                )
+                for path, exec_result in zip(manifest.requires_files, file_probes, strict=True)
                 if exec_result.exit_code != 0
             ]
             if missing_files:
@@ -546,9 +538,7 @@ class InspectorRunner:
         template = env.from_string(manifest.collect.command)
         rendered = template.render(**(parameters or {}))
 
-        secrets_env: dict[str, str] = {
-            name: os.environ[name] for name in manifest.secrets
-        }
+        secrets_env: dict[str, str] = {name: os.environ[name] for name in manifest.secrets}
         return rendered, secrets_env
 
     def _parse_and_validate(
@@ -603,13 +593,9 @@ class InspectorRunner:
 
         for index, rule in enumerate(findings):
             if rule.for_each is not None:
-                await self._evaluate_iterative_rule(
-                    rule, index, context, out
-                )
+                await self._evaluate_iterative_rule(rule, index, context, out)
             else:
-                await self._evaluate_aggregate_rule(
-                    rule, index, context, out
-                )
+                await self._evaluate_aggregate_rule(rule, index, context, out)
 
         return out
 
@@ -801,9 +787,7 @@ def _sh_filter(value: object) -> str:
     """
 
     if value is None:
-        raise jinja2.TemplateRuntimeError(
-            "sh filter received None — parameter must be bound"
-        )
+        raise jinja2.TemplateRuntimeError("sh filter received None — parameter must be bound")
     if isinstance(value, list) and not value:
         raise jinja2.TemplateRuntimeError(
             "sh filter received empty list — use map('sh') | join(...) only on non-empty arrays"

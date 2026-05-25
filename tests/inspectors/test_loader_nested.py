@@ -70,9 +70,7 @@ class TestNestedObjectStringLeaf:
         assert exc.value.parameter == "db.deep.host"
 
     def test_three_level_nested_string_with_sh_ok(self) -> None:
-        _validate_command_template(
-            "psql -h {{ db.deep.host | sh }}", _DB_NESTED, []
-        )
+        _validate_command_template("psql -h {{ db.deep.host | sh }}", _DB_NESTED, [])
 
     def test_const_subscript_string_without_sh_raises(self) -> None:
         # `{{ db['host'] }}` is equivalent to `{{ db.host }}` — both must
@@ -83,9 +81,7 @@ class TestNestedObjectStringLeaf:
         assert exc.value.parameter == "db.host"
 
     def test_const_subscript_string_with_sh_ok(self) -> None:
-        _validate_command_template(
-            "psql -h {{ db['host'] | sh }}", _DB_NESTED, []
-        )
+        _validate_command_template("psql -h {{ db['host'] | sh }}", _DB_NESTED, [])
 
 
 class TestNestedObjectNumericLeaf:
@@ -96,23 +92,17 @@ class TestNestedObjectNumericLeaf:
 
 class TestNestedObjectArrayLeaf:
     def test_nested_array_with_map_sh_join_ok(self) -> None:
-        _validate_command_template(
-            "tag={{ db.tags | map('sh') | join(',') }}", _DB_NESTED, []
-        )
+        _validate_command_template("tag={{ db.tags | map('sh') | join(',') }}", _DB_NESTED, [])
 
     def test_nested_array_without_map_sh_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "tag={{ db.tags | join(',') }}", _DB_NESTED, []
-            )
+            _validate_command_template("tag={{ db.tags | join(',') }}", _DB_NESTED, [])
         assert exc.value.kind == "unquoted_array_parameter_in_command"
         assert exc.value.parameter == "db.tags"
 
     def test_nested_untyped_array_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "x={{ db.untyped_array | join(',') }}", _DB_NESTED, []
-            )
+            _validate_command_template("x={{ db.untyped_array | join(',') }}", _DB_NESTED, [])
         assert exc.value.kind == "array_parameter_items_type_undetermined"
         assert exc.value.parameter == "db.untyped_array"
 
@@ -124,9 +114,7 @@ class TestNestedObjectInvalidAccess:
         # resolved so the loader must reject (per spec: schema lookup
         # failure at any level → raise).
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "psql -h {{ db.nonexistent }}", _DB_NESTED, []
-            )
+            _validate_command_template("psql -h {{ db.nonexistent }}", _DB_NESTED, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
         assert exc.value.parameter == "db.nonexistent"
 
@@ -134,9 +122,7 @@ class TestNestedObjectInvalidAccess:
         # `{{ db[user_input] }}` — subscript whose key is itself a Name
         # (or any non-Const) cannot be resolved statically. Reject in M1.
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "psql -h {{ db[user_input] }}", _DB_NESTED, []
-            )
+            _validate_command_template("psql -h {{ db[user_input] }}", _DB_NESTED, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
         assert exc.value.parameter == "db"
 
@@ -181,32 +167,24 @@ class TestIntegerSubscriptOnArray:
     def test_int_subscript_into_object_items_string_leaf_with_sh_ok(self) -> None:
         # `{{ servers[0].host | sh }}` — array → object items → string leaf
         # protected by `| sh`. Should load.
-        _validate_command_template(
-            "ping {{ servers[0].host | sh }}", _SERVERS_ARRAY, []
-        )
+        _validate_command_template("ping {{ servers[0].host | sh }}", _SERVERS_ARRAY, [])
 
     def test_int_subscript_into_object_items_string_leaf_without_sh_raises(
         self,
     ) -> None:
         # `{{ servers[0].host }}` — string leaf must flow through `| sh`.
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ servers[0].host }}", _SERVERS_ARRAY, []
-            )
+            _validate_command_template("ping {{ servers[0].host }}", _SERVERS_ARRAY, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
         assert exc.value.parameter == "servers.0.host"
 
     def test_int_subscript_into_object_items_numeric_leaf_ok(self) -> None:
         # Numeric leaf doesn't require `| sh`.
-        _validate_command_template(
-            "ping {{ servers[0].port }}", _SERVERS_ARRAY, []
-        )
+        _validate_command_template("ping {{ servers[0].port }}", _SERVERS_ARRAY, [])
 
     def test_int_subscript_then_const_string_subscript_with_sh_ok(self) -> None:
         # `{{ servers[0]['host'] | sh }}` — mixed int + str subscripts.
-        _validate_command_template(
-            "ping {{ servers[0]['host'] | sh }}", _SERVERS_ARRAY, []
-        )
+        _validate_command_template("ping {{ servers[0]['host'] | sh }}", _SERVERS_ARRAY, [])
 
 
 class TestIntegerSubscriptOnObject:
@@ -223,8 +201,6 @@ class TestIntegerSubscriptOnObject:
         # integer subscript on the object root still raises before reaching
         # the further chain.
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ db[0].host | sh }}", _DB_NESTED, []
-            )
+            _validate_command_template("ping {{ db[0].host | sh }}", _DB_NESTED, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
         assert exc.value.parameter == "db.0.host"

@@ -214,9 +214,7 @@ def _builtin_dir() -> Path:
 
     pkg_file = _inspectors_pkg.__file__
     if pkg_file is None:  # pragma: no cover - namespace packages won't ship here
-        raise RuntimeError(
-            "hostlens.inspectors has no __file__; cannot resolve builtin path"
-        )
+        raise RuntimeError("hostlens.inspectors has no __file__; cannot resolve builtin path")
     return Path(pkg_file).parent / "builtin"
 
 

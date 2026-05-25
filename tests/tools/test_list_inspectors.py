@@ -66,9 +66,7 @@ def test_list_inspectors_no_filter_returns_both_builtins_sorted() -> None:
     assert names == ["hello.echo", "system.uptime"]
     for summary in output.inspectors:
         assert summary.tags == sorted(summary.tags)
-        assert summary.compatible_target_kinds == sorted(
-            summary.compatible_target_kinds
-        )
+        assert summary.compatible_target_kinds == sorted(summary.compatible_target_kinds)
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +93,7 @@ def test_list_inspectors_target_kind_ssh_returns_both() -> None:
     ctx = _ctx(_make_inspector_registry())
 
     async def go() -> ListInspectorsOutput:
-        return await list_inspectors_handler(
-            ListInspectorsInput(target_kind="ssh"), ctx
-        )
+        return await list_inspectors_handler(ListInspectorsInput(target_kind="ssh"), ctx)
 
     output = asyncio.run(go())
     assert [s.name for s in output.inspectors] == ["hello.echo", "system.uptime"]
@@ -112,9 +108,7 @@ def test_list_inspectors_unknown_tag_returns_empty() -> None:
     ctx = _ctx(_make_inspector_registry())
 
     async def go() -> ListInspectorsOutput:
-        return await list_inspectors_handler(
-            ListInspectorsInput(tag="nonexistent"), ctx
-        )
+        return await list_inspectors_handler(ListInspectorsInput(tag="nonexistent"), ctx)
 
     output = asyncio.run(go())
     assert output.inspectors == []

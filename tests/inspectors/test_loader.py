@@ -126,9 +126,7 @@ class TestLoadManifestCore:
         assert exc.value.extra.get("line") is not None
         assert exc.value.extra.get("column") is not None
 
-    def test_pydantic_validation_error_wrapped_with_errors_list(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pydantic_validation_error_wrapped_with_errors_list(self, tmp_path: Path) -> None:
         # `targets: []` violates `min_length=1` — Pydantic raises ValidationError.
         content = (
             "name: hello.echo\n"
@@ -146,9 +144,7 @@ class TestLoadManifestCore:
         assert exc.value.errors is not None
         assert len(exc.value.errors) >= 1
 
-    def test_unclosed_template_wrapped_as_command_template_invalid(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unclosed_template_wrapped_as_command_template_invalid(self, tmp_path: Path) -> None:
         # `{{ unclosed` triggers TemplateSyntaxError. Loader MUST wrap.
         content = _minimal_manifest_yaml(command="{{ unclosed")
         path = _write(tmp_path, content)
@@ -158,9 +154,7 @@ class TestLoadManifestCore:
         # extra.line should be populated from e.lineno.
         assert exc.value.extra.get("line") is not None
 
-    def test_root_not_object_wrapped_as_validation_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_root_not_object_wrapped_as_validation_error(self, tmp_path: Path) -> None:
         # A YAML list at root — safe_load returns a list, manifest must reject.
         content = "- hello\n- world\n"
         path = _write(tmp_path, content)
@@ -190,9 +184,7 @@ class TestValidateParametersSchema:
 
     def test_top_level_string_without_constraint_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_parameters_schema(
-                {"properties": {"host": {"type": "string"}}}
-            )
+            _validate_parameters_schema({"properties": {"host": {"type": "string"}}})
         assert exc.value.kind == "parameter_missing_charset_constraint"
         assert exc.value.parameter == "host"
 
@@ -209,9 +201,7 @@ class TestValidateParametersSchema:
     def test_integer_without_constraint_ok(self) -> None:
         # Integer scalars are NOT a shell-injection vector — no constraint
         # requirement applies.
-        _validate_parameters_schema(
-            {"properties": {"port": {"type": "integer"}}}
-        )
+        _validate_parameters_schema({"properties": {"port": {"type": "integer"}}})
 
     def test_nested_object_string_without_constraint_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
@@ -264,11 +254,7 @@ class TestValidateParametersSchema:
     def test_array_integer_items_ok(self) -> None:
         # Array of integers — not a shell-injection vector.
         _validate_parameters_schema(
-            {
-                "properties": {
-                    "ports": {"type": "array", "items": {"type": "integer"}}
-                }
-            }
+            {"properties": {"ports": {"type": "array", "items": {"type": "integer"}}}}
         )
 
 
@@ -288,11 +274,7 @@ _ENDPOINTS_STR_ARR = {
         }
     }
 }
-_PORTS_INT_ARR = {
-    "properties": {
-        "ports": {"type": "array", "items": {"type": "integer"}}
-    }
-}
+_PORTS_INT_ARR = {"properties": {"ports": {"type": "array", "items": {"type": "integer"}}}}
 
 
 class TestValidateCommandTemplateString:
@@ -311,16 +293,12 @@ class TestValidateCommandTemplateString:
         # `| default('')` does NOT count as `| sh` — the filter chain must
         # be traversed and explicit `sh` required.
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ host | default('localhost') }}", _HOST_STRING, []
-            )
+            _validate_command_template("ping {{ host | default('localhost') }}", _HOST_STRING, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
 
     def test_default_then_sh_ok(self) -> None:
         # `| default('') | sh` IS acceptable — the chain DOES contain sh.
-        _validate_command_template(
-            "ping {{ host | default('localhost') | sh }}", _HOST_STRING, []
-        )
+        _validate_command_template("ping {{ host | default('localhost') | sh }}", _HOST_STRING, [])
 
     def test_g_if_block_bare_reference_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
@@ -333,9 +311,7 @@ class TestValidateCommandTemplateString:
 
     def test_o_condexpr_ternary_without_sh_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ host if host else 'localhost' }}", _HOST_STRING, []
-            )
+            _validate_command_template("ping {{ host if host else 'localhost' }}", _HOST_STRING, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
 
 
@@ -348,9 +324,7 @@ class TestValidateCommandTemplateNumeric:
 class TestValidateCommandTemplateSecrets:
     def test_e_secret_in_direct_interpolation_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "psql -W {{ PGPASSWORD }}", None, ["PGPASSWORD"]
-            )
+            _validate_command_template("psql -W {{ PGPASSWORD }}", None, ["PGPASSWORD"])
         assert exc.value.kind == "secret_inlined_in_command"
         assert exc.value.secret == "PGPASSWORD"
 
@@ -358,17 +332,13 @@ class TestValidateCommandTemplateSecrets:
         # `{{ env['PGPASSWORD'] }}` — secret name appears as a Const arg
         # of a Getitem expression. Loader's Pass 1 catches this.
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "psql {{ env['PGPASSWORD'] }}", None, ["PGPASSWORD"]
-            )
+            _validate_command_template("psql {{ env['PGPASSWORD'] }}", None, ["PGPASSWORD"])
         assert exc.value.kind == "secret_inlined_in_command"
 
     def test_n_shell_dollar_literal_ok(self) -> None:
         # `$PGPASSWORD` is shell variable expansion, NOT Jinja2 interpolation.
         # Loader must NOT raise.
-        _validate_command_template(
-            "PGPASSWORD=$PGPASSWORD psql -W", None, ["PGPASSWORD"]
-        )
+        _validate_command_template("PGPASSWORD=$PGPASSWORD psql -W", None, ["PGPASSWORD"])
 
 
 class TestValidateCommandTemplateArray:
@@ -381,9 +351,7 @@ class TestValidateCommandTemplateArray:
 
     def test_i_join_without_map_sh_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ endpoints | join(' ') }}", _ENDPOINTS_STR_ARR, []
-            )
+            _validate_command_template("ping {{ endpoints | join(' ') }}", _ENDPOINTS_STR_ARR, [])
         assert exc.value.kind == "unquoted_array_parameter_in_command"
         assert exc.value.parameter == "endpoints"
 
@@ -399,29 +367,21 @@ class TestValidateCommandTemplateArray:
         assert exc.value.kind == "unquoted_array_parameter_in_command"
 
     def test_k_subscript_after_array_with_sh_ok(self) -> None:
-        _validate_command_template(
-            "ping {{ endpoints[0] | sh }}", _ENDPOINTS_STR_ARR, []
-        )
+        _validate_command_template("ping {{ endpoints[0] | sh }}", _ENDPOINTS_STR_ARR, [])
 
     def test_k_subscript_without_sh_raises(self) -> None:
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ endpoints[0] }}", _ENDPOINTS_STR_ARR, []
-            )
+            _validate_command_template("ping {{ endpoints[0] }}", _ENDPOINTS_STR_ARR, [])
         assert exc.value.kind == "unquoted_parameter_in_command"
 
     def test_l_integer_array_join_without_map_ok(self) -> None:
-        _validate_command_template(
-            "ports={{ ports | join(',') }}", _PORTS_INT_ARR, []
-        )
+        _validate_command_template("ports={{ ports | join(',') }}", _PORTS_INT_ARR, [])
 
     def test_p_array_missing_items_raises(self) -> None:
         # `parameters.endpoints: { type: array }` with NO `items` declaration.
         schema = {"properties": {"endpoints": {"type": "array"}}}
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ endpoints | join(' ') }}", schema, []
-            )
+            _validate_command_template("ping {{ endpoints | join(' ') }}", schema, [])
         assert exc.value.kind == "array_parameter_items_type_undetermined"
         assert exc.value.parameter == "endpoints"
 
@@ -435,9 +395,7 @@ class TestValidateCommandTemplateArray:
             }
         }
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ endpoints | join(' ') }}", schema, []
-            )
+            _validate_command_template("ping {{ endpoints | join(' ') }}", schema, [])
         assert exc.value.kind == "array_parameter_items_type_undetermined"
 
     def test_r_array_items_oneof_raises(self) -> None:
@@ -455,9 +413,7 @@ class TestValidateCommandTemplateArray:
             }
         }
         with pytest.raises(InspectorError) as exc:
-            _validate_command_template(
-                "ping {{ endpoints | join(' ') }}", schema, []
-            )
+            _validate_command_template("ping {{ endpoints | join(' ') }}", schema, [])
         assert exc.value.kind == "array_parameter_items_type_undetermined"
 
 
@@ -519,9 +475,7 @@ class TestValidateFindings:
 
 
 class TestLoaderOrderingEnd2End:
-    def test_pydantic_runs_before_command_template_walk(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pydantic_runs_before_command_template_walk(self, tmp_path: Path) -> None:
         # Manifest has TWO problems: targets=[] (Pydantic) AND missing
         # sh filter (command-template). Pydantic should fire first.
         content = (
@@ -545,9 +499,7 @@ class TestLoaderOrderingEnd2End:
         # Must be the Pydantic-layer error, not unquoted_parameter_in_command.
         assert exc.value.kind == "manifest_validation_error"
 
-    def test_pydantic_passes_then_command_template_fires(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pydantic_passes_then_command_template_fires(self, tmp_path: Path) -> None:
         # Manifest passes Pydantic but trips _validate_command_template.
         content = (
             "name: hello.echo\n"
@@ -570,9 +522,7 @@ class TestLoaderOrderingEnd2End:
         assert exc.value.kind == "unquoted_parameter_in_command"
         assert exc.value.parameter == "host"
 
-    def test_pydantic_passes_then_parameters_charset_check_fires(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pydantic_passes_then_parameters_charset_check_fires(self, tmp_path: Path) -> None:
         # parameters-charset check fires before command-template walk.
         content = (
             "name: hello.echo\n"

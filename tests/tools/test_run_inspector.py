@@ -246,9 +246,7 @@ def test_run_inspector_target_not_found_raises_tool_error() -> None:
 
     async def go() -> None:
         await run_inspector_handler(
-            RunInspectorInput(
-                target_name="does-not-exist", inspector_name="hello.echo"
-            ),
+            RunInspectorInput(target_name="does-not-exist", inspector_name="hello.echo"),
             ctx,
         )
 
@@ -272,9 +270,7 @@ def test_run_inspector_inspector_not_found_raises_tool_error() -> None:
 
     async def go() -> None:
         await run_inspector_handler(
-            RunInspectorInput(
-                target_name="local-host", inspector_name="does.not.exist"
-            ),
+            RunInspectorInput(target_name="local-host", inspector_name="does.not.exist"),
             ctx,
         )
 

@@ -76,9 +76,7 @@ def _make_target(
     target = MagicMock()
     target.name = name
     target.type = type_
-    target.capabilities = (
-        capabilities if capabilities is not None else {Capability.SHELL}
-    )
+    target.capabilities = capabilities if capabilities is not None else {Capability.SHELL}
     if exec_side_effect is not None:
         target.exec = AsyncMock(side_effect=exec_side_effect)
     else:
@@ -215,9 +213,7 @@ async def test_status_exception_render_failed_sh_filter_empty_list() -> None:
     runner = _runner()
     manifest = _make_manifest(command="ping {{ endpoints | sh }}")
     target = _make_target()
-    result = await runner.run(
-        manifest, target, parameters={"endpoints": []}
-    )
+    result = await runner.run(manifest, target, parameters={"endpoints": []})
     assert result.status == "exception"
     assert result.error is not None
     assert result.error.startswith("render_failed:")
@@ -339,16 +335,12 @@ async def test_parameter_validation_type_confusion_attack_blocked() -> None:
         command="psql -p {{ port }}",
         parameters={
             "type": "object",
-            "properties": {
-                "port": {"type": "integer", "minimum": 1, "maximum": 65535}
-            },
+            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}},
             "required": ["port"],
         },
     )
     target = _make_target()
-    result = await runner.run(
-        manifest, target, parameters={"port": "5432; rm -rf /"}
-    )
+    result = await runner.run(manifest, target, parameters={"port": "5432; rm -rf /"})
     assert result.status == "exception"
     assert result.error is not None
     assert result.error.startswith("parameter_validation_failed:")
@@ -363,9 +355,7 @@ async def test_parameter_validation_missing_required_parameter() -> None:
         command="ping {{ host }}",
         parameters={
             "type": "object",
-            "properties": {
-                "host": {"type": "string", "pattern": "^[a-zA-Z0-9.-]+$"}
-            },
+            "properties": {"host": {"type": "string", "pattern": "^[a-zA-Z0-9.-]+$"}},
             "required": ["host"],
         },
     )
@@ -389,16 +379,12 @@ async def test_parameter_validation_pattern_violation() -> None:
         command="ping {{ host | sh }}",
         parameters={
             "type": "object",
-            "properties": {
-                "host": {"type": "string", "pattern": "^[a-zA-Z0-9.-]+$"}
-            },
+            "properties": {"host": {"type": "string", "pattern": "^[a-zA-Z0-9.-]+$"}},
             "required": ["host"],
         },
     )
     target = _make_target()
-    result = await runner.run(
-        manifest, target, parameters={"host": "'; rm -rf /"}
-    )
+    result = await runner.run(manifest, target, parameters={"host": "'; rm -rf /"})
     assert result.status == "exception"
     assert result.error is not None
     assert result.error.startswith("parameter_validation_failed:")
@@ -418,9 +404,7 @@ async def test_parameter_validation_valid_integer_passes() -> None:
         command="psql -p {{ port }}",
         parameters={
             "type": "object",
-            "properties": {
-                "port": {"type": "integer", "minimum": 1, "maximum": 65535}
-            },
+            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}},
             "required": ["port"],
         },
     )
@@ -442,9 +426,7 @@ async def test_parameter_validation_skipped_when_manifest_has_no_parameters() ->
     runner = _runner()
     manifest = _make_manifest()  # parameters: None (default)
     target = _make_target()
-    result = await runner.run(
-        manifest, target, parameters={"anything": "goes"}
-    )
+    result = await runner.run(manifest, target, parameters={"anything": "goes"})
     assert result.status == "ok"
     target.exec.assert_awaited_once()
 
@@ -562,9 +544,7 @@ async def test_cancel_set_mid_run_raises_cancelled_error() -> None:
     manifest = _make_manifest()
     cancel = asyncio.Event()
 
-    async def _exec_then_cancel(
-        cmd: str, *, timeout: int, env: Any = None
-    ) -> ExecResult:
+    async def _exec_then_cancel(cmd: str, *, timeout: int, env: Any = None) -> ExecResult:
         cancel.set()
         return ExecResult(
             exit_code=0,

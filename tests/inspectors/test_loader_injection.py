@@ -145,9 +145,7 @@ def test_sh_filter_neutralises_injection(label: str, payload: str) -> None:
     PAYLOADS,
     ids=[label for label, _ in PAYLOADS],
 )
-def test_sh_filter_inside_command_neutralises_injection(
-    label: str, payload: str
-) -> None:
+def test_sh_filter_inside_command_neutralises_injection(label: str, payload: str) -> None:
     """Same payload matrix, but exercised through a realistic command
     template (``ping {{ x | sh }}``) so the test asserts the safety
     invariant holds at the full-command rendering level — not just at the
@@ -159,8 +157,7 @@ def test_sh_filter_inside_command_neutralises_injection(
     # The rendered command must start with the literal `ping ` prefix and
     # the quoted payload must be the only thing after.
     assert rendered.startswith("ping "), (
-        f"payload={label!r} command rendering missing prefix.\n"
-        f"  rendered (repr): {rendered!r}"
+        f"payload={label!r} command rendering missing prefix.\n  rendered (repr): {rendered!r}"
     )
     quoted_part = rendered[len("ping ") :]
     tokens = shlex.split(rendered)

@@ -122,17 +122,13 @@ def test_ssh_idle_timeout_seconds_env_var_override(
 
 def test_inspectors_search_paths_default() -> None:
     settings = load_settings()
-    assert settings.inspectors_search_paths == [
-        Path("~/.config/hostlens/inspectors").expanduser()
-    ]
+    assert settings.inspectors_search_paths == [Path("~/.config/hostlens/inspectors").expanduser()]
 
 
 def test_inspectors_search_paths_env_var_override_single(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(
-        "HOSTLENS_INSPECTORS_SEARCH_PATHS", "/etc/hostlens/inspectors"
-    )
+    monkeypatch.setenv("HOSTLENS_INSPECTORS_SEARCH_PATHS", "/etc/hostlens/inspectors")
     settings = load_settings()
     assert settings.inspectors_search_paths == [Path("/etc/hostlens/inspectors")]
 

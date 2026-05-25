@@ -28,9 +28,7 @@ from hostlens.tools.schemas.list_targets import ListTargetsInput
 
 
 def _ctx(registry: TargetRegistry) -> ToolContext:
-    inspector_registry = build_registry_from_search_paths(
-        [], settings=Settings()
-    ).registry
+    inspector_registry = build_registry_from_search_paths([], settings=Settings()).registry
     return ToolContext(
         target_registry=registry,
         inspector_registry=inspector_registry,

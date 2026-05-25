@@ -58,8 +58,6 @@ def __getattr__(name: str) -> Any:
 
         value = registry.ToolRegistry
     else:
-        raise AttributeError(
-            f"module {__name__!r} has no attribute {name!r}"
-        )
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     globals()[name] = value
     return value

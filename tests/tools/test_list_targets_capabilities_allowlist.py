@@ -87,9 +87,7 @@ def _make_registry(target: _FakeTarget) -> TargetRegistry:
 
 
 def _ctx_with(target: _FakeTarget) -> ToolContext:
-    inspector_registry = build_registry_from_search_paths(
-        [], settings=Settings()
-    ).registry
+    inspector_registry = build_registry_from_search_paths([], settings=Settings()).registry
     return ToolContext(
         target_registry=_make_registry(target),
         inspector_registry=inspector_registry,

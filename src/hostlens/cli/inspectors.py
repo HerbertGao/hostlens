@@ -30,8 +30,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from hostlens.core.config import Settings
-from hostlens.core.exceptions import InspectorError
+from hostlens.core.config import load_settings
+from hostlens.core.exceptions import ConfigError, InspectorError
 from hostlens.inspectors.registry import (
     RegistryBuildResult,
     build_registry_from_search_paths,
@@ -75,7 +75,11 @@ def _build_registry_or_fatal(verb: str) -> RegistryBuildResult:
     sensitive can show up in ``str(err)``.
     """
 
-    settings = Settings()
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        typer.echo(f"hostlens inspectors {verb}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     try:
         return build_registry_from_search_paths(
             settings.inspectors_search_paths,
@@ -145,9 +149,7 @@ def list_cmd(
         summaries = [s for s in summaries if target_kind in s.compatible_target_kinds]
 
     if json_output:
-        sys.stdout.write(
-            json.dumps([s.model_dump() for s in summaries], indent=2)
-        )
+        sys.stdout.write(json.dumps([s.model_dump() for s in summaries], indent=2))
         sys.stdout.write("\n")
         sys.stdout.flush()
     else:

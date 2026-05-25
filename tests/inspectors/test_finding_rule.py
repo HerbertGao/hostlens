@@ -76,9 +76,7 @@ class TestFindingRuleWhen:
 
     def test_when_referencing_unbound_name_accepted(self) -> None:
         # NameNotDefined / FunctionNotDefined at empty context = "compiles".
-        rule = FindingRule(
-            when="len(processes) > 5", severity="info", message="too many"
-        )
+        rule = FindingRule(when="len(processes) > 5", severity="info", message="too many")
         assert rule.when == "len(processes) > 5"
 
     def test_when_lambda_rejected(self) -> None:
@@ -97,9 +95,7 @@ class TestFindingRuleAggregateMessage:
                 severity="info",
                 message="Found {p.command} using lots of CPU",
             )
-        assert (
-            "finding_message_invalid_aggregate_ref" in exc_info.value.errors()[0]["msg"]
-        )
+        assert "finding_message_invalid_aggregate_ref" in exc_info.value.errors()[0]["msg"]
 
     def test_aggregate_mode_with_plain_field_ref_accepted(self) -> None:
         # `{name}` (no dot) is valid in aggregate mode — refers to an output
@@ -149,9 +145,7 @@ class TestFindingRuleStaticAstGate:
 
     def test_valid_expression_accepted(self) -> None:
         # Sanity: a benign `len(...)` reference must still pass.
-        rule = FindingRule(
-            when="len(processes) > 0", severity="info", message="x"
-        )
+        rule = FindingRule(when="len(processes) > 0", severity="info", message="x")
         assert rule.when == "len(processes) > 0"
 
     @pytest.mark.parametrize(

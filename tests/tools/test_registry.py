@@ -72,9 +72,7 @@ def _make_ctx() -> ToolContext:
     # — only builtin inspectors are loaded (the registry tests don't care
     # about inspector content; they just need the real type so
     # `ToolContext` field validation succeeds).
-    inspector_registry = build_registry_from_search_paths(
-        [], settings=Settings()
-    ).registry
+    inspector_registry = build_registry_from_search_paths([], settings=Settings()).registry
     return ToolContext(
         target_registry=TargetRegistry(),
         inspector_registry=inspector_registry,

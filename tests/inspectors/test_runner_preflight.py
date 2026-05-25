@@ -144,9 +144,15 @@ async def test_capability_step_runs_before_binary_step() -> None:
     )
     target = _make_target(
         capabilities={Capability.SHELL},
-        exec_results={"command -v nginx": ExecResult(
-            exit_code=127, stdout="", stderr="", duration_seconds=0.01, timed_out=False,
-        )},
+        exec_results={
+            "command -v nginx": ExecResult(
+                exit_code=127,
+                stdout="",
+                stderr="",
+                duration_seconds=0.01,
+                timed_out=False,
+            )
+        },
     )
     status, missing, _err = await runner._preflight(manifest, target, allow_privileged=False)
     assert status == "requires_unmet"
@@ -218,7 +224,11 @@ async def test_binary_missing() -> None:
         capabilities={Capability.SHELL},
         exec_results={
             "command -v nginx": ExecResult(
-                exit_code=1, stdout="", stderr="", duration_seconds=0.01, timed_out=False,
+                exit_code=1,
+                stdout="",
+                stderr="",
+                duration_seconds=0.01,
+                timed_out=False,
             ),
         },
     )
@@ -252,7 +262,11 @@ async def test_file_missing() -> None:
         capabilities={Capability.SHELL},
         exec_results={
             "/etc/nginx/nginx.conf": ExecResult(
-                exit_code=1, stdout="", stderr="", duration_seconds=0.01, timed_out=False,
+                exit_code=1,
+                stdout="",
+                stderr="",
+                duration_seconds=0.01,
+                timed_out=False,
             ),
         },
     )
@@ -368,9 +382,7 @@ async def test_target_error_in_binary_probe_maps_to_target_unreachable() -> None
     runner = _runner()
     manifest = _make_manifest(requires_binaries=["nginx"])
     target = _make_target_raising(kind="ssh_connection_lost")
-    status, missing, err = await runner._preflight(
-        manifest, target, allow_privileged=False
-    )
+    status, missing, err = await runner._preflight(manifest, target, allow_privileged=False)
     assert status == "target_unreachable"
     assert missing == []
     assert err == "ssh_connection_lost"
@@ -380,9 +392,7 @@ async def test_target_error_in_file_probe_maps_to_target_unreachable() -> None:
     runner = _runner()
     manifest = _make_manifest(requires_files=["/etc/nginx/nginx.conf"])
     target = _make_target_raising(kind="ssh_connection_lost")
-    status, missing, err = await runner._preflight(
-        manifest, target, allow_privileged=False
-    )
+    status, missing, err = await runner._preflight(manifest, target, allow_privileged=False)
     assert status == "target_unreachable"
     assert missing == []
     assert err == "ssh_connection_lost"

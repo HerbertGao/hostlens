@@ -67,20 +67,41 @@ _FORBIDDEN_AST_NODES: tuple[type[ast.AST], ...] = (
 _FORBIDDEN_NAMES: frozenset[str] = frozenset(
     {
         # Code-execution / introspection primitives
-        "eval", "exec", "compile", "open", "globals", "locals", "vars", "dir",
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "globals",
+        "locals",
+        "vars",
+        "dir",
         "__import__",
         # Attribute indirection — bypass dunder restrictions by string
-        "getattr", "setattr", "delattr", "hasattr",
+        "getattr",
+        "setattr",
+        "delattr",
+        "hasattr",
         # Reflection / object identity
-        "type", "id", "hash", "repr",
+        "type",
+        "id",
+        "hash",
+        "repr",
         # Iteration primitives — can drive arbitrary __next__ side effects
-        "iter", "next",
+        "iter",
+        "next",
         # IO primitives
-        "print", "input", "breakpoint",
+        "print",
+        "input",
+        "breakpoint",
         # Memory / buffer constructors — exposing C-level conversions
-        "memoryview", "bytearray", "bytes",
+        "memoryview",
+        "bytearray",
+        "bytes",
         # Descriptor / class machinery — escape paths via method binding
-        "classmethod", "staticmethod", "property", "super",
+        "classmethod",
+        "staticmethod",
+        "property",
+        "super",
     }
 )
 
@@ -123,9 +144,7 @@ def validate_ast(expr: str) -> None:
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
-        raise simpleeval.FeatureNotAvailable(
-            f"expression failed to parse: {exc}"
-        ) from exc
+        raise simpleeval.FeatureNotAvailable(f"expression failed to parse: {exc}") from exc
 
     for node in ast.walk(tree):
         if isinstance(node, _FORBIDDEN_AST_NODES):

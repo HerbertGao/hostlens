@@ -599,8 +599,7 @@ def _emit_remediation(report: DoctorReport, stderr: Console) -> None:
     # for each failed manifest; ``missing_secrets`` stays warn-only.
     for err_row in report.inspectors.errors:
         stderr.print(
-            f"hint: inspector load error: {err_row.path}: {err_row.kind}: "
-            f"{err_row.detail}",
+            f"hint: inspector load error: {err_row.path}: {err_row.kind}: {err_row.detail}",
         )
     for secret_row in report.inspectors.missing_secrets:
         stderr.print(

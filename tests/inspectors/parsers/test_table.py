@@ -54,9 +54,7 @@ class TestParseTableHeaderSkipVariants:
 class TestParseTableMalformedRows:
     def test_row_with_too_few_columns_is_skipped(self) -> None:
         stdout = "PID USER CMD\n1 root bash\nBROKEN\n3 admin sshd\n"
-        spec = ParseSpec(
-            format="table", columns=["pid", "user", "cmd"], skip_header_rows=1
-        )
+        spec = ParseSpec(format="table", columns=["pid", "user", "cmd"], skip_header_rows=1)
         result = parse_table(stdout, spec)
         assert result == {
             "rows": [
@@ -70,20 +68,14 @@ class TestParseTableMalformedRows:
         # last field — `python -c "print('x y z')"` becomes (pid, user, cmd=
         # "z extra trailing data").
         stdout = "PID USER CMD\n1 root python -c print('hello world')\n"
-        spec = ParseSpec(
-            format="table", columns=["pid", "user", "cmd"], skip_header_rows=1
-        )
+        spec = ParseSpec(format="table", columns=["pid", "user", "cmd"], skip_header_rows=1)
         result = parse_table(stdout, spec)
         assert result == {
-            "rows": [
-                {"pid": "1", "user": "root", "cmd": "python -c print('hello world')"}
-            ]
+            "rows": [{"pid": "1", "user": "root", "cmd": "python -c print('hello world')"}]
         }
 
 
 class TestParseTableEmpty:
     def test_empty_stdout_returns_empty_rows(self) -> None:
-        spec = ParseSpec(
-            format="table", columns=["pid", "user"], skip_header_rows=1
-        )
+        spec = ParseSpec(format="table", columns=["pid", "user"], skip_header_rows=1)
         assert parse_table("", spec) == {"rows": []}

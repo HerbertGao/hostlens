@@ -86,31 +86,26 @@ class TestInspectorResultOk:
 class TestInspectorResultRequiresUnmet:
     def test_requires_unmet_with_missing_accepted(self) -> None:
         r = InspectorResult(
-            status="requires_unmet", missing=["env:PGPASSWORD"], **_base_kwargs()  # type: ignore[arg-type]
+            status="requires_unmet",
+            missing=["env:PGPASSWORD"],
+            **_base_kwargs(),  # type: ignore[arg-type]
         )
         assert r.missing == ["env:PGPASSWORD"]
 
     def test_requires_unmet_without_missing_rejected(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
             InspectorResult(status="requires_unmet", **_base_kwargs())  # type: ignore[arg-type]
-        assert (
-            "requires_unmet_status_without_missing"
-            in exc_info.value.errors()[0]["msg"]
-        )
+        assert "requires_unmet_status_without_missing" in exc_info.value.errors()[0]["msg"]
 
 
 class TestInspectorResultExceptionStatuses:
-    @pytest.mark.parametrize(
-        "status", ["timeout", "target_unreachable", "exception"]
-    )
+    @pytest.mark.parametrize("status", ["timeout", "target_unreachable", "exception"])
     def test_status_without_missing_accepted(self, status: str) -> None:
         r = InspectorResult(status=status, error="something", **_base_kwargs())  # type: ignore[arg-type]
         assert r.status == status
         assert r.missing == []
 
-    @pytest.mark.parametrize(
-        "status", ["timeout", "target_unreachable", "exception"]
-    )
+    @pytest.mark.parametrize("status", ["timeout", "target_unreachable", "exception"])
     def test_status_with_missing_rejected(self, status: str) -> None:
         with pytest.raises(ValidationError) as exc_info:
             InspectorResult(

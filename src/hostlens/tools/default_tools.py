@@ -173,10 +173,7 @@ async def list_inspectors_handler(
     for summary in raw_summaries:
         if args.tag is not None and args.tag not in summary.tags:
             continue
-        if (
-            args.target_kind is not None
-            and args.target_kind not in summary.compatible_target_kinds
-        ):
+        if args.target_kind is not None and args.target_kind not in summary.compatible_target_kinds:
             continue
         summaries.append(summary)
     return ListInspectorsOutput(inspectors=summaries)

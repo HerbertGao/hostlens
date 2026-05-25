@@ -293,11 +293,7 @@ def _chain_is_map_sh_then_join(chain: list[nodes.Filter]) -> bool:
     for i, f in enumerate(chain):
         if f.name == "map" and map_index is None:
             # `map('sh')` — first positional arg must be the const 'sh'.
-            if (
-                len(f.args) >= 1
-                and isinstance(f.args[0], nodes.Const)
-                and f.args[0].value == "sh"
-            ):
+            if len(f.args) >= 1 and isinstance(f.args[0], nodes.Const) and f.args[0].value == "sh":
                 map_index = i
         elif f.name == "join" and join_index is None:
             join_index = i
@@ -380,11 +376,7 @@ def _validate_command_template(
     # ---- Pass 1 — every Getitem whose const-arg matches a secret name ----
     for getitem in ast.find_all(nodes.Getitem):
         arg = getitem.arg
-        if (
-            isinstance(arg, nodes.Const)
-            and isinstance(arg.value, str)
-            and arg.value in secret_set
-        ):
+        if isinstance(arg, nodes.Const) and isinstance(arg.value, str) and arg.value in secret_set:
             raise InspectorError(
                 kind="secret_inlined_in_command",
                 path=path,
@@ -430,11 +422,12 @@ def _validate_command_template(
             # schema. Otherwise fall back to the simple element-type check.
             assert isinstance(parent, nodes.Getitem)  # narrow for mypy
             grandparent = parents.get(id(parent))
-            chain_continues = isinstance(grandparent, (nodes.Getattr, nodes.Getitem)) and grandparent.node is parent
+            chain_continues = (
+                isinstance(grandparent, (nodes.Getattr, nodes.Getitem))
+                and grandparent.node is parent
+            )
             if chain_continues:
-                _validate_object_member_access(
-                    name_node, schema, name, parents, path=path
-                )
+                _validate_object_member_access(name_node, schema, name, parents, path=path)
                 continue
             items_class = _classify_array_items(schema, name)
             if items_class == "undetermined":
@@ -499,9 +492,7 @@ def _validate_command_template(
             # `{{ db['host'] }}` / `{{ db.deep.host }}`) require the leaf
             # type to flow through the same string / array-of-strings
             # gating as a top-level parameter — handled below.
-            _validate_object_member_access(
-                name_node, schema, name, parents, path=path
-            )
+            _validate_object_member_access(name_node, schema, name, parents, path=path)
             continue
 
         # Numeric / boolean scalar parameters — no filter requirement.
@@ -556,7 +547,11 @@ def _walk_member_chain(
                 steps.append((arg.value, parent))
                 current = parent
                 continue
-            if isinstance(arg, nodes.Const) and isinstance(arg.value, int) and not isinstance(arg.value, bool):
+            if (
+                isinstance(arg, nodes.Const)
+                and isinstance(arg.value, int)
+                and not isinstance(arg.value, bool)
+            ):
                 # Integer subscript — resolution to `array.items` or
                 # `unquoted_parameter_in_command` happens in
                 # `_resolve_member_leaf` against the parent schema at this

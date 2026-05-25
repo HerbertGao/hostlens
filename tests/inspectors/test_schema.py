@@ -230,9 +230,7 @@ class TestInspectorManifestRequiresFiles:
 
 
 class TestInspectorManifestCapabilities:
-    @pytest.mark.parametrize(
-        "cap", ["shell", "file_read", "ssh", "systemd", "docker_cli"]
-    )
+    @pytest.mark.parametrize("cap", ["shell", "file_read", "ssh", "systemd", "docker_cli"])
     def test_known_capabilities_accepted(self, cap: str) -> None:
         kwargs = _valid_manifest_kwargs()
         kwargs["requires_capabilities"] = [cap]
@@ -258,9 +256,7 @@ class TestInspectorManifestOutputSchema:
         kwargs["output_schema"] = {"type": "array"}
         with pytest.raises(ValidationError) as exc_info:
             InspectorManifest(**kwargs)  # type: ignore[arg-type]
-        assert (
-            "output_schema_top_level_not_object" in exc_info.value.errors()[0]["msg"]
-        )
+        assert "output_schema_top_level_not_object" in exc_info.value.errors()[0]["msg"]
 
 
 # --------------------------------------------------------------------------- #
@@ -382,10 +378,7 @@ class TestRawExtractRegexLayers:
                 raw_extract_regex=r"(\d+) (?P<y>\d+)",
                 columns=["y"],
             )
-        assert (
-            "raw_extract_regex_anonymous_groups_forbidden"
-            in exc_info.value.errors()[0]["msg"]
-        )
+        assert "raw_extract_regex_anonymous_groups_forbidden" in exc_info.value.errors()[0]["msg"]
 
     def test_named_group_count_mismatch_rejected(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -394,10 +387,7 @@ class TestRawExtractRegexLayers:
                 raw_extract_regex=r"(?P<a>\d+)",
                 columns=["a", "b"],
             )
-        assert (
-            "raw_extract_regex_column_count_mismatch"
-            in exc_info.value.errors()[0]["msg"]
-        )
+        assert "raw_extract_regex_column_count_mismatch" in exc_info.value.errors()[0]["msg"]
 
     def test_safe_regex_passes(self) -> None:
         p = ParseSpec(

@@ -57,9 +57,7 @@ def log_capture() -> Generator[LogCapture, None, None]:
 
 def _ctx_with(config: TargetsConfig) -> ToolContext:
     registry = build_registry_from_config(config, Settings())
-    inspector_registry = build_registry_from_search_paths(
-        [], settings=Settings()
-    ).registry
+    inspector_registry = build_registry_from_search_paths([], settings=Settings()).registry
     return ToolContext(
         target_registry=registry,
         inspector_registry=inspector_registry,

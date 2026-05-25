@@ -168,10 +168,7 @@ async def test_when_returns_zero_no_finding() -> None:
 
 async def test_findings_preserve_manifest_order() -> None:
     runner = _runner()
-    rules = [
-        FindingRule(when="x > 0", severity="info", message=f"{i}")
-        for i in range(5)
-    ]
+    rules = [FindingRule(when="x > 0", severity="info", message=f"{i}") for i in range(5)]
     output = {"x": 1}
     findings = await runner._evaluate_findings(rules, output, None)
     assert [f.message for f in findings] == ["0", "1", "2", "3", "4"]
@@ -190,9 +187,7 @@ async def test_parameters_merge_into_context() -> None:
         message="threshold is {threshold}",
     )
     output: dict[str, object] = {}
-    findings = await runner._evaluate_findings(
-        [rule], output, {"threshold": 10}
-    )
+    findings = await runner._evaluate_findings([rule], output, {"threshold": 10})
     assert len(findings) == 1
     assert findings[0].message == "threshold is 10"
 
