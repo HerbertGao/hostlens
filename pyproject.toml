@@ -51,6 +51,7 @@ dev = [
     "pytest-docker>=3.1,<4",
     "pytest-rerunfailures>=14.0,<16",
     "psutil>=5.9",
+    "types-PyYAML",
 ]
 mcp = []
 docs = []
