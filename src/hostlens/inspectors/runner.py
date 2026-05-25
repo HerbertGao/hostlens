@@ -30,6 +30,7 @@ contain user secrets that have not been declared as such.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
@@ -209,10 +210,32 @@ class InspectorRunner:
         # defense-in-depth path for callers that bypass Pydantic via
         # ``model_construct`` (same shape as the ``output_schema`` defense at
         # step 9-10).
+        #
+        # Pipeline order (when manifest.parameters is non-None):
+        #
+        #   1. ``_apply_schema_defaults`` — inject any ``default`` declared on a
+        #      top-level property the caller omitted. Defaults come from the
+        #      manifest author (already type-correct per the schema), so they
+        #      bypass step 2.
+        #   2. ``_coerce_parameters`` — narrow string-typed caller values to
+        #      ``integer`` / ``number`` / ``boolean`` where the schema asks for
+        #      them. ``RunInspectorInput.parameters`` is locked to
+        #      ``dict[str, str]`` for M2, but typed manifests must still work.
+        #      Coercion is intentionally permissive (a failed cast leaves the
+        #      value as a string so the next step rejects it cleanly).
+        #   3. ``jsonschema.validate`` — final gate. Any value that survived
+        #      coercion in the wrong type still fails here, so the
+        #      ``"5432; rm -rf /"`` payload still cannot reach ``target.exec``.
+        #
+        # Both helpers are one-level walks over ``properties``; nested-object
+        # defaults / coercion are out of M1 scope.
         _check_cancel(cancel)
+        effective_parameters: dict[str, Any] = dict(parameters or {})
         if manifest.parameters is not None:
+            effective_parameters = _apply_schema_defaults(effective_parameters, manifest.parameters)
+            effective_parameters = _coerce_parameters(effective_parameters, manifest.parameters)
             try:
-                jsonschema.validate(parameters or {}, manifest.parameters)
+                jsonschema.validate(effective_parameters, manifest.parameters)
             except jsonschema.ValidationError as exc:
                 return self._finish(
                     manifest=manifest,
@@ -249,7 +272,7 @@ class InspectorRunner:
                 )
 
         try:
-            cmd, secrets_env = await self._render_command(manifest, parameters)
+            cmd, secrets_env = await self._render_command(manifest, effective_parameters)
         except (jinja2.UndefinedError, jinja2.TemplateError) as exc:
             return self._finish(
                 manifest=manifest,
@@ -386,7 +409,7 @@ class InspectorRunner:
 
         # ---- Step 11: evaluate findings ------------------------------ #
         _check_cancel(cancel)
-        findings = await self._evaluate_findings(manifest.findings, output, parameters)
+        findings = await self._evaluate_findings(manifest.findings, output, effective_parameters)
 
         return self._finish(
             manifest=manifest,
@@ -768,6 +791,85 @@ def _check_cancel(cancel: asyncio.Event | None) -> None:
 
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError()
+
+
+def _apply_schema_defaults(params: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Inject top-level ``default`` values from ``schema.properties`` into ``params``.
+
+    Standard ``jsonschema.validate`` only validates — it never fills defaults. Without
+    this helper a manifest like ``properties: {expected_status: {default: 200}}`` would
+    pass validation when the caller omits ``expected_status``, but the variable would
+    be missing from the Jinja2 template namespace and the DSL ``when:`` evaluation
+    context, breaking the manifest contract.
+
+    Returns a new dict; never mutates the input. Caller-supplied keys always win over
+    defaults (no override). Non-dict / unstructured schemas are tolerated (returns a
+    copy of ``params`` unchanged) — this is one-level only; nested-object defaults
+    are out of M1 scope.
+    """
+
+    merged = dict(params)
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return merged
+    for prop_name, prop_schema in properties.items():
+        if prop_name in merged:
+            continue
+        if not isinstance(prop_schema, dict):
+            continue
+        if "default" not in prop_schema:
+            continue
+        merged[prop_name] = prop_schema["default"]
+    return merged
+
+
+def _coerce_parameters(params: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Narrow string-typed caller values to ``integer`` / ``number`` / ``boolean``.
+
+    ``RunInspectorInput.parameters`` is locked to ``dict[str, str]`` at the
+    ToolRegistry boundary (M2-locked schema), but typed manifests legitimately
+    declare integer / float / bool parameters. Without coercion the post-defaults
+    ``jsonschema.validate`` step would reject every caller value coming through the
+    Agent.
+
+    Security invariant: coercion MUST stay permissive — any failed cast leaves the
+    value as-is, so ``jsonschema.validate`` still rejects it as the wrong type. For
+    example ``int("5432; rm -rf /")`` raises ``ValueError``; the helper leaves the
+    string in place; validation rejects the integer field; the runner surfaces
+    ``parameter_validation_failed`` and never reaches ``target.exec``.
+
+    Returns a new dict; never mutates the input. One-level walk over ``properties``;
+    arrays / nested objects are not coerced (out of M1 scope).
+    """
+
+    coerced = dict(params)
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return coerced
+    for prop_name, prop_schema in properties.items():
+        if prop_name not in coerced:
+            continue
+        if not isinstance(prop_schema, dict):
+            continue
+        declared_type = prop_schema.get("type")
+        value = coerced[prop_name]
+        if not isinstance(value, str):
+            continue
+        if declared_type == "integer":
+            # Leave as-is on failed cast; jsonschema.validate rejects below.
+            with contextlib.suppress(ValueError):
+                coerced[prop_name] = int(value)
+        elif declared_type == "number":
+            with contextlib.suppress(ValueError):
+                coerced[prop_name] = float(value)
+        elif declared_type == "boolean":
+            if value in ("true", "1"):
+                coerced[prop_name] = True
+            elif value in ("false", "0"):
+                coerced[prop_name] = False
+            # else: leave as-is; jsonschema rejects.
+        # string / array / object / null: no coercion.
+    return coerced
 
 
 def _sh_filter(value: object) -> str:

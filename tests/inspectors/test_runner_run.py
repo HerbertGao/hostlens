@@ -431,6 +431,225 @@ async def test_parameter_validation_skipped_when_manifest_has_no_parameters() ->
     target.exec.assert_awaited_once()
 
 
+# ---------------------------------------------------------------------- #
+# Parameter schema defaults (Fix 14)
+# ---------------------------------------------------------------------- #
+
+
+async def test_parameter_default_injected_when_caller_omits() -> None:
+    """A schema-declared ``default`` must be injected into the rendered command
+    and the DSL evaluation context when the caller omits the parameter.
+
+    Without this, ``jsonschema.validate`` would accept the missing parameter but
+    the template / ``when:`` expression would crash on the unbound variable.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="curl -o /dev/null -w {{ '%{http_code}' }} ; echo status={{ expected_status }}",
+        parameters={
+            "type": "object",
+            "properties": {"expected_status": {"type": "integer", "default": 200}},
+        },
+    )
+    # Attach a finding rule that references the defaulted parameter, proving
+    # the DSL context received the default value.
+    manifest = InspectorManifest(
+        **{
+            **manifest.model_dump(),
+            "findings": [
+                FindingRule(
+                    when="expected_status == 200",
+                    severity="info",
+                    message="expected_status defaulted to {expected_status}",
+                )
+            ],
+        }
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={})
+    assert result.status == "ok"
+    assert result.error is None
+    assert len(result.findings) == 1
+    assert result.findings[0].message == "expected_status defaulted to 200"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert "status=200" in rendered_cmd
+
+
+async def test_parameter_default_does_not_override_caller_supplied_value() -> None:
+    """When the caller passes an explicit value, the schema default must NOT
+    overwrite it.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo status={{ expected_status }}",
+        parameters={
+            "type": "object",
+            "properties": {"expected_status": {"type": "integer", "default": 200}},
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"expected_status": 404})
+    assert result.status == "ok"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert "status=404" in rendered_cmd
+
+
+async def test_parameter_default_no_change_when_schema_has_no_defaults() -> None:
+    """A schema declaring properties without ``default`` keys must not inject
+    anything (no spurious None / KeyError).
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo name={{ name }}",
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"name": "foo"})
+    assert result.status == "ok"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert rendered_cmd == "echo name=foo"
+
+
+# ---------------------------------------------------------------------- #
+# Parameter type coercion (Fix 15)
+# ---------------------------------------------------------------------- #
+
+
+async def test_parameter_coercion_string_to_integer_passes_validation() -> None:
+    """``RunInspectorInput.parameters`` is ``dict[str, str]`` at the
+    ToolRegistry boundary, so a caller passing ``parameters={"port": "5432"}``
+    against a manifest declaring ``port: {type: integer}`` must be coerced
+    before validation, not rejected as a type mismatch.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="psql -p {{ port }}",
+        parameters={
+            "type": "object",
+            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}},
+            "required": ["port"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"port": "5432"})
+    assert result.status == "ok"
+    assert result.error is None
+    rendered_cmd = target.exec.await_args.args[0]
+    assert rendered_cmd == "psql -p 5432"
+
+
+async def test_parameter_coercion_failed_int_cast_still_rejected() -> None:
+    """Security invariant: a malformed string for an ``integer`` parameter must
+    NOT slip through coercion. ``int("5432; rm -rf /")`` raises ``ValueError``;
+    the helper leaves the value as a string; ``jsonschema.validate`` rejects it;
+    the runner surfaces ``parameter_validation_failed`` and ``target.exec`` is
+    never called. This mirrors the existing round-4 security test path under
+    the new coercion pipeline.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="psql -p {{ port }}",
+        parameters={
+            "type": "object",
+            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}},
+            "required": ["port"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"port": "5432; rm -rf /"})
+    assert result.status == "exception"
+    assert result.error is not None
+    assert result.error.startswith("parameter_validation_failed:")
+    assert target.exec.call_count == 0
+
+
+async def test_parameter_coercion_string_to_float() -> None:
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo cpu={{ cpu_pct }}",
+        parameters={
+            "type": "object",
+            "properties": {"cpu_pct": {"type": "number"}},
+            "required": ["cpu_pct"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"cpu_pct": "0.85"})
+    assert result.status == "ok"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert rendered_cmd == "echo cpu=0.85"
+
+
+async def test_parameter_coercion_boolean_true() -> None:
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo verbose={{ verbose }}",
+        parameters={
+            "type": "object",
+            "properties": {"verbose": {"type": "boolean"}},
+            "required": ["verbose"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"verbose": "true"})
+    assert result.status == "ok"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert rendered_cmd == "echo verbose=True"
+
+
+async def test_parameter_coercion_boolean_invalid_token_rejected() -> None:
+    """A boolean parameter receiving a string that is neither ``true|1`` nor
+    ``false|0`` must NOT be silently coerced; the value stays as a string and
+    ``jsonschema.validate`` rejects it.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo verbose={{ verbose }}",
+        parameters={
+            "type": "object",
+            "properties": {"verbose": {"type": "boolean"}},
+            "required": ["verbose"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"verbose": "maybe"})
+    assert result.status == "exception"
+    assert result.error is not None
+    assert result.error.startswith("parameter_validation_failed:")
+    assert target.exec.call_count == 0
+
+
+async def test_parameter_coercion_string_type_no_coercion() -> None:
+    """``string`` typed parameters must not be touched — a numeric-looking
+    string like ``"42"`` stays as ``"42"`` and passes validation as a string.
+    """
+
+    runner = _runner()
+    manifest = _make_manifest_with_parameters(
+        command="echo name={{ name }}",
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    )
+    target = _make_target()
+    result = await runner.run(manifest, target, parameters={"name": "foo"})
+    assert result.status == "ok"
+    rendered_cmd = target.exec.await_args.args[0]
+    assert rendered_cmd == "echo name=foo"
+
+
 async def test_parameter_schema_invalid_via_model_construct() -> None:
     """Adversarial: caller uses ``model_construct`` to bypass Pydantic
     (including the loader's ``_validate_jsonschema_well_formed`` gate),
