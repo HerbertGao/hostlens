@@ -6,7 +6,7 @@
 
 - `name: str`：target 实例的唯一标识；必须匹配正则 `^[a-z][a-z0-9_\-]{0,63}$`（用于 yaml key 与 CLI 引用）。**正则必须在以下三个入口同时 enforce**（任一缺失 = 允许非法 name 绕过）：
   1. `TargetsConfig` loader（`TargetEntry.name` 字段的 Pydantic `Field(pattern=...)`，见下方 `TargetsConfig` 需求）
-  2. 具体 `ExecutionTarget` 实现的构造器（`LocalTarget.__init__` / `SSHTarget.__init__` 在赋值 `self.name` 前 `re.fullmatch(...)`，不匹配 raise `TargetError(kind="invalid_target_name", name=name)`）
+  2. 具体 `ExecutionTarget` 实现的构造器（`LocalTarget.__init__` / `SSHTarget.__init__` 在赋值 `self.name` 前 `re.fullmatch(...)`，不匹配 raise `TargetError(kind="invalid_target_name", target=name)`）
   3. `TargetRegistry.register(target, entry)` 入口（在 register 前再校验 `target.name`，作为最后一道防线）
 - `type: Literal["local", "ssh", "docker", "k8s"]`：与 docs/ARCHITECTURE.md §5 锁定的 4 种 target 类型一致；**禁止**自定义 type 名（如 `kubernetes` 必须用 `k8s`）
 - `async def exec(self, cmd: str, *, timeout: int, env: dict[str, str] | None = None) -> ExecResult`：异步执行 shell-evaluated 命令；`timeout` 单位秒，必填；`env` dict 通过实现侧的 subprocess `env=` 参数注入，**禁止**实现侧把 env 拼到 cmd string
@@ -150,7 +150,7 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 `hostlens.targets.registry.TargetRegistry` 必须提供：
 
-- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；name 冲突 raise `TargetError("duplicate_target", name=name)`
+- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；name 冲突 raise `TargetError(kind="duplicate_target", target=name)`
 - `get(name: str) -> ExecutionTarget`：未找到 raise `KeyError`
 - `get_entry(name: str) -> TargetEntry`：返回配置元数据；未找到 raise `KeyError`
 - `names() -> set[str]`：返回所有已注册 target 的 name 集合
@@ -184,8 +184,8 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 #### 场景:register 拒绝非法 name target（绕过 loader 路径）
 
 - **当** 测试代码直接构造 `LocalTarget(name="Prod-Web")` 或 `SSHTarget(name="1web")`（绕过 yaml loader，name 不匹配 `^[a-z][a-z0-9_\-]{0,63}$`）
-- **那么** target 构造器**必须**在 `__init__` 中 raise `TargetError(kind="invalid_target_name", name=name)`
-- **且** 假设构造器漏校验直接拿到 target 实例，调用 `registry.register(target, entry)` 也**必须** raise `TargetError(kind="invalid_target_name")`（registry 是最后一道防线）
+- **那么** target 构造器**必须**在 `__init__` 中 raise `TargetError(kind="invalid_target_name", target=name)`
+- **且** 假设构造器漏校验直接拿到 target 实例，调用 `registry.register(target, entry)` 也**必须** raise `TargetError(kind="invalid_target_name", target=target.name)`（registry 是最后一道防线）
 
 ### 需求:`TargetsConfig` 必须从 yaml 加载且环境变量占位展开
 
