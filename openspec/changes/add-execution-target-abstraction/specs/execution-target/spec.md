@@ -27,7 +27,7 @@ Protocol 必须支持 mypy `--strict` 静态校验。
 
 #### 场景:type 字段值域受限
 
-- **当** 实例化 `LocalTarget(name="x")` 并检查 `target.type`、实例化 `SSHTarget(name="y", host=..., user=...)` 并检查 `target.type`
+- **当** 实例化 `LocalTarget(name="x")` 并检查 `target.type`、实例化 `SSHTarget(name="y")` 并检查 `target.type`（SSH 连接信息从 `_entry: TargetEntry` 拿，由 `TargetRegistry.register` 注入；构造器保持 `__init__(name: str)` 单参数签名与 task 4.1a/4.1b 一致）
 - **那么** `LocalTarget.type` 必须为 `"local"`、`SSHTarget.type` 必须为 `"ssh"`（**`type` 是类常量 / 只读属性，不是构造器参数**——构造器签名是 `__init__(name: str, ...)` 不接 `type` kwarg）；任何在子类里把 `type` 重写为 `"kubernetes"` / `"vm"` / 其他 Literal 之外字符串的实现必须在 mypy 阶段报错（Protocol 的 `Literal["local", "ssh", "docker", "k8s"]` 注解 enforce）
 
 #### 场景:read_file 文件超过 10MB raise
@@ -113,7 +113,7 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 - **POSIX-only**：M1 LocalTarget **只**支持 POSIX 宿主（Linux / macOS）；用的 `os.killpg` / `os.getpgid` / `start_new_session=True` 都是 POSIX 专有 API。Windows 宿主**禁止**在 import 时 silent fallback，必须在 `hostlens.targets.local` 模块 import 时检查 `sys.platform == "win32"` 并 raise `ImportError("LocalTarget requires POSIX host (Linux/macOS); Windows support is not in M1 scope")`，给清晰错误（不是运行时 cryptic 错误）
 - `type == "local"`
-- `capabilities` 至少含 `{SHELL, FILE_READ}`；运行时探测必须用 `which <bin>`（不是 `<bin> --version`，因为某些远端只有 binary 没有 PATH 中 alias；`which` 是 POSIX 标准且更轻）—— 如 `which docker` 成功则加 `DOCKER_CLI`；如 `which systemctl` 成功则加 `SYSTEMD`（探测结果在 target 构造时缓存，**不**每次 exec 都重新探测）
+- `capabilities` 至少含 `{SHELL, FILE_READ}`；运行时探测必须用 `which <bin>`（不是 `<bin> --version`，因为某些远端只有 binary 没有 PATH 中 alias；`which` 是 POSIX 标准且更轻）—— 如 `which docker` 成功则加 `DOCKER_CLI`；如 `which systemctl` 成功则加 `SYSTEMD`。**探测时机**：与 SSHTarget 一致采用 **lazy probe（首次 `exec` 时探测一次并缓存到实例属性 `_probed_caps`，后续 exec 复用）**——`__init__` 内**禁止**做 subprocess probe（subprocess IO 与项目 async-first 约定冲突；让构造函数保持纯类属性赋值；探测发生在 async exec 路径里，不需要 `asyncio.to_thread` 包装）；首次 `exec` 完成前 `capabilities` 仅含 `{SHELL, FILE_READ}`（不报错，但 list_targets / doctor 拿到的能力集会不完整，调用方应至少跑一次 `target test` 触发探测后再观察）
 - `exec` 实现走 `asyncio.create_subprocess_shell(cmd, env=..., start_new_session=True)`，**禁止**走 `create_subprocess_exec`（M1 Inspector 命令含 pipe / redirect 必须 shell 解析）；`start_new_session=True` 是必需的——shell 会 fork 子进程（如 `sh -c 'sleep 60'` 实际进程树是 `sh → sleep`），只 SIGKILL 顶层 shell 不会回收 sleep
 - 超时实现：`asyncio.wait_for` 包裹 `proc.communicate()` 抛 `TimeoutError` 时，**必须**调用 `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组，然后 `await proc.wait()` 确保 reaped；**禁止**只 `proc.kill()`（只杀顶层 shell，留下 zombie sleep）
 - `env` 参数传入时**合并**到 `os.environ.copy()` 之上（不是替换），保留 PATH 等关键 env var
