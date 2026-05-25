@@ -101,5 +101,5 @@
 - [x] 11.1 完成所有上述任务后 commit 到 feature branch `feat/add-execution-target-abstraction`（已建好）
 - [x] 11.2 **commit 后、push 前**：跑 `/review-loop-codex` 对代码变更做对抗性 review，结论 APPROVE/CLEAR 才进入 11.3
 - [x] 11.3 push branch + 更新 PR #12（描述含 spec 引用与 Demo Path）
-- [ ] 11.4 等 CI 全绿 + 人类 review 通过后 squash merge：`\gh pr merge 12 --squash --delete-branch`
-- [ ] 11.5 准备归档：跑 `openspec-cn validate add-execution-target-abstraction` 确认变更可归档；后续运行 `/opsx:archive` 推进到 `openspec/specs/{execution-target, ssh-execution-target}/spec.md` 并同步 `openspec/specs/tool-registry-capability-layer/spec.md` 的 3 个 MODIFIED 需求块
+- [x] 11.4 等 CI 全绿 + 人类 review 通过后 squash merge：`\gh pr merge 12 --squash --delete-branch`
+- [x] 11.5 准备归档：跑 `openspec-cn validate add-execution-target-abstraction` 确认变更可归档；后续运行 `/opsx:archive` 推进到 `openspec/specs/{execution-target, ssh-execution-target}/spec.md` 并同步 `openspec/specs/tool-registry-capability-layer/spec.md` 的 3 个 MODIFIED 需求块
