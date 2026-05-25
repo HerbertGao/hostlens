@@ -4,10 +4,10 @@
 
 `hostlens.tools.base.ToolContext` 必须是 dataclass（`@dataclass(frozen=True)`），M2 字段集**恰好**为：
 
-- `target_registry: TargetRegistry`（**M1 已落地，必须 import 自 `hostlens.targets.registry.TargetRegistry`；禁止保留 stub Protocol fallback**）
+- `target_registry: TargetRegistry`（**本变更（add-execution-target-abstraction）落地后必须 import 自 `hostlens.targets.registry.TargetRegistry`；禁止保留 stub Protocol fallback**——本变更合并前，仓库 main 上仍是 stub）
 - `inspector_registry: InspectorRegistry`（M1 落地前可用 stub Protocol —— 本变更不动 InspectorRegistry，下一提案 `add-inspector-plugin-system` 再切真实类型）
 - `config: Settings`（M0 已落地）
-- `logger: structlog.BoundLogger`
+- `logger: structlog.stdlib.BoundLogger`（与 M0 已落地的 `hostlens.tools.base` 实际 import 一致——`structlog.stdlib` 子模块的 BoundLogger，**不**用顶层 `structlog.BoundLogger` 别名以避免 mypy import 解析歧义）
 - `approval_service: ApprovalService`（M2 必须传 `NoopApprovalService` 真实实例，**禁止** `None`）
 - `cancel: asyncio.Event`
 

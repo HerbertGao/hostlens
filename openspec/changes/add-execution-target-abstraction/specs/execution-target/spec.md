@@ -27,8 +27,8 @@ Protocol 必须支持 mypy `--strict` 静态校验。
 
 #### 场景:type 字段值域受限
 
-- **当** 实例化 `LocalTarget(name="x", type="local")` 与 `SSHTarget(name="y", type="ssh")`
-- **那么** 必须成功；任何试图把 `type` 设为 `"kubernetes"` / `"vm"` / 其他字符串的实现必须在 mypy 阶段报错
+- **当** 实例化 `LocalTarget(name="x")` 并检查 `target.type`、实例化 `SSHTarget(name="y", host=..., user=...)` 并检查 `target.type`
+- **那么** `LocalTarget.type` 必须为 `"local"`、`SSHTarget.type` 必须为 `"ssh"`（**`type` 是类常量 / 只读属性，不是构造器参数**——构造器签名是 `__init__(name: str, ...)` 不接 `type` kwarg）；任何在子类里把 `type` 重写为 `"kubernetes"` / `"vm"` / 其他 Literal 之外字符串的实现必须在 mypy 阶段报错（Protocol 的 `Literal["local", "ssh", "docker", "k8s"]` 注解 enforce）
 
 #### 场景:read_file 文件超过 10MB raise
 
