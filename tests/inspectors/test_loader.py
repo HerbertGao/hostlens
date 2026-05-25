@@ -79,7 +79,7 @@ def _write(tmp_path: Path, content: str, name: str = "m.yaml") -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.1 — load_manifest core flow
+# load_manifest core flow
 # --------------------------------------------------------------------------- #
 
 
@@ -174,7 +174,7 @@ class TestLoadManifestCore:
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.2 — _validate_parameters_schema
+# _validate_parameters_schema
 # --------------------------------------------------------------------------- #
 
 
@@ -259,7 +259,7 @@ class TestValidateParametersSchema:
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.3 — _validate_command_template
+# _validate_command_template
 # --------------------------------------------------------------------------- #
 
 
@@ -427,7 +427,7 @@ class TestValidateCommandTemplateMisc:
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.4 — _validate_findings (aggregate-mode {var.attr} guard)
+# _validate_findings (aggregate-mode {var.attr} guard)
 # --------------------------------------------------------------------------- #
 
 
@@ -470,7 +470,7 @@ class TestValidateFindings:
 
 
 # --------------------------------------------------------------------------- #
-# Task 4.5 — end-to-end ordering: Pydantic before _validate_command_template
+# end-to-end ordering: Pydantic before _validate_command_template
 # --------------------------------------------------------------------------- #
 
 

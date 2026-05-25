@@ -99,7 +99,7 @@ def _write_user_manifest(directory: Path, name: str, file_name: str | None = Non
 
 
 # --------------------------------------------------------------------------- #
-# Task 7.1 — InspectorRegistry API
+# InspectorRegistry API
 # --------------------------------------------------------------------------- #
 
 
@@ -190,7 +190,7 @@ class TestInspectorRegistry:
 
 
 # --------------------------------------------------------------------------- #
-# Task 7.2 — build_registry_from_search_paths
+# build_registry_from_search_paths
 # --------------------------------------------------------------------------- #
 
 

@@ -34,7 +34,7 @@ from hostlens.targets.base import Capability
 from hostlens.targets.local import LocalTarget
 
 # ---------------------------------------------------------------------------
-# Task 3.1 — name regex + basic exec
+# name regex + basic exec
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +187,7 @@ def test_windows_import_guard_raises_import_error(monkeypatch: pytest.MonkeyPatc
 
 
 # ---------------------------------------------------------------------------
-# Task 3.2 — timeout + process-group reap
+# timeout + process-group reap
 # ---------------------------------------------------------------------------
 
 
@@ -259,7 +259,7 @@ async def test_exec_timeout_kills_process_group_and_leaves_no_zombie(
 
 
 # ---------------------------------------------------------------------------
-# Task 3.3 — lazy capability probing
+# lazy capability probing
 # ---------------------------------------------------------------------------
 
 
@@ -368,7 +368,7 @@ async def test_capability_probe_runs_once_and_init_does_no_subprocess(
 
 
 # ---------------------------------------------------------------------------
-# Task 3.4 — read_file
+# read_file
 # ---------------------------------------------------------------------------
 
 

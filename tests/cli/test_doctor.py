@@ -116,7 +116,7 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 7.4 — M0 compatibility: existing keys remain
+# M0 compatibility: existing keys remain
 # ---------------------------------------------------------------------------
 
 
@@ -140,7 +140,7 @@ def test_doctor_json_keeps_m0_checks(
 
 
 # ---------------------------------------------------------------------------
-# Task 7.2 — JSON output contains a `targets` key
+# JSON output contains a `targets` key
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +190,7 @@ def test_doctor_json_targets_row_schema(
 
 
 # ---------------------------------------------------------------------------
-# Task 7.3 — three condition branches
+# three condition branches
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +287,7 @@ def test_doctor_empty_registry_hints_and_exits_0(
 
 
 # ---------------------------------------------------------------------------
-# Task 7.1 — credential_source classification
+# credential_source classification
 # ---------------------------------------------------------------------------
 
 
@@ -480,7 +480,7 @@ def test_doctor_calls_aclose_on_targets_with_aclose(
 
 
 # ---------------------------------------------------------------------------
-# Task 11.x — M1.4 ``inspectors`` section
+# ``inspectors`` section
 # ---------------------------------------------------------------------------
 
 

@@ -60,7 +60,7 @@ def _make_ssh_entry(name: str = "my-ssh", *, enabled: bool = True) -> SSHEntry:
 
 
 # ---------------------------------------------------------------------------
-# Task 4.1 — basic registry API
+# basic registry API
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +195,7 @@ def test_register_protocol_satisfied() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 4.1b — disabled-target behaviour
+# disabled-target behaviour
 # ---------------------------------------------------------------------------
 
 
@@ -296,7 +296,7 @@ async def test_ssh_target_disabled_via_registry_blocks_read_file() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 4.4 — build_registry_from_config
+# build_registry_from_config
 # ---------------------------------------------------------------------------
 
 
@@ -385,7 +385,7 @@ def test_build_registry_preserves_disabled_entries(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 4.5 — secret scrub
+# secret scrub
 # ---------------------------------------------------------------------------
 
 
