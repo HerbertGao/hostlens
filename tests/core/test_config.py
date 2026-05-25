@@ -153,3 +153,25 @@ def test_inspectors_search_paths_env_var_override_empty_string(
     monkeypatch.setenv("HOSTLENS_INSPECTORS_SEARCH_PATHS", "")
     settings = load_settings()
     assert settings.inspectors_search_paths == []
+
+
+def test_inspectors_search_paths_drops_empty_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty segments (`":/a"`, `"/a::/b"`, `"/a:"`) must not inject CWD.
+
+    Copilot review on PR #15: `Path("")` silently resolves to the current
+    working directory; a stray colon in the env value could let a hostile
+    `$PWD` shadow trusted inspector locations. The parser drops empty
+    parts so only explicit paths are scanned.
+    """
+    monkeypatch.setenv(
+        "HOSTLENS_INSPECTORS_SEARCH_PATHS",
+        ":/etc/hostlens/inspectors:/opt/team::",
+    )
+    settings = load_settings()
+    assert settings.inspectors_search_paths == [
+        Path("/etc/hostlens/inspectors"),
+        Path("/opt/team"),
+    ]
+    assert Path("") not in settings.inspectors_search_paths

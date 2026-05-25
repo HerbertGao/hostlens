@@ -344,6 +344,15 @@ class TestParseSpecCrossFieldRules:
         p = ParseSpec(format="kv", delimiter=":")
         assert p.delimiter == ":"
 
+    def test_kv_with_empty_delimiter_rejected(self) -> None:
+        """Empty delimiter would crash `str.split("", maxsplit=1)` inside
+        ``parse_kv``, escaping ``InspectorRunner.run()``'s "always return
+        InspectorResult" contract. Reject at the schema layer instead.
+        Copilot review on PR #15.
+        """
+        with pytest.raises(ValidationError):
+            ParseSpec(format="kv", delimiter="")
+
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ParseSpec(format="raw", weird_field="x")  # type: ignore[call-arg]

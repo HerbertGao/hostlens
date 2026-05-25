@@ -305,7 +305,10 @@ class ParseSpec(BaseModel):
 
     format: Literal["raw", "table", "json", "kv"]
     columns: list[str] = Field(default_factory=list)
-    delimiter: str = "="
+    # `str.split("", maxsplit=1)` raises `ValueError: empty separator`, which
+    # would escape `InspectorRunner.run()` and break the "always return
+    # InspectorResult" contract. Reject empty delimiters at the schema layer.
+    delimiter: Annotated[str, Field(min_length=1)] = "="
     skip_header_rows: Annotated[int, Field(ge=0)] = 1
     raw_extract_regex: str | None = None
 

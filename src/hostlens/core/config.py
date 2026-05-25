@@ -93,6 +93,10 @@ class Settings(BaseSettings):
         - `"/a"` → `[Path("/a")]`
         - `"/a:/b"` → `[Path("/a"), Path("/b")]` (order preserved)
         - each path is `expanduser()`-ed so `~/x` resolves consistently
+        - **empty path segments are dropped** (`":/a"` / `"/a::/b"` → drop the
+          empty parts) so users can't silently inject the current working
+          directory into the inspector search path via a stray colon — that
+          would make a manifest under `$PWD` shadow trusted locations
 
         Non-string inputs (default factory list, programmatic construction)
         are passed through unchanged for the regular pydantic coercion path.
@@ -102,7 +106,7 @@ class Settings(BaseSettings):
             return value
         if value == "":
             return []
-        return [Path(part).expanduser() for part in value.split(":")]
+        return [Path(part).expanduser() for part in value.split(":") if part]
 
 
 def _is_sensitive(field_name: str) -> bool:
