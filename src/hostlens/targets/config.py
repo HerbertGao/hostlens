@@ -30,7 +30,7 @@ import structlog
 # that the project does not currently depend on. Silence the stub
 # complaint locally rather than polluting the global mypy config — keeps
 # the boundary visible at the import site.
-import yaml  # type: ignore[import-untyped]
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hostlens.core.exceptions import ConfigError

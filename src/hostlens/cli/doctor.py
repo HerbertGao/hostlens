@@ -41,13 +41,13 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 # ``PyYAML`` ships no PEP 561 marker — see CLI target.py for the same
 # rationale. We only need raw yaml parsing here (no schema validation)
 # to detect `${VAR}` placeholders that the loader would otherwise have
 # expanded into real secret values by the time it returns.
-import yaml  # type: ignore[import-untyped]
+import yaml
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
@@ -55,13 +55,17 @@ from rich.table import Table
 from hostlens.cli._doctor_schema import (
     CheckResult,
     DoctorReport,
+    InspectorLoadErrorRow,
+    InspectorMissingSecretRow,
+    InspectorsHealth,
     TargetConnectivity,
     TargetCredentialSource,
     TargetHealth,
 )
 from hostlens.core.config import Settings, load_settings
-from hostlens.core.exceptions import ConfigError, TargetError
+from hostlens.core.exceptions import ConfigError, InspectorError, TargetError
 from hostlens.core.logging import configure_logging
+from hostlens.inspectors.registry import build_registry_from_search_paths
 from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import TargetEntry, load_targets_config
 from hostlens.targets.registry import build_registry_from_config
@@ -357,6 +361,123 @@ async def _probe_enabled_targets(
                     await aclose()
 
 
+# ---------------------------------------------------------------------------
+# M1.4 (`add-inspector-plugin-system`): inspector registry health
+# ---------------------------------------------------------------------------
+
+
+def _count_builtin_manifests() -> int:
+    """Count YAML manifests under the hardcoded builtin directory.
+
+    Used by the duplicate_inspector failure path in ``_check_inspectors``
+    where the builder raises **after** builtins are already registered —
+    so the doctor row should still reflect the (partially) loaded count
+    instead of reporting 0.
+    """
+    import hostlens.inspectors as _inspectors_pkg
+
+    builtin_dir = Path(_inspectors_pkg.__file__).parent / "builtin"
+    if not builtin_dir.is_dir():
+        return 0
+    return sum(1 for _ in builtin_dir.rglob("*.yaml"))
+
+
+def _check_inspectors(settings: Settings) -> InspectorsHealth:
+    """Inspector registry health probe for ``hostlens doctor``.
+
+    Behaviour per spec §需求:`hostlens doctor` 必须新增 `inspectors` section:
+
+    - Build the registry via ``build_registry_from_search_paths``. That
+      function already collects per-file user-path errors into
+      ``result.errors`` so doctor does **not** need its own try/except
+      around individual manifest loads.
+    - ``duplicate_inspector`` (and any other non-collectable kind) is
+      raised by the builder; we catch ``InspectorError`` here and surface
+      it as a synthetic ``InspectorLoadErrorRow`` with ``path=<duplicate>``
+      so the JSON shape stays uniform and ``status="fail"`` flips the
+      overall exit code via ``_is_ready``.
+    - For every successfully-loaded manifest, walk ``manifest.secrets``
+      and record each env-var name that is NOT in ``os.environ``. The
+      value is **never** read — only existence is checked, matching the
+      same security posture as ``check_anthropic_key``.
+    - ``status`` follows the spec mapping: errors → ``fail``;
+      missing_secrets only → ``warn``; both empty → ``ok``.
+    """
+
+    errors: list[InspectorLoadErrorRow] = []
+    missing_secrets: list[InspectorMissingSecretRow] = []
+    loaded = 0
+
+    try:
+        result = build_registry_from_search_paths(
+            settings.inspectors_search_paths,
+            settings=settings,
+        )
+    except InspectorError as exc:
+        # Fatal error from the builder (typically ``duplicate_inspector``).
+        # Convert it into a single failure row so the JSON contract stays
+        # uniform and ``_is_ready`` can flip the exit code via
+        # ``inspectors.status == "fail"``.
+        synthetic_path: Path | None = exc.path or exc.new_path or exc.existing_path
+        errors.append(
+            InspectorLoadErrorRow(
+                path=str(synthetic_path) if synthetic_path is not None else "<registry>",
+                kind=exc.kind,
+                detail=str(exc),
+            )
+        )
+        # Builder raises in two cases (see registry.build_registry_from_search_paths):
+        #   - duplicate_inspector on the user-path leg → builtins all registered
+        #     before the duplicate fires; report disk count so JSON doesn't
+        #     under-report what's actually available.
+        #   - any other fatal kind (e.g. builtin manifest broken) → builder
+        #     aborted while scanning builtins; the registry state is incomplete
+        #     and nothing is usable. Report 0 — the JSON must not show a
+        #     "healthy loaded count" when registry build failed entirely.
+        loaded_count = _count_builtin_manifests() if exc.kind == "duplicate_inspector" else 0
+        return InspectorsHealth(
+            status="fail",
+            loaded=loaded_count,
+            errors=errors,
+            missing_secrets=[],
+        )
+
+    for err in result.errors:
+        errors.append(
+            InspectorLoadErrorRow(
+                path=str(err.path),
+                kind=err.kind,
+                detail=err.detail,
+            )
+        )
+
+    manifests = result.registry.list()
+    loaded = len(manifests)
+    for manifest in manifests:
+        for secret_name in manifest.secrets:
+            if secret_name not in os.environ:
+                missing_secrets.append(
+                    InspectorMissingSecretRow(
+                        inspector=manifest.name,
+                        secret=secret_name,
+                    )
+                )
+
+    if errors:
+        status: Literal["ok", "warn", "fail"] = "fail"
+    elif missing_secrets:
+        status = "warn"
+    else:
+        status = "ok"
+
+    return InspectorsHealth(
+        status=status,
+        loaded=loaded,
+        errors=errors,
+        missing_secrets=missing_secrets,
+    )
+
+
 # Readiness semantics per spec cli-foundation (M0) + execution-target (M1):
 # - `python_version`: must be `ok` (interpreter floor is hard).
 # - `anthropic_key` : `present` or `missing` both pass (spec: "缺失
@@ -368,9 +489,15 @@ async def _probe_enabled_targets(
 # - `targets`       : every enabled target's connectivity must not be
 #   `failed`; `inline_plaintext` credential_source emits a warning but
 #   does NOT block (spec §场景:doctor 检测明文密码 warn).
+# - `inspectors`    : ``status == "fail"`` flips exit 1; ``warn`` /
+#   ``ok`` both pass (spec §场景:secret 缺失 status=warn doctor exit 0).
 
 
-def _is_ready(checks: dict[str, CheckResult], targets: list[TargetHealth]) -> bool:
+def _is_ready(
+    checks: dict[str, CheckResult],
+    targets: list[TargetHealth],
+    inspectors: InspectorsHealth,
+) -> bool:
     py = checks["python_version"].status
     cfg = checks["config_dir"].status
     key = checks["anthropic_key"].status
@@ -378,7 +505,12 @@ def _is_ready(checks: dict[str, CheckResult], targets: list[TargetHealth]) -> bo
         return False
     # Any target failing connectivity flips the whole doctor to exit 1
     # (spec §场景:某 target 连通失败 doctor exit 1).
-    return all(row.connectivity != "failed" for row in targets)
+    if any(row.connectivity == "failed" for row in targets):
+        return False
+    # Inspector load failures flip exit 1 too — silent skip is forbidden
+    # so attackers can't plant a same-named manifest in the user path and
+    # have the operator miss the failure.
+    return inspectors.status != "fail"
 
 
 def _build_report(settings: Settings) -> DoctorReport:
@@ -388,12 +520,14 @@ def _build_report(settings: Settings) -> DoctorReport:
         "config_dir": check_config_dir(),
     }
     targets = _check_targets(settings)
+    inspectors = _check_inspectors(settings)
     return DoctorReport(
         version="0.1.0",
         timestamp=datetime.now(UTC),
         checks=checks,
-        ready=_is_ready(checks, targets),
+        ready=_is_ready(checks, targets, inspectors),
         targets=targets,
+        inspectors=inspectors,
     )
 
 
@@ -436,6 +570,18 @@ def _render_human(report: DoctorReport, console: Console) -> None:
             "no targets configured; run `hostlens target add` to start.",
         )
 
+    # M1.4 — inspector registry summary. Always rendered (even on status=ok)
+    # so operators see ``loaded`` count and can spot a missing builtin
+    # at a glance.
+    itable = Table(title="inspectors")
+    itable.add_column("field", no_wrap=True)
+    itable.add_column("value")
+    itable.add_row("status", report.inspectors.status)
+    itable.add_row("loaded", str(report.inspectors.loaded))
+    itable.add_row("errors", str(len(report.inspectors.errors)))
+    itable.add_row("missing_secrets", str(len(report.inspectors.missing_secrets)))
+    console.print(itable)
+
     console.print(f"ready: {report.ready}")
 
 
@@ -472,6 +618,19 @@ def _emit_remediation(report: DoctorReport, stderr: Console) -> None:
             stderr.print(
                 f"hint: target {row.name!r} connectivity failed (kind={kind})",
             )
+
+    # M1.4 — per-inspector load errors and missing secrets. ``errors``
+    # flips exit 1 via ``_is_ready`` so we also print remediation hints
+    # for each failed manifest; ``missing_secrets`` stays warn-only.
+    for err_row in report.inspectors.errors:
+        stderr.print(
+            f"hint: inspector load error: {err_row.path}: {err_row.kind}: {err_row.detail}",
+        )
+    for secret_row in report.inspectors.missing_secrets:
+        stderr.print(
+            f"warning: inspector {secret_row.inspector!r} declares secret "
+            f"{secret_row.secret!r} but the env var is not set",
+        )
 
 
 def run_doctor(json_output: bool) -> int:
