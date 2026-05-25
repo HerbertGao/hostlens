@@ -951,3 +951,66 @@ async def test_disabled_target_read_file_raises_without_connecting() -> None:
 
     assert exc_info.value.kind == "target_disabled"
     mock_connect.assert_not_called()
+
+
+async def test_concurrent_exec_does_not_race_on_reconnect() -> None:
+    """``_run_on_channel`` must use the caller-supplied ``conn``, not ``self._conn``.
+
+    Race window the test pins down: when one coroutine is mid-reconnect
+    and ``self._conn`` is temporarily ``None``, a sibling coroutine that
+    already obtained a live ``conn`` from ``_ensure_connection`` must
+    still be able to run its channel against the connection it was
+    handed — not re-read the in-flight ``self._conn``.
+
+    The direct shape of the assertion (mock ``self._conn`` to a stale
+    handle, call ``_run_on_channel`` with a fresh one, assert only the
+    fresh one was awaited) is more robust than a probabilistic
+    asyncio-scheduling race reproduction.
+    """
+
+    target = SSHTarget("ssh-host")
+    _attach_entry(target, FakeEntry())
+
+    stale_conn = _make_fake_conn(run_result=_make_run_result(stdout="stale"))
+    fresh_conn = _make_fake_conn(run_result=_make_run_result(stdout="fresh"))
+
+    # Simulate the race: ``self._conn`` was cleared / replaced after the
+    # caller already captured ``conn`` from ``_ensure_connection``.
+    target._conn = stale_conn  # type: ignore[assignment]
+
+    result = await target._run_on_channel(
+        "echo hi",
+        conn=fresh_conn,
+        timeout=5,
+        env=None,
+    )
+
+    assert result.stdout == "fresh"
+    fresh_conn.run.assert_awaited_once()
+    stale_conn.run.assert_not_awaited()
+
+
+async def test_probe_capabilities_uses_passed_conn() -> None:
+    """``_probe_capabilities`` must run on the caller-supplied ``conn``.
+
+    Race window: a sibling coroutine mid-reconnect can flip ``self._conn``
+    to a stale handle between ``exec`` finishing its channel work and the
+    post-exec probe firing. Pinning the probe to the connection it was
+    handed prevents the probe from caching empty / wrong capability sets
+    and short-circuiting subsequent execs.
+    """
+
+    target = SSHTarget("ssh-host")
+    _attach_entry(target, FakeEntry())
+
+    stale_conn = _make_fake_conn(run_result=_make_run_result(stdout="stale"))
+    fresh_conn = _make_fake_conn(run_result=_make_run_result(stdout="fresh", exit_status=0))
+
+    # Simulate the race: ``self._conn`` was swapped to a stale handle
+    # after the caller already captured ``conn`` from ``_ensure_connection``.
+    target._conn = stale_conn  # type: ignore[assignment]
+
+    await target._probe_capabilities(conn=fresh_conn)
+
+    assert fresh_conn.run.await_count >= 1
+    stale_conn.run.assert_not_awaited()

@@ -523,10 +523,14 @@ class SSHTarget:
         self,
         cmd: str,
         *,
+        conn: asyncssh.SSHClientConnection,
         timeout: int,
         env: dict[str, str] | None,
     ) -> ExecResult:
-        """Open a single channel on the current control connection and run ``cmd``.
+        """Open a single channel on ``conn`` and run ``cmd``.
+
+        The caller passes ``conn`` explicitly so concurrent execs do not
+        race on ``self._conn`` mutation during reconnect.
 
         ``asyncio.wait_for`` enforces the caller-supplied timeout. On
         timeout we surface ``ExecResult(timed_out=True, exit_code=None)``
@@ -534,10 +538,6 @@ class SSHTarget:
         channel; the control connection itself is unaffected and the
         next ``exec`` reuses it.
         """
-
-        conn = self._conn
-        if conn is None:  # pragma: no cover — invariant guarded by callers
-            raise TargetError(kind="ssh_no_connection", target=self.name)
 
         t0 = time.monotonic()
         try:
@@ -596,10 +596,10 @@ class SSHTarget:
         """
 
         self._check_enabled()
-        await self._ensure_connection()
+        conn = await self._ensure_connection()
 
         try:
-            result = await self._run_on_channel(cmd, timeout=timeout, env=env)
+            result = await self._run_on_channel(cmd, conn=conn, timeout=timeout, env=env)
         except (asyncssh.ConnectionLost, asyncssh.ChannelOpenError):
             # The connection dropped mid-exec. Clear it under the lock,
             # walk the reconnect ladder, and re-run the command exactly
@@ -608,15 +608,22 @@ class SSHTarget:
             # if the remote keeps dropping us).
             async with self._get_lock():
                 await self._close_conn_locked()
-                await self._reconnect()
+                new_conn = await self._reconnect()
             try:
-                result = await self._run_on_channel(cmd, timeout=timeout, env=env)
+                result = await self._run_on_channel(cmd, conn=new_conn, timeout=timeout, env=env)
             except (asyncssh.ConnectionLost, asyncssh.ChannelOpenError) as exc:
                 raise TargetError(
                     kind="ssh_connect_failed",
                     target=self.name,
                     original=exc,
                 ) from exc
+            # Reconnect path: bind the post-exec bookkeeping to the
+            # connection the retry actually ran on so a concurrent
+            # reconnect cannot swap ``self._conn`` out from under the
+            # probe step.
+            active_conn = new_conn
+        else:
+            active_conn = conn
 
         self._last_used_at = time.monotonic()
         # Lazy capability probe on first successful exec. Spec requires
@@ -625,30 +632,30 @@ class SSHTarget:
         # exec completes (not before) so we never delay an exec on the
         # probe path; subsequent execs see the cached set via
         # ``self._probed_caps`` and skip the probe entirely.
-        await self._probe_capabilities()
+        await self._probe_capabilities(conn=active_conn)
         return result
 
-    async def _probe_capabilities(self) -> None:
+    async def _probe_capabilities(
+        self,
+        *,
+        conn: asyncssh.SSHClientConnection,
+    ) -> None:
         """Detect ``SYSTEMD`` / ``DOCKER_CLI`` once on first successful exec.
 
         Runs ``which systemctl`` / ``which docker`` via short ``conn.run``
-        invocations. Results live on ``self._probed_caps`` so repeated
-        ``exec`` calls do not re-probe. Probe failures (e.g. asyncssh
-        error mid-probe) leave ``self._probed_caps`` set so we don't
-        spin on broken remotes — the cached value at that point is an
-        empty set, which is the safe "no extra capabilities" default.
+        invocations on the caller-supplied ``conn`` so a concurrent
+        reconnect that swaps ``self._conn`` cannot redirect the probe
+        onto a different connection. Results live on
+        ``self._probed_caps`` so repeated ``exec`` calls do not re-probe.
+        Probe failures (e.g. asyncssh error mid-probe) leave
+        ``self._probed_caps`` set so we don't spin on broken remotes —
+        the cached value at that point is an empty set, which is the
+        safe "no extra capabilities" default.
         """
 
         if self._probed_caps is not None:
             return
         probed: set[Capability] = set()
-        conn = self._conn
-        if conn is None:
-            # Defensive — only reachable if exec swapped a connection
-            # out from under us. Cache empty and bail out so we don't
-            # block subsequent execs trying to probe again.
-            self._probed_caps = probed
-            return
         for binary, cap in (
             ("systemctl", Capability.SYSTEMD),
             ("docker", Capability.DOCKER_CLI),
