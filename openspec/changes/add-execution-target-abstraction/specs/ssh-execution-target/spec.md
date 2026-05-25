@@ -18,19 +18,22 @@
   - **重连（仅当 `self._conn is not None` 且已经成功建立过连接，随后检测到 `asyncssh.ConnectionLost` / `asyncssh.ChannelOpenError`）**：按下方精确算法
 - **重连精确算法**：
   ```python
-  # Pre-condition: self._conn 之前已成功建立，现在 exec 时检测到 ConnectionLost
+  # Pre-condition: self._conn 之前已成功建立，现在 exec(cmd) 时检测到 ConnectionLost
   # 重连时复用首次连接所用的 timeout：entry.connect_timeout 或硬默认 10s（保持 per-target 一致）
+  # 重要：重连成功后必须**重跑被中断的 exec(cmd)**，不能只 return 让调用方拿到 None
   conn_timeout = entry.connect_timeout or 10
   for delay in [1.0, 4.0, 16.0]:        # 严格按 OPERABILITY §2.2 的退避序列
       await asyncio.sleep(delay)
       try:
           self._conn = await asyncssh.connect(..., connect_timeout=conn_timeout)
-          return                         # 重连成功，结束
+          # 重连成功 → 重跑被中断的 exec 命令并返回真实 ExecResult（不是 None）
+          return await self._run_on_channel(cmd, timeout=timeout, env=env)
       except (asyncssh.ConnectionLost, asyncssh.ChannelOpenError):
           continue                       # 已建过连接 + 这一类错误才重试
       # 其它异常（含 OSError / PermissionDenied / 凭据错误）不在重连范围，立即向上抛（按首次 connect 分类规则）
   raise TargetError(kind="ssh_connection_lost", target=self.name)
   ```
+  其中 `self._run_on_channel(cmd, timeout, env)` 是 exec 的实际 channel 调用（`conn.run(cmd, env=env, ...)` 包装 + `asyncio.wait_for(timeout)`），与首次正常路径调用的是同一个 helper，保证重连后语义与原路径一致。
   这定义为 **"1 次自动重连尝试块（一组 3 段退避 + 3 次 connect 尝试）"**——OPERABILITY 措辞「1 次自动重连」指**一组**，不是"一次 connect"；总共最多 3 次 `asyncssh.connect` 调用 + 3 次 sleep（共 21s 上限）。**禁止** catch 范围扩到 `OSError`——否则首次连不上的 host 会被错误地走 21s 重连循环 + 报错 kind 错（应是 `ssh_connect_timeout` 非 `ssh_connection_lost`）。验收测试见 task 5.3
 - asyncssh `keepalive_interval` 设为 60s（早发现死连接）；`agent_forwarding=False` + `x11_forwarding=False` 显式禁用（最小权限，对齐 OPERABILITY §2.2）
 - `capabilities` 初始值 `{Capability.SSH, Capability.SHELL, Capability.FILE_READ}`；运行时按需探测 `SYSTEMD` / `DOCKER_CLI`（首次 `exec` 后探测一次并缓存到 target 实例）

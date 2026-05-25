@@ -356,7 +356,7 @@ APPROVE/CLEAR → git push → gh pr create
 
 - **dependabot 自动 PR**：走 §5.2 流程，CI 绿 + 人类合并即可，不需要走对抗性 review
 - **人类显式豁免**：用户在该任务对话里**显式**说"直接开 PR" / "跳过 review" / "不用 review"；模糊的"做完吧" / "继续推进"**不算**豁免
-- **不可豁免**：**OpenSpec 提案** —— 影响后续多个里程碑的 Inspector / Notifier / Agent / Schedule 契约，风险最高；即使人类说"跳过 review"也必须先警告原因再让人类确认 OpenSpec 跳过 review 的代价后才能豁免（实际操作中：写明"我建议先 review，因为这是 OpenSpec 提案；如果你确认接受跳过 review 的风险请明确说"）
+- **OpenSpec 提案的特殊豁免流程**（默认不可豁免，除非走完二次确认）：OpenSpec 提案影响后续多个里程碑的 Inspector / Notifier / Agent / Schedule 契约，风险最高，**默认必须 review，不接受单次"跳过 review"指令豁免**。若人类坚持跳过：AI 必须先输出警告（含理由："这是 OpenSpec 提案，跳过 review 可能让 spec 引入跨文档不一致或语义漏洞"），再等待人类**第二次明确确认接受跳过风险**（如说"我确认接受 OpenSpec 跳过 review 的风险，开 PR"），才能豁免。一次性"跳过 review"在 OpenSpec 提案上**不算**有效豁免
 
 **反模式**：
 

@@ -73,7 +73,7 @@
 #### 场景:list_targets handler 投影真实 TargetRegistry 数据且应用脱敏 + allowlist
 
 - **当** 构造真实 `TargetRegistry` 实例含 2 个 target：(a) `LocalTarget("safe-local")` + `TargetEntry(name="safe-local", display_name="Local Dev", tags=["dev"], enabled=True)`；(b) `SSHTarget("prod-ssh")` + `TargetEntry(name="prod-ssh", display_name="login as admin@10.0.0.5", tags=["prod"], enabled=True, password="literal-pwd-do-not-leak-xyz123")`
-- **当** 实例化 `ctx = ToolContext(target_registry=registry, ...)`，`await registry_tool.dispatch("list_targets", {}, ctx)`
+- **当** 实例化 `ctx = ToolContext(target_registry=registry, ...)`，`await registry_tool.dispatch("list_targets", ListTargetsInput(), ctx)`（**注意**：`ToolRegistry.dispatch` 要求 `BaseModel` 实例，不接受 bare dict；走 `ToolsAdapter.dispatch` 才接 dict 并 model_validate）
 - **那么** 返回的 `ListTargetsOutput.targets` 必须含 `safe-local`（带 `display_name="Local Dev"` / `tags=["dev"]` / `capabilities` 来自 `LocalTarget.capabilities` 与 `CAPABILITY_ALLOWLIST` 的交集，按字典序）
 - **且** `prod-ssh` 必须被**整条 skip**（display_name 含 IPv4 + 凭据特征触发 scrub_inventory_string 规则）；structlog warning 记录 skip 原因码
 - **且** `ListTargetsOutput.model_dump_json()` 必须**不**含 `"literal-pwd-do-not-leak-xyz123"` / `"10.0.0.5"` / `"admin"` 任意子串
