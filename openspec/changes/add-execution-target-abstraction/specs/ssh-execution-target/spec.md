@@ -10,7 +10,7 @@
 - 连接管理用 `asyncio.Lock` 保护"是否已建连 + 是否需重连"状态机；channel 创建本身**无需**加锁（asyncssh 原生支持并行 channel）
 - `connect_timeout` 默认 10s，可在 `TargetEntry` 配置中按 target override
 - `ssh.idle_timeout_seconds` 默认 300s：control connection 空闲超过此值时自动 close；下次 exec 按需重连
-- 断线重连：检测到 `asyncssh.misc.ConnectionLost` / `ChannelOpenError` 等后，自动重连**最多 3 次**，退避 1s / 3s / 9s（指数）；仍失败则 raise `TargetError("ssh_connection_lost", target=name)`
+- 断线重连：检测到 `asyncssh.misc.ConnectionLost` / `ChannelOpenError` 等后，**1 次自动重连**，退避 1s → 4s → 16s（指数；严格对齐 docs/OPERABILITY.md §2.2「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」）；仍失败则 raise `TargetError(kind="ssh_connection_lost", target=name)`
 - asyncssh `keepalive_interval` 设为 60s（早发现死连接）；`agent_forwarding=False` + `x11_forwarding=False` 显式禁用（最小权限，对齐 OPERABILITY §2.2）
 - `capabilities` 初始值 `{Capability.SSH, Capability.SHELL, Capability.FILE_READ}`；运行时按需探测 `SYSTEMD` / `DOCKER_CLI`（首次 `exec` 后探测一次并缓存到 target 实例）
 - 析构（`__del__` / `aclose`）必须 close control connection；测试套不允许 `ResourceWarning: unclosed transport`
@@ -33,8 +33,8 @@
 #### 场景:SSHTarget control connection 断开自动重连
 
 - **当** control connection 因服务端 idle disconnect 抛出 `ConnectionLost`；调用 `await target.exec("echo hi", timeout=5)`
-- **那么** 实现必须自动重连（最多 3 次，退避 1s/3s/9s）；首次重连成功后 exec 正常返回 ExecResult
-- **且** 若 3 次重连全失败，必须 raise `TargetError("ssh_connection_lost", target=name)`（**不**raise asyncssh 原生异常）
+- **那么** 实现必须自动重连**1 次**（退避 1s → 4s → 16s 序列；对齐 OPERABILITY §2.2）；首次重连成功后 exec 正常返回 ExecResult
+- **且** 若该 1 次重连仍失败（穷尽 16s 退避后仍 ConnectionLost），必须 raise `TargetError(kind="ssh_connection_lost", target=name)`（**不**raise asyncssh 原生异常）
 
 #### 场景:SSHTarget 连接超时 raise TargetError
 
@@ -65,12 +65,15 @@
 - **当** yaml 含 `password: literal-pwd`（非 `${...}` 占位）
 - **那么** loader 必须**成功**加载；`doctor --json` 输出 `credential_source == "inline_plaintext"` + warning（含 target name 与"建议改用 `${ENV_VAR}` 占位"的修复提示）；doctor 整体**不** exit 1
 
-#### 场景:password 不出现在 SSH 连接失败的错误日志（双层脱敏）
+#### 场景:password 不出现在 SSH 连接失败的错误日志（三层脱敏）
 
 - **当** SSH 认证失败（错误密码 `literal-pwd-do-not-leak-12345`），asyncssh 抛出 `PermissionDenied("auth failed for admin@10.0.0.5 with password literal-pwd-do-not-leak-12345")`
-- **那么** Hostlens 必须把异常包装成 `TargetError("ssh_auth_failed", target=name)` 前，先用 `hostlens.agent.tools_adapter.scrub_exception_message`（按 agent-tool-adapter spec §需求:handler 异常必须包装 定义的 5 类正则脱敏函数）清洗原始异常字符串 —— 这套 scrubber 覆盖 path / IPv4 / IPv6 / 凭据特征 / 身份键值对 / email-at-host，能处理"值里有敏感子串、key 名却看似无害"的场景
-- **且** 最终 `TargetError.__str__` / `structlog log` 中**禁止**含原始 password `literal-pwd-do-not-leak-12345`、原始 IP `10.0.0.5`、原始 username `admin` 子串；含 target name + kind `"ssh_auth_failed"` + sanitize 后的 asyncssh error 类型名
-- **注意**：**禁止**单独依赖 `hostlens.core.logging.redact_sensitive` —— 它只按 key 名脱敏 mapping（如 `{"password": "xxx"}` → `{"password": "***"}`），无法清洗 string 值中的敏感子串
+- **那么** Hostlens 必须把异常包装成 `TargetError(kind="ssh_auth_failed", target=name)` 前按以下**三层顺序**清洗原始异常字符串：
+  1. **已知 secret 精确替换**（SSHTarget 本地实现，必须）：用 `self._entry.password` / `self._entry.passphrase` 等**已知**的 secret 值在异常字符串上做 `str.replace(secret, "***")`；这层能保证 caller 配置过的 secret 一定被脱敏，**与正则规则覆盖范围无关**
+  2. **正则脱敏 `scrub_exception_message`**（来自 agent-tool-adapter spec §需求:handler 异常必须包装 定义）：覆盖 path / IPv4 / IPv6 / 凭据特征（`*_KEY=` / `Bearer` / `sk-...`）/ 身份键值对（`user=x` / `login=y` 等带 `=` 形式）/ email-at-host —— 处理 caller 不知道的"未知敏感子串"
+  3. **bare credential keyword scrub**（必须，覆盖 layer 2 漏的"key value"格式）：在 scrub_exception_message 之后再跑一次正则 `(?i)(password|passwd|pwd|passphrase|secret|token|api[_-]?key|auth)\s+\S+` → `"\1 ***"`，覆盖 `with password X` / `auth token Y` / `passphrase Z` 这种 caller-unknown 但形态明显的裸 secret
+- **且** 最终 `TargetError.__str__` / `structlog log` 中**禁止**含原始 password `literal-pwd-do-not-leak-12345`（被 layer 1 精确替换）、原始 IP `10.0.0.5`（被 layer 2 IPv4 规则脱敏）、原始 username `admin`（被 layer 2 email-at-host `admin@10.0.0.5` 整段脱敏）任意子串；保留 target name + kind `"ssh_auth_failed"` + sanitize 后的 asyncssh error 类型名
+- **注意**：**禁止**单独依赖 `hostlens.core.logging.redact_sensitive`（它只按 key 名脱敏 mapping）；**禁止**省略 layer 1（"已知 secret 精确替换"）—— 否则若用户的 password 字符不触发任何正则模式（如纯字母 + 数字 + 连字符），会泄露
 
 #### 场景:禁止 agent forwarding
 
@@ -141,7 +144,7 @@
 
 - 通过 `pytest-docker` 起 `linuxserver/openssh-server` 容器
 - 容器启动时**必须**在 `/etc/ssh/sshd_config` 注入 `AcceptEnv HOSTLENS_TEST_*`（通过 docker mod / `DOCKER_MODS` 环境变量或 fixture 的 post-start command）—— **禁止**测试假装"任意 env var 都能跑"（默认 sshd 拒收，会让 env 测试永远 flaky 或永远 false-pass）
-- 测试覆盖：成功 exec / 非零 exit / signal-killed exit (128+signum) / 超时取消 + 进程组回收 / 连接失败 + auto-retry / SFTP read_file / read_file 10MB raise / SFTP 不可用 raise / env 透传仅限 `HOSTLENS_TEST_*` 前缀 / control connection 复用 / idle timeout 关闭 + 重连 / control connection 断线 + 自动重连成功
+- 测试覆盖：成功 exec / 非零 exit / signal-killed exit (128+signum) / **超时取消 + channel close**（**SSH 远端进程不在 hostlens 进程下，hostlens 只能 close channel；远端进程清理由 sshd 负责，hostlens 不做进程组回收 —— 那是 LocalTarget 的事**）/ 连接失败 + 1 次自动重连（对齐 OPERABILITY §2.2）/ SFTP read_file / read_file 10MB raise / SFTP 不可用 raise / env 透传仅限 `HOSTLENS_TEST_*` 前缀 / control connection 复用 / idle timeout 关闭 + 重连 / control connection 断线 + 自动重连成功 / **三层 password scrub**（已知 secret 精确替换 + scrub_exception_message + bare credential keyword scrub）
 - **禁止** mock `asyncssh.connect` / `conn.run` —— 必须打真实 SSH 协议（CLAUDE.md §6 测试规则）
 - 容器 cold start ~10s，测试用 session-scoped fixture 复用容器；**测试用例之间必须独立**（每个测试用独立 username 或临时目录避免共享状态泄漏）
 - **CI retry 策略收紧**：`pytest-rerunfailures` 仅对显式标记 `@pytest.mark.flaky_ssh_integration` 的测试 retry 1 次；**禁止**全局 retry；retry 时必须保留首次失败日志 + container logs（`pytest --capture=no` 或 fixture 在 retry 时 dump container stderr）；若同一测试 1 周内 retry 命中 ≥3 次必须当 race condition bug 处理（不允许长期挂 flaky marker）

@@ -4,7 +4,10 @@
 
 `hostlens.targets.base.ExecutionTarget` 必须是 `typing.Protocol`，定义以下成员：
 
-- `name: str`：target 实例的唯一标识；必须匹配正则 `^[a-z][a-z0-9_\-]{0,63}$`（用于 yaml key 与 CLI 引用）
+- `name: str`：target 实例的唯一标识；必须匹配正则 `^[a-z][a-z0-9_\-]{0,63}$`（用于 yaml key 与 CLI 引用）。**正则必须在以下三个入口同时 enforce**（任一缺失 = 允许非法 name 绕过）：
+  1. `TargetsConfig` loader（`TargetEntry.name` 字段的 Pydantic `Field(pattern=...)`，见下方 `TargetsConfig` 需求）
+  2. 具体 `ExecutionTarget` 实现的构造器（`LocalTarget.__init__` / `SSHTarget.__init__` 在赋值 `self.name` 前 `re.fullmatch(...)`，不匹配 raise `TargetError(kind="invalid_target_name", name=name)`）
+  3. `TargetRegistry.register(target, entry)` 入口（在 register 前再校验 `target.name`，作为最后一道防线）
 - `type: Literal["local", "ssh", "docker", "k8s"]`：与 docs/ARCHITECTURE.md §5 锁定的 4 种 target 类型一致；**禁止**自定义 type 名（如 `kubernetes` 必须用 `k8s`）
 - `async def exec(self, cmd: str, *, timeout: int, env: dict[str, str] | None = None) -> ExecResult`：异步执行 shell-evaluated 命令；`timeout` 单位秒，必填；`env` dict 通过实现侧的 subprocess `env=` 参数注入，**禁止**实现侧把 env 拼到 cmd string
 - `async def read_file(self, path: str) -> bytes`：异步读远端文件；最大 10 MB（超出 raise `TargetError("file_too_large")`）
@@ -110,7 +113,7 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 - **POSIX-only**：M1 LocalTarget **只**支持 POSIX 宿主（Linux / macOS）；用的 `os.killpg` / `os.getpgid` / `start_new_session=True` 都是 POSIX 专有 API。Windows 宿主**禁止**在 import 时 silent fallback，必须在 `hostlens.targets.local` 模块 import 时检查 `sys.platform == "win32"` 并 raise `ImportError("LocalTarget requires POSIX host (Linux/macOS); Windows support is not in M1 scope")`，给清晰错误（不是运行时 cryptic 错误）
 - `type == "local"`
-- `capabilities` 至少含 `{SHELL, FILE_READ}`；运行时探测：如 `which docker` 成功则加 `DOCKER_CLI`；如 `which systemctl` 成功则加 `SYSTEMD`（探测结果在 target 构造时缓存，**不**每次 exec 都重新探测）
+- `capabilities` 至少含 `{SHELL, FILE_READ}`；运行时探测必须用 `which <bin>`（不是 `<bin> --version`，因为某些远端只有 binary 没有 PATH 中 alias；`which` 是 POSIX 标准且更轻）—— 如 `which docker` 成功则加 `DOCKER_CLI`；如 `which systemctl` 成功则加 `SYSTEMD`（探测结果在 target 构造时缓存，**不**每次 exec 都重新探测）
 - `exec` 实现走 `asyncio.create_subprocess_shell(cmd, env=..., start_new_session=True)`，**禁止**走 `create_subprocess_exec`（M1 Inspector 命令含 pipe / redirect 必须 shell 解析）；`start_new_session=True` 是必需的——shell 会 fork 子进程（如 `sh -c 'sleep 60'` 实际进程树是 `sh → sleep`），只 SIGKILL 顶层 shell 不会回收 sleep
 - 超时实现：`asyncio.wait_for` 包裹 `proc.communicate()` 抛 `TimeoutError` 时，**必须**调用 `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组，然后 `await proc.wait()` 确保 reaped；**禁止**只 `proc.kill()`（只杀顶层 shell，留下 zombie sleep）
 - `env` 参数传入时**合并**到 `os.environ.copy()` 之上（不是替换），保留 PATH 等关键 env var
@@ -178,25 +181,31 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 - **当** 注册 `target` + `entry=TargetEntry(name="prod-web", display_name="Prod Web", tags=["prod"], enabled=True, ...)`
 - **那么** `registry.get_entry("prod-web")` 必须返回该 entry；`registry.list_entries()` 必须按 name 字典序返回 entries，能让调用方拿到 `display_name` / `description` / `tags` / `enabled`
 
+#### 场景:register 拒绝非法 name target（绕过 loader 路径）
+
+- **当** 测试代码直接构造 `LocalTarget(name="Prod-Web")` 或 `SSHTarget(name="1web")`（绕过 yaml loader，name 不匹配 `^[a-z][a-z0-9_\-]{0,63}$`）
+- **那么** target 构造器**必须**在 `__init__` 中 raise `TargetError(kind="invalid_target_name", name=name)`
+- **且** 假设构造器漏校验直接拿到 target 实例，调用 `registry.register(target, entry)` 也**必须** raise `TargetError(kind="invalid_target_name")`（registry 是最后一道防线）
+
 ### 需求:`TargetsConfig` 必须从 yaml 加载且环境变量占位展开
 
 `hostlens.targets.config.TargetsConfig` 必须是 Pydantic v2 模型：
 
 - 顶层结构：`version: Literal["1"]` + `targets: list[TargetEntry]`
 - `TargetEntry` 通用字段（**所有 type 共有**）：
-  - `name: str`（必填）
+  - `name: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_\-]{0,63}$")]`（必填；正则与 `ExecutionTarget.name` 约束严格一致 —— Pydantic 在 yaml 加载时 enforce，**禁止**仅在 Protocol 文档上声明而 loader 不校验）
   - `type: Literal["local", "ssh"]`（必填，discriminator）
   - `enabled: bool = True`（默认 enabled；可在 yaml 显式设 false 暂停某 target）
   - `display_name: str | None = None`（人类友好名，可选；缺省时 list_targets 投影用 `name`）
   - `description: str | None = None`（可选说明）
   - `tags: list[str] = Field(default_factory=list)`（默认空 list；Pydantic v2 必须用 `default_factory` 而不是可变默认值 `[]` 避免实例间共享；list_targets 投影直接透传）
-- `TargetEntry` SSH-specific 字段集**恰好**为 `{host, user, port, key_path, password, passphrase}`（不多不少，且都来自 SSH 协议本身需要的字段；通用元数据走上面的通用字段）
+- `TargetEntry` SSH-specific 字段集**恰好**为 `{host, user, port, key_path, password, passphrase, connect_timeout}`（7 个字段；`connect_timeout: int | None = None` 允许 per-target override `asyncssh.connect(connect_timeout=...)` 默认值；`extra="forbid"` 防 typo）
 - **凭据字段命名约定**（与 CLI 参数 + proposal Demo Path 严格一致）：
   - `key_path: str | None` —— SSH 私钥文件路径（路径本身非 secret，文件内容才是）；CLI 参数 `--key-path PATH`
   - `password: str | None` —— SSH 密码；CLI 参数 `--password-env VAR`（CLI 不接受明文 `--password`，仅 env 占位）；yaml 中可以是 `${VAR}` 占位或字面值（字面值触发 doctor warn）
   - `passphrase: str | None` —— 加密私钥的 passphrase；CLI 参数 `--passphrase-env VAR`；yaml 同 `password` 规则
-- yaml 中 `${VAR_NAME}` 占位必须在加载时展开（从 `os.environ` 读取）；未设置时 raise `ConfigError("missing_env_var", var=VAR_NAME, target=target_name)`
-- `${...}` 占位**仅**允许出现在 secret 字段（`password` / `passphrase`）—— 出现在 `host` / `user` / `port` / `key_path` 等字段时 raise `ConfigError("env_placeholder_not_allowed_here")`
+- yaml 中 `${VAR_NAME}` 占位必须在加载时展开（从 `os.environ` 读取）；未设置时 raise `ConfigError(kind="missing_env_var", var_name=VAR_NAME, target=target_name)`（依赖 M1 落地的 ConfigError 扩展，见下方需求 §需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段）
+- `${...}` 占位**仅**允许出现在 secret 字段（`password` / `passphrase`）—— 出现在 `host` / `user` / `port` / `key_path` 等字段时 raise `ConfigError(kind="env_placeholder_not_allowed_here", field=field_name, target=target_name)`
 - 加载文件不存在时返回空 `TargetsConfig(version="1", targets=[])`，但 `load_targets_config` 必须**同时**通过 structlog 输出 INFO 级日志「config file not found, returning empty registry」+ doctor 会以 hint 状态显示「没有任何已配置 target，跑 `hostlens target add` 开始」—— 不 raise 但也不静默通过
 
 加载入口：`hostlens.targets.config.load_targets_config(path: Path) -> TargetsConfig`
@@ -225,6 +234,55 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 
 - **当** yaml 含 `type: vm`
 - **那么** 加载必须 raise `pydantic.ValidationError`（type 字段是 Literal）
+
+#### 场景:TargetEntry name 不匹配正则 raise
+
+- **当** yaml 含 `name: Prod-Web`（含大写）或 `name: 1web`（数字开头）或 `name: prod web`（含空格）
+- **那么** 加载必须 raise `pydantic.ValidationError`，错误指明 name 必须匹配 `^[a-z][a-z0-9_\-]{0,63}$`（loader 强制 enforce，不依赖 ExecutionTarget Protocol 文档的声明）
+
+#### 场景:TargetEntry SSH 字段集严格
+
+- **当** SSH `TargetEntry` 实例化时多传一个未声明字段（如 `agent_forwarding=True` 或 `compression=False`）
+- **那么** 必须 raise `pydantic.ValidationError`（`extra="forbid"`），错误指明 unknown field name
+- **且** SSH 字段集**恰好**是 `{host, user, port, key_path, password, passphrase, connect_timeout}` 7 个
+
+### 需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段
+
+M0 已落地的 `hostlens.core.exceptions.ConfigError` 当前签名是 `ConfigError(message: str, *, original: Exception | None = None)`，**无法**承载 `kind` / `var_name` / `target` 等结构化字段。M1 落地必须扩展 `ConfigError` 签名为：
+
+```python
+class ConfigError(HostlensError):
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        kind: str | None = None,
+        original: Exception | None = None,
+        **extra: object,  # structured fields (var_name / target / field / ...)
+    ) -> None:
+        ...
+```
+
+- `kind: str | None` —— 结构化错误码（如 `"missing_env_var"` / `"env_placeholder_not_allowed_here"`），便于 doctor 输出结构化诊断
+- `**extra` 收集任意 keyword 参数为 `self.extra: dict[str, object]`，让 caller 传 `var_name=...` / `target=...` / `field=...` 等上下文
+- 向后兼容：M0 caller `ConfigError("some message")` 必须仍 work（`message` 是位置参数，`kind` 默认 `None`）
+- `__str__` 输出格式：`f"{kind}: {message}" if kind else message`，附带 `extra` 字段的 `key=value` 列表（脱敏后，**不**含 secret 值）
+- 同期更新 M0 spec `core-services` 中 `ConfigError` 的描述（在本提案的 `core-services` 增量 spec 文件中以 MODIFIED 形式给出）
+
+#### 场景:ConfigError 接受结构化 kind + extra
+
+- **当** `err = ConfigError(kind="missing_env_var", var_name="HOSTLENS_PWD", target="prod-web")`
+- **那么** `err.kind == "missing_env_var"` / `err.extra == {"var_name": "HOSTLENS_PWD", "target": "prod-web"}` / `str(err)` 必须含 `"missing_env_var"` + `"var_name=HOSTLENS_PWD"` + `"target=prod-web"`
+
+#### 场景:ConfigError M0 调用风格仍 work
+
+- **当** `err = ConfigError("invalid yaml")`（M0 风格）
+- **那么** 必须成功；`err.kind is None` / `err.extra == {}` / `str(err) == "invalid yaml"`
+
+#### 场景:ConfigError extra 不泄露已知 secret 字段名值
+
+- **当** `err = ConfigError(kind="invalid_field", field="password", target="prod-web")` —— 注意 caller 传了 `field="password"` 但**不**传 password 值本身
+- **那么** `str(err)` 含 `"field=password"` 但**不**含任何 password 实际值（caller 不传，extra 也存不进来）；**禁止** caller 通过 extra 传具体 secret 值（约定层面，spec 文档说明 caller 责任）
 
 ### 需求:`hostlens target` CLI 命令集且写命令拒绝 root
 

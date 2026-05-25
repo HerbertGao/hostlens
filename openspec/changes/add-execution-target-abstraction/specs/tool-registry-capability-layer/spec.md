@@ -30,7 +30,7 @@
 
 #### 场景:target_registry 是真实 TargetRegistry 类型
 
-- **当** 检查 `ToolContext.__annotations__["target_registry"]`
+- **当** 检查 `typing.get_type_hints(ToolContext)["target_registry"]`（**必须用 `get_type_hints` 而不是 `__annotations__`** —— 仓库广泛使用 `from __future__ import annotations`，`__annotations__` 在该模式下返回 string 而非 type 对象，会让断言失效）
 - **那么** 必须解析为 `hostlens.targets.registry.TargetRegistry` 真实类型（**不**是 stub Protocol 或 `typing.Any`）
 - **且** `hostlens.tools.base` 模块的 import 段必须含 `from hostlens.targets.registry import TargetRegistry`，**禁止**保留 stub Protocol 类定义或 `if TYPE_CHECKING: ...` 的 Protocol fallback
 - **且** 旧 stub Protocol 上的 `list_summaries()` 方法签名必须从 `hostlens.tools.base` 中**完全删除**（**禁止**保留为 backward compat 别名 —— 真实 `TargetRegistry.list()` 取代它）

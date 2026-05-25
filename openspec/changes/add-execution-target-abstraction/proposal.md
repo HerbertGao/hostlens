@@ -20,7 +20,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 **新增（ssh-execution-target 实现 + 凭据约束）：**
 
 - `hostlens.targets.ssh.SSHTarget`：基于 `asyncssh` 的实现；`type="ssh"`；capabilities = `{SSH, SHELL, FILE_READ, SYSTEMD}`（SYSTEMD 在 capability 检测时按需加）
-- **SSH connection pool（必须）**：每个 `SSHTarget` 实例维护**一个** asyncssh control connection（per-process per-target，类似 OpenSSH `ControlMaster auto`）；每次 `exec` 在该连接上**新建 channel**（`conn.create_session` / `conn.run`），不重新 SSH；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭；连接断开 / EOF 时**最多自动重连 3 次**（指数退避 1s/3s/9s），超出 raise `TargetError("ssh_connection_lost")`。**对齐 docs/OPERABILITY.md §2 硬约束**——「不允许『每个 Inspector 重新 SSH 一次』」
+- **SSH connection pool（必须）**：每个 `SSHTarget` 实例维护**一个** asyncssh control connection（per-process per-target，类似 OpenSSH `ControlMaster auto`）；每次 `exec` 在该连接上**新建 channel**（`conn.create_session` / `conn.run`），不重新 SSH；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭；连接断开 / EOF 时**1 次自动重连**（指数退避 1s → 4s → 16s），仍失败 raise `TargetError(kind="ssh_connection_lost")`。**严格对齐 docs/OPERABILITY.md §2.2 硬约束**——「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」+「不允许『每个 Inspector 重新 SSH 一次』」
 - 凭据加载：**仅支持 key 认证为主**（M1 也支持 password 但 doctor 必须 warn）；`password` / `passphrase` 字段通过 `${ENV_VAR}` 占位从环境读（明文落 yaml 触发 doctor warning）；`key_path` 字段是普通文件路径（路径本身非 secret，文件内容由 asyncssh 加载）
 - SSH env 传递的限制：远端 sshd 默认 `AcceptEnv` 仅允许 `LANG LC_*`；Hostlens 不假装能传任意 env，docs 与 doctor 必须明确说明——**禁止**通过 `export VAR=value; cmd` 拼到 cmd string 的方式传 secret（会进 process list / shell history，与 docs/ARCHITECTURE.md §4 secret 边界冲突）；推荐方式：(a) 用户在远端 sshd 配 `AcceptEnv HOSTLENS_*`；(b) Inspector 通过 stdin 传 secret
 - 集成测试：CI 起 `linuxserver/openssh-server` 容器跑真实 sshd（**不**mock `asyncssh`，按 CLAUDE.md §6 测试规则）；测试容器必须自带 `AcceptEnv HOSTLENS_TEST_*` 配置；env 注入测试**只**断言带 `HOSTLENS_TEST_` 前缀的 var 能透传（不假装任意 env 都能跑）
@@ -103,10 +103,10 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 | 故障 | 行为 | 用户可见状态 |
 |---|---|---|
 | LocalTarget exec 超时 | `asyncio.wait_for` 取消 + `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组（`start_new_session=True` 保证 shell fork 的子进程也被回收）；返回 `ExecResult(timed_out=True, exit_code=None)` | finding-level: `inspector_status: timeout`（M1 下一提案体现）；本提案 ExecResult 用 `exit_code=None + timed_out=True` 表达，**禁止**用 `-1` 魔数（与 Linux signal-killed exit code 冲突） |
-| SSHTarget control connection 断开 / EOF | 最多自动重连 3 次（指数退避 1s/3s/9s），仍失败则 raise `TargetError("ssh_connection_lost")` | exit 1 + run status partial |
+| SSHTarget control connection 断开 / EOF | 1 次自动重连（指数退避 1s → 4s → 16s，对齐 OPERABILITY §2.2），仍失败则 raise `TargetError(kind="ssh_connection_lost", target=name)` | exit 1 + run status partial |
 | SSHTarget 主机不可达（DNS / 拒绝 / 防火墙） | 单 target 标 `target_unreachable`；其它 target 继续；error log 含目标 host + 错误码（**不含**凭据） | run status: `partial`（M4 Scheduler RunStatus 兜底） |
 | SSHTarget 凭据错误（key permission denied / wrong password） | raise `TargetError("ssh_auth_failed", target=name)`；error message 经 `scrub_exception_message`（agent-tool-adapter spec 已定义的字符串值脱敏函数，**不**复用 `redact_sensitive` 因为后者只按 key 名脱敏 mapping 无法清洗 string 子串）；CLI 显示 `hostlens target test <name>` 建议 | exit 1；doctor 也能预先 detect |
-| `targets.yaml` 引用的 `${ENV_VAR}` 未设置 | 加载时 raise `ConfigError("missing_env_var", var_name=name, target=name)`；**禁止**默默用空 string 当 password | hostlens doctor exit 1，CLI 命令启动 fail-fast |
+| `targets.yaml` 引用的 `${ENV_VAR}` 未设置 | 加载时 raise `ConfigError(kind="missing_env_var", var_name=var_name, target=target_name)`（M1 落地需扩展 ConfigError 加 `kind` 与结构化 keyword 字段，详见 execution-target spec §需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段）；**禁止**默默用空 string 当 password | hostlens doctor exit 1，CLI 命令启动 fail-fast |
 | SSH env 注入但远端 sshd 拒收（`AcceptEnv` 限制） | env 被远端静默丢弃；本地无法检测；docs 必须说明；M1 不在 runtime 验证（成本太高）；推荐用户配 `AcceptEnv HOSTLENS_*` 前缀 | docs 警告 |
 | LocalTarget read_file 路径不存在 | raise `FileNotFoundError`；上层（Inspector）按 `requires_files` 自动 skip | finding-level: `requires_unmet` |
 | SSHTarget read_file SFTP 不可用 | raise `TargetError("sftp_unavailable")`；**禁止** fallback 到 `cat` shell 命令（含命令注入风险且无法保证字节完整性） | exit 1；用户需在远端启用 sftp-server subsystem |
@@ -121,7 +121,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - **TargetRegistry 实例数**：进程内单例，由 Settings 注入时构造
 - **SSH 连接建立超时**：10s（asyncssh `connect_timeout`），可在 targets.yaml per-target 配
 - **SSH idle timeout**：300s（`ssh.idle_timeout_seconds`），control connection 空闲超过后自动 close + 下次 exec 时按需重连；对齐 docs/OPERABILITY.md §2.1
-- **SSH 自动重连退避**：1s / 3s / 9s（指数）最多 3 次；超出 raise `TargetError("ssh_connection_lost")`
+- **SSH 自动重连退避**：1s → 4s → 16s（指数）共 1 次重连尝试（对齐 OPERABILITY §2.2；超出 raise `TargetError(kind="ssh_connection_lost", target=name)`）
 - **read_file 大小上限**：M1 默认 10 MB，超出 raise `TargetError("file_too_large")`，防止 SSH 一次拉巨大日志 OOM
 
 ## Security & Secrets
@@ -130,9 +130,10 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 
 - **密钥来源**：仅环境变量（`${ENV_VAR}` 占位）；macOS Keychain / SOPS 加密留到 M5+
 - **明文密码警告**：`targets.yaml` 中 `password` 字段不通过 `${...}` 占位（即字面量） → loader 接受但 doctor 标 warning；future M2+ 可升级为加载时 error
-- **凭据脱敏（双层）**：
+- **凭据脱敏（三层）**：
   1. **按 key 名脱敏**（dict 层）：`core/logging.redact_sensitive`（已落地）—— 处理 structured log 的 `password=...` 字段
-  2. **按值脱敏**（string 层）：复用 `agent-tool-adapter` spec 已定义的 `scrub_exception_message`（path / IP / 凭据特征 / 身份键值对 / email-at-host 5 类正则）—— 处理 SSH 异常字符串里出现 `connect to admin@10.0.0.5 failed` 这种**值里有敏感子串、key 名却看似无害**的场景；`TargetError.__str__` 与 SSH 错误的 structlog log 都必须先过这层
+  2. **按已知 secret 精确替换**（string 层 layer 1）：SSHTarget 用 `self._entry.password` / `passphrase` 等**自己持有的已知 secret 值**在异常字符串上 `str.replace(secret, "***")` —— 这层保证 caller 配的 secret 一定被脱敏，**不依赖正则覆盖范围**
+  3. **按未知敏感子串脱敏**（string 层 layer 2 + 3）：先跑 `agent-tool-adapter` spec 已定义的 `scrub_exception_message`（5 类正则：path / IPv4 / IPv6 / 凭据键值对 / email-at-host）；再跑 bare credential keyword scrub `(?i)(password|passwd|pwd|passphrase|secret|token|api[_-]?key|auth)\s+\S+` 覆盖 "with password X" / "auth token Y" 这种 key-value 空格形式（layer 2 漏的）；`TargetError.__str__` 与 SSH 错误的 structlog log 都必须按 (2) → (3) 顺序跑这两层
 - **攻击面**：新增 SSH client 能力 = 给 hostlens 进程加了对外发起 SSH 连接的能力；不引入入站监听端口；M9 Remediation 才会有"通过 SSH 改远端状态"的能力（届时再做 RBAC）
 - **EUID == 0 拒绝（CLI 写操作）**：`target add` / `target remove` 写 `~/.config/hostlens/targets.yaml`（含凭据引用），按 CLAUDE.md §4.5 + 全局"写操作必须拒绝 root"硬约束，EUID==0 时直接 exit 1，输出修复建议（"请用普通用户运行；如必须以 root 部署 daemon，先在普通用户下创建配置文件再 chown"）；`list` / `test` / `doctor` 是只读，允许 root
 

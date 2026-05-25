@@ -121,28 +121,29 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 - ❌ 强制 keychain：M1 范围爆炸
 - ❌ 仅支持 key 认证：用 docker `linuxserver/openssh-server` 起测试容器配 key 比配 password 复杂得多，CI 集成测试体验差
 
-### 决策 6：SSHTarget 维护 per-target control connection pool（M1 必须复用）
+### 决策 6：SSHTarget 维护 per-target control connection pool（M1 必须复用，1 次重连）
 
-**选择**：每个 `SSHTarget` 实例持有**一个** asyncssh control connection（首次 `exec` 时建立）；每次 `exec` 在该连接上**新建 channel**（`conn.run`）；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才 close；连接断开 / EOF / 心跳失败时按指数退避自动重连最多 3 次。**对齐 docs/OPERABILITY.md §2.1 的硬约束**「不允许『每个 Inspector 重新 SSH 一次』」。
+**选择**：每个 `SSHTarget` 实例持有**一个** asyncssh control connection（首次 `exec` 时建立）；每次 `exec` 在该连接上**新建 channel**（`conn.run`）；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才 close；连接断开 / EOF / 心跳失败时按指数退避 **1s → 4s → 16s 自动重连 1 次**（严格对齐 docs/OPERABILITY.md §2.2 措辞「1 次自动重连（指数退避 1s→4s→16s）」），仍失败 raise `TargetError(kind="ssh_connection_lost")`。
 
 **理由**：
 
-- **OPERABILITY 已硬性规定**：§2.1 明确"每个 target 维护一个 per-process SSH connection pool（类似 OpenSSH ControlMaster auto）"+ §2.2 "不允许『每个 Inspector 重新 SSH 一次』—— 这是 M1 实施 SSH target 时必须 enforced 的硬约束"。本提案不可绕过
+- **OPERABILITY 已硬性规定**：§2.1 明确"每个 target 维护一个 per-process SSH connection pool（类似 OpenSSH ControlMaster auto）"+ §2.2 "连接中断 → 1 次自动重连（指数退避 1s→4s→16s），再失败 → 该 target 本次巡检全部 Inspector 标记 `target_unreachable`" + "不允许『每个 Inspector 重新 SSH 一次』—— 这是 M1 实施 SSH target 时必须 enforced 的硬约束"。本提案严格复制 OPERABILITY 措辞与参数，不引入新解读
 - SSH connection 建立成本（key exchange + 认证）100-500ms；M6+ 一次巡检会跑 10+ Inspector，per-exec 建连会把单次巡检拖长几秒
 - asyncssh `connect()` 返回的 `SSHClientConnection` 原生支持并行多 channel；并行 4 个 Inspector 在同一连接上互不阻塞
 - 实现上其实并不复杂：一个 `asyncio.Lock` 保护"是否已建连 + 是否需重连"状态机；channel 创建本身无需加锁
-- 重连退避（1s/3s/9s 最多 3 次）防止反复打挂边缘性可用的 sshd
+- **退避总时长 21s**（1+4+16）；超出后转为业务级 `target_unreachable`，由 Inspector Runner / Scheduler 决定是否在下次巡检重试
 
 **替代**：
 
 - ❌ 每次 exec 新建连接：违反 OPERABILITY §2 硬约束
+- ❌ 重连 3 次 / 退避 1s/3s/9s（前一轮 spec 误写）：与 OPERABILITY §2.2 参数不符；spec 之间不一致会让实现者无从依据
 - ❌ 长连接 + 无 idle timeout：长跑 daemon 下连接数随 target 数线性增长；300s idle 是合理上限
 
 ### 决策 7：SSH `env` 注入只走 asyncssh `env=` 参数（**禁止** export 拼接）
 
 **选择**：
 
-- `SSHTarget.exec(env=...)` 内部把 dict 传给 `asyncssh.run(env=env)`
+- `SSHTarget.exec(env=...)` 内部把 dict 传给 asyncssh control connection 上的 `conn.run(env=env)`（**不**是 module-level `asyncssh.run(...)`，asyncssh 没有这个 API）
 - 远端 sshd 默认只 `AcceptEnv LANG LC_*` —— 大多数 env var 会被静默丢弃
 - docs 与 doctor 必须明确说明这一限制；M1 不在 runtime 验证（验证成本太高 + false alarm 率高）
 - 真正传 secret 的 Inspector 必须走**以下三种方式之一**，**不允许**其它：
@@ -208,7 +209,7 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 3. **明文密码 doctor warn 被忽略**：用户长期忽视 warning 把 prod 凭据明文写进 yaml → 缓解：M2+ 升级为加载时 error；M1 doctor warn 文本必须含修复步骤示例
 4. **SSH env 注入限制踩坑**：用户配了 env 但 Inspector 跑不通 → 缓解：docs 顶部突出说明 + Inspector 提案（下一个）的 `secrets` 字段加载时强制走 env 路径并给出 sshd `AcceptEnv` 配置示例
 5. **`exec` 收 string 引入 shell 注入风险**：本提案不做防御 → 缓解：本提案 spec 明确"shell 注入防御边界在 manifest 渲染层"；Inspector 提案必须实现 Jinja `| sh` filter 强制 + secret env-only 约束；本提案 docs 引用该边界
-6. **SSH connection pool 引入新风险面**：长连接断开 / 服务端 idle disconnect / FD 泄漏 → 缓解：必须有自动重连（指数退避 1s/3s/9s 最多 3 次）；必须有 `ssh.idle_timeout_seconds` 主动 close；测试覆盖"server 主动断开"场景；asyncssh 自带 `keepalive_interval` 默认 60s 帮助早发现
+6. **SSH connection pool 引入新风险面**：长连接断开 / 服务端 idle disconnect / FD 泄漏 → 缓解：必须有 1 次自动重连（指数退避 1s → 4s → 16s，对齐 OPERABILITY §2.2）；必须有 `ssh.idle_timeout_seconds` 主动 close；测试覆盖"server 主动断开"场景；asyncssh 自带 `keepalive_interval` 默认 60s 帮助早发现
 7. **`Capability` Enum 与既有 `CAPABILITY_ALLOWLIST` 同 PR 切换**：M2 已上线代码用 `{shell, file_read, file_write, docker, k8s_exec}`，新 Enum 会改这套；任何已有测试 fixture 含老值会同时挂 → 缓解：tasks.md 显式列"更新 CAPABILITY_ALLOWLIST + 配套测试"；本提案 PR 不允许只改一头
 
 ### 权衡
@@ -224,7 +225,7 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 1. **Tool Registry `target_registry` 字段类型切换**：本提案 PR 同时修改 `src/hostlens/tools/base.py` 把 stub Protocol import 改为真实 `TargetRegistry`；M2 注释中的"M1 落地前可用 stub"删除
 2. **`list_targets` handler 升级**：本提案 PR 同时让 `list_targets` handler 从真实 registry 取数据（之前返回空 list / 假数据）；M2 已通过的相关测试需要更新 fixture 提供真实 TargetRegistry
 3. **配置文件向后兼容**：`targets.yaml` 是新文件，M0 用户没有 → 不需要迁移；loader 找不到文件时返回空 registry（不报错），doctor 提示用户运行 `hostlens target add`
-4. **回滚策略**：本提案 = 新增模块 + Tool Registry 一个字段类型切换；回滚 = revert PR；M0 / M2 不依赖本提案的运行时数据，回滚后 `list_targets` 退回到 stub 状态（M2 测试需保留 stub fallback fixture 以便回滚）
+4. **回滚策略**：本提案 = 新增模块 + Tool Registry 一个字段类型切换；回滚 = `git revert <PR commit>` 即可（带走 stub Protocol 删除 + handler 迁移 + 字段类型切换三处的所有改动，原子还原到 M2 stub 状态）。**不**需要在 main 代码或测试 fixture 里保留 stub fallback —— task 8.4 明确禁止保留 stub fallback，因为 M1 落地后 stub 即死代码，留着会和真实类型在 mypy / 测试上互相干扰。回滚靠 git，不靠 fallback
 
 ## Open Questions
 
