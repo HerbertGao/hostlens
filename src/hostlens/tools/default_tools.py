@@ -136,6 +136,15 @@ async def run_inspector_handler(args: RunInspectorInput, ctx: ToolContext) -> Ru
         )
 
     # ---- 5. Project InspectorResult -> RunInspectorOutput ------------ #
+    # When status != "ok" the runner already produces an empty findings list,
+    # but we enforce findings=[] here at the handler boundary so the
+    # ToolSpec contract stays stable even if runner behavior shifts later.
+    if result.status != "ok":
+        return RunInspectorOutput(
+            target_name=result.target_name,
+            inspector_name=result.name,
+            findings=[],
+        )
     return RunInspectorOutput(
         target_name=result.target_name,
         inspector_name=result.name,

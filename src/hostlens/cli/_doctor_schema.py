@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "CheckResult",
@@ -161,8 +161,8 @@ class InspectorsHealth(BaseModel):
 
     status: Literal["ok", "warn", "fail"]
     loaded: int
-    errors: list[InspectorLoadErrorRow] = []
-    missing_secrets: list[InspectorMissingSecretRow] = []
+    errors: list[InspectorLoadErrorRow] = Field(default_factory=list)
+    missing_secrets: list[InspectorMissingSecretRow] = Field(default_factory=list)
 
 
 class DoctorReport(BaseModel):
@@ -177,9 +177,13 @@ class DoctorReport(BaseModel):
     # M1 additive field — optional so a missing ``targets`` key in older
     # snapshots does not break the schema test (the field defaults to
     # an empty list, which renders as ``"targets": []`` in JSON).
-    targets: list[TargetHealth] = []
+    targets: list[TargetHealth] = Field(default_factory=list)
     # M1.4 (`add-inspector-plugin-system`) additive field — optional with
     # a sentinel default so the M0 snapshot tests that only assert on
     # ``checks`` / ``ready`` keep working. Real ``run_doctor`` calls
-    # always populate this.
-    inspectors: InspectorsHealth = InspectorsHealth(status="ok", loaded=0)
+    # always populate this. ``default_factory`` ensures a fresh
+    # ``InspectorsHealth`` (with its own ``errors`` / ``missing_secrets``
+    # lists) per ``DoctorReport`` rather than a class-level shared instance.
+    inspectors: InspectorsHealth = Field(
+        default_factory=lambda: InspectorsHealth(status="ok", loaded=0)
+    )
