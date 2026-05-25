@@ -352,13 +352,11 @@ APPROVE/CLEAR → git push → gh pr create
 2. **`/review-loop`** —— 纯 Claude 通用 subagent 版本，Codex 不可用或速度优先时用
 3. **`/code-review`**（轻量）—— 单轮 review，适合小型机械修复（typo / 重命名 / 单行 fix）
 
-**豁免条件（必须人类显式说才豁免）**：
+**豁免条件**（默认必须 review；以下情形允许跳过）：
 
-- 用户在该任务对话里**显式**说"直接开 PR" / "跳过 review" / "不用 review"
-- 模糊的"做完吧" / "继续推进"**不算**豁免
-- dependabot 自动 PR 豁免（dependabot 走 §5.2 流程，CI 绿 + 人类合并即可）
-
-**OpenSpec 提案风险最高**（影响后续多个里程碑的 Inspector / Notifier / Agent / Schedule 契约），**必须** review，无例外。
+- **dependabot 自动 PR**：走 §5.2 流程，CI 绿 + 人类合并即可，不需要走对抗性 review
+- **人类显式豁免**：用户在该任务对话里**显式**说"直接开 PR" / "跳过 review" / "不用 review"；模糊的"做完吧" / "继续推进"**不算**豁免
+- **不可豁免**：**OpenSpec 提案** —— 影响后续多个里程碑的 Inspector / Notifier / Agent / Schedule 契约，风险最高；即使人类说"跳过 review"也必须先警告原因再让人类确认 OpenSpec 跳过 review 的代价后才能豁免（实际操作中：写明"我建议先 review，因为这是 OpenSpec 提案；如果你确认接受跳过 review 的风险请明确说"）
 
 **反模式**：
 
