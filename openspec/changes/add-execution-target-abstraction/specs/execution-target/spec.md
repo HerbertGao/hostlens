@@ -130,9 +130,12 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 #### 场景:LocalTarget 超时回收整个进程组无 zombie
 
-- **当** 调用 `await local.exec("sleep 60", timeout=1)`
+- **当** 调用 `await local.exec("sleep 60", timeout=1)`，记录 subprocess 的 `proc.pid` 为 `parent_pid`
 - **那么** 必须在 ~1s 后返回 `ExecResult(timed_out=True, exit_code=None)`
-- **且** 用 `psutil.Process(...).children(recursive=True)` 在 hostlens 父进程下检查，**禁止**有 `sleep` 残留进程
+- **且** 必须用 **两层** 检查验证无残留进程：
+  1. `psutil.pid_exists(parent_pid)` 必须为 `False`（subprocess 已 reaped）
+  2. **全用户范围 sleep 扫描**：`[p for p in psutil.process_iter(['cmdline','username']) if p.info['username']==getpass.getuser() and p.info['cmdline'] and 'sleep' in p.info['cmdline'][0] and any('60' in arg for arg in p.info['cmdline'])]` 必须为空集
+     —— 这层捕获 `start_new_session=True` 让子进程 reparent 到 PID 1 后**不**出现在 hostlens 后代树里的场景；如果 `os.killpg` 漏掉某进程，孤儿会被 init 收养但仍在 process table 里
 - **且** subprocess 必须已被 `await proc.wait()` reaped（无 defunct/zombie）
 
 #### 场景:LocalTarget env 合并而非替换
@@ -150,7 +153,7 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 `hostlens.targets.registry.TargetRegistry` 必须提供：
 
-- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；name 冲突 raise `TargetError(kind="duplicate_target", target=name)`
+- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；必须先校验 `target.name == entry.name`（否则 metadata 会与 target 错配 —— bind to 错误的 name 入口），不匹配 raise `TargetError(kind="target_entry_name_mismatch", target=target.name, entry_name=entry.name)`；name 冲突（与已注册的 name 撞）raise `TargetError(kind="duplicate_target", target=name)`
 - `get(name: str) -> ExecutionTarget`：未找到 raise `KeyError`
 - `get_entry(name: str) -> TargetEntry`：返回配置元数据；未找到 raise `KeyError`
 - `names() -> set[str]`：返回所有已注册 target 的 name 集合
@@ -187,6 +190,11 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 - **那么** target 构造器**必须**在 `__init__` 中 raise `TargetError(kind="invalid_target_name", target=name)`
 - **且** 假设构造器漏校验直接拿到 target 实例，调用 `registry.register(target, entry)` 也**必须** raise `TargetError(kind="invalid_target_name", target=target.name)`（registry 是最后一道防线）
 
+#### 场景:register 拒绝 target.name 与 entry.name 不一致
+
+- **当** `t = LocalTarget(name="a-good")`，`e = TargetEntry(name="another-name", type="local", ...)`，调用 `registry.register(t, e)`
+- **那么** 必须 raise `TargetError(kind="target_entry_name_mismatch", target="a-good", entry_name="another-name")`（避免 metadata 与 target 错绑）；registry 状态不变（不部分注册）
+
 ### 需求:`TargetsConfig` 必须从 yaml 加载且环境变量占位展开
 
 `hostlens.targets.config.TargetsConfig` 必须是 Pydantic v2 模型：
@@ -195,7 +203,14 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 - `TargetEntry` 通用字段（**所有 type 共有**）：
   - `name: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_\-]{0,63}$")]`（必填；正则与 `ExecutionTarget.name` 约束严格一致 —— Pydantic 在 yaml 加载时 enforce，**禁止**仅在 Protocol 文档上声明而 loader 不校验）
   - `type: Literal["local", "ssh"]`（必填，discriminator）
-  - `enabled: bool = True`（默认 enabled；可在 yaml 显式设 false 暂停某 target）
+  - `enabled: bool = True`（默认 enabled；可在 yaml 显式设 false 暂停某 target）。**disabled 行为约定**（**禁止**漂移）：
+    - loader：`load_targets_config` 仍加载 disabled target 到 `TargetsConfig.targets`（**不**过滤）
+    - registry 装配：`build_registry_from_config` 仍将 disabled target 注册到 registry（**不**过滤 —— 让 list_targets / doctor 能看到所有配置项，方便管理）
+    - `registry.list()` / `list_entries()` / `names()` 返回所有 target（含 disabled）
+    - `hostlens target test <name>` 对 disabled target 必须 exit 1 + stderr 含 `"target 'xxx' is disabled in targets.yaml"`，**不**触发连接
+    - 任何 `ExecutionTarget.exec(...)` / `read_file(...)` 调用前必须检查 entry.enabled；disabled 时 raise `TargetError(kind="target_disabled", target=self.name)`，**不**触发底层连接
+    - `hostlens doctor` 对 disabled target 标 `connectivity: "skipped"`（已在 doctor 需求里规定）
+    - `list_targets` ToolSpec handler **不**过滤 disabled target；返回的 `TargetSummary.enabled` 必须为 `False`（让 Agent 知道存在但 disabled，由 Agent 决定是否在 inspector dispatch 时跳过）
   - `display_name: str | None = None`（人类友好名，可选；缺省时 list_targets 投影用 `name`）
   - `description: str | None = None`（可选说明）
   - `tags: list[str] = Field(default_factory=list)`（默认空 list；Pydantic v2 必须用 `default_factory` 而不是可变默认值 `[]` 避免实例间共享；list_targets 投影直接透传）

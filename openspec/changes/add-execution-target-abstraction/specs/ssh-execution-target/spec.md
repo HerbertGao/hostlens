@@ -10,18 +10,23 @@
 - 连接管理用 `asyncio.Lock` 保护"是否已建连 + 是否需重连"状态机；channel 创建本身**无需**加锁（asyncssh 原生支持并行 channel）
 - `connect_timeout` 默认 10s，可在 `TargetEntry` 配置中按 target override
 - `ssh.idle_timeout_seconds` 默认 300s：control connection 空闲超过此值时自动 close；下次 exec 按需重连。**该配置由 M0 `Settings.ssh.idle_timeout_seconds` 提供**（M1 通过 task 4.3a 扩展 Settings 加入 `ssh` 子 namespace；env var `HOSTLENS_SSH__IDLE_TIMEOUT_SECONDS` 可 override）；**不**放进 `TargetEntry` 字段集（M1 范围内 per-process 单值即可，per-target override 推到有用户需求时）
-- 断线重连：检测到 `asyncssh.misc.ConnectionLost` / `ChannelOpenError` 等后，启动重连流程。**精确算法**（避免"1 次重连"vs"3 段退避序列"的歧义）：
-  ```
+- **重连流程仅适用于"已建立连接断开"场景**（已经 SSH 握手成功后中途断开），**禁止**用于首次 connect。两条路径必须严格分开：
+  - **首次 connect**（lazy 建立 `self._conn`）：直接 `asyncssh.connect(..., connect_timeout=entry.connect_timeout or Settings.ssh.connect_timeout)`；任何失败都按 spec §需求:SSHTarget 连接超时/连接失败路径 raise `TargetError(kind="ssh_connect_timeout", target=self.name)`（受 `ssh_connect_timeout` 控制，~10s 内，**硬错误**，**不**进入 1s/4s/16s 重连循环）
+  - **重连（仅当 `self._conn is not None` 且已经成功建立过连接，随后检测到 `asyncssh.ConnectionLost` / `asyncssh.ChannelOpenError`）**：按下方精确算法
+- **重连精确算法**：
+  ```python
+  # Pre-condition: self._conn 之前已成功建立，现在 exec 时检测到 ConnectionLost
   for delay in [1.0, 4.0, 16.0]:        # 严格按 OPERABILITY §2.2 的退避序列
       await asyncio.sleep(delay)
       try:
-          self._conn = await asyncssh.connect(...)
+          self._conn = await asyncssh.connect(..., connect_timeout=Settings.ssh.connect_timeout)
           return                         # 重连成功，结束
-      except (ConnectionLost, ChannelOpenError, OSError):
-          continue
+      except (asyncssh.ConnectionLost, asyncssh.ChannelOpenError):
+          continue                       # 已建过连接 + 这一类错误才重试
+      # 其它异常（含 OSError / 凭据错误）不在重连范围，立即向上抛
   raise TargetError(kind="ssh_connection_lost", target=self.name)
   ```
-  这定义为 **"1 次自动重连尝试块（一组 3 段退避 + 3 次 connect 尝试）"**——OPERABILITY 措辞「1 次自动重连」指**一组**，不是"一次 connect"；总共最多 3 次 `asyncssh.connect` 调用 + 3 次 sleep（共 21s 上限）。验收测试见 task 5.3
+  这定义为 **"1 次自动重连尝试块（一组 3 段退避 + 3 次 connect 尝试）"**——OPERABILITY 措辞「1 次自动重连」指**一组**，不是"一次 connect"；总共最多 3 次 `asyncssh.connect` 调用 + 3 次 sleep（共 21s 上限）。**禁止** catch 范围扩到 `OSError`——否则首次连不上的 host 会被错误地走 21s 重连循环 + 报错 kind 错（应是 `ssh_connect_timeout` 非 `ssh_connection_lost`）。验收测试见 task 5.3
 - asyncssh `keepalive_interval` 设为 60s（早发现死连接）；`agent_forwarding=False` + `x11_forwarding=False` 显式禁用（最小权限，对齐 OPERABILITY §2.2）
 - `capabilities` 初始值 `{Capability.SSH, Capability.SHELL, Capability.FILE_READ}`；运行时按需探测 `SYSTEMD` / `DOCKER_CLI`（首次 `exec` 后探测一次并缓存到 target 实例）
 - 析构（`__del__` / `aclose`）必须 close control connection；测试套不允许 `ResourceWarning: unclosed transport`
