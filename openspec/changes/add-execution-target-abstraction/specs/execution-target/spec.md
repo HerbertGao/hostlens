@@ -153,7 +153,7 @@ Enum 成员名必须**全大写**，值必须**全小写**（与 docs/ARCHITECTU
 
 `hostlens.targets.registry.TargetRegistry` 必须提供：
 
-- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；必须先校验 `target.name == entry.name`（否则 metadata 会与 target 错配 —— bind to 错误的 name 入口），不匹配 raise `TargetError(kind="target_entry_name_mismatch", target=target.name, entry_name=entry.name)`；name 冲突（与已注册的 name 撞）raise `TargetError(kind="duplicate_target", target=name)`
+- `register(target: ExecutionTarget, entry: TargetEntry) -> None`：注册一个 target 实例**连同其源配置 `TargetEntry`**（含 `display_name` / `description` / `tags` / `enabled` 等 `ExecutionTarget` Protocol 上不存在的字段）；必须先校验 `target.name == entry.name`（否则 metadata 会与 target 错配 —— bind to 错误的 name 入口），不匹配 raise `TargetError(kind="target_entry_name_mismatch", target=target.name, entry_name=entry.name)`；name 冲突（与已注册的 name 撞）raise `TargetError(kind="duplicate_target", target=name)`；校验通过后**必须**执行 `target._entry = entry` 把 metadata 注入 target 实例（让 `exec` / `read_file` 能检查 `enabled`、读取 `connect_timeout` 等 per-target 字段）
 - `get(name: str) -> ExecutionTarget`：未找到 raise `KeyError`
 - `get_entry(name: str) -> TargetEntry`：返回配置元数据；未找到 raise `KeyError`
 - `names() -> set[str]`：返回所有已注册 target 的 name 集合
