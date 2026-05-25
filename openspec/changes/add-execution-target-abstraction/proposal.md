@@ -14,12 +14,12 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - `hostlens.targets.base.Capability` Enum：M1 最小集 = `{SHELL, FILE_READ, SSH, SYSTEMD, DOCKER_CLI}`（5 个；与 docs/ARCHITECTURE.md §5 锁定一致）。M8 DockerTarget / K8sTarget 提案再扩 `K8S_EXEC` 等；M9 Remediation 再扩 `FILE_WRITE` 等。这套值与 `hostlens.tools.schemas.list_targets.CAPABILITY_ALLOWLIST` 在 M1 落地后通过 `frozenset({c.value for c in Capability})` 严格相等，详见 §修订
 - `hostlens.targets.base.ExecResult` Pydantic 模型：`exit_code: int | None` / `stdout` / `stderr` / `duration_seconds` / `timed_out`（超时时 `exit_code=None` 且 `timed_out=True`；`None` 表示"无 OS-level exit code"，与"非零退出"语义完全分离；避免 Linux 上 `-1` 与 SIGHUP/signal 终止 exit code 冲突）
 - `hostlens.targets.local.LocalTarget`：`asyncio.create_subprocess_shell(cmd, env=..., start_new_session=True)` 实现；`type="local"`；capabilities = `{SHELL, FILE_READ}` + 运行时探测；**超时时必须用 `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组**（不只是 `proc.kill()`），保证 shell fork 的子进程（如 `sleep`）也被回收
-- `hostlens.targets.registry.TargetRegistry`：按 name 索引 target 实例；`register(target)` / `get(name)` / `names()` / `list()` 接口；name 冲突 raise `TargetError`
+- `hostlens.targets.registry.TargetRegistry`：按 name 索引 target 实例；API 为 `register(target, entry)` / `get(name)` / `get_entry(name)` / `names()` / `list()` / `list_entries()`；**同时持有 ExecutionTarget 实例与对应 `TargetEntry` 元数据双索引**（让 `list_targets` handler 能拿到 `display_name`/`description`/`tags`/`enabled` 等 ExecutionTarget Protocol 上不暴露的字段）；name 冲突 raise `TargetError(kind="duplicate_target", name=name)`
 - `hostlens.targets.config.TargetsConfig` Pydantic 模型 + loader：从 `~/.config/hostlens/targets.yaml` 加载 target 配置（M1 LocalTarget 单条配置即可；SSHTarget 见下）
 
 **新增（ssh-execution-target 实现 + 凭据约束）：**
 
-- `hostlens.targets.ssh.SSHTarget`：基于 `asyncssh` 的实现；`type="ssh"`；capabilities = `{SSH, SHELL, FILE_READ, SYSTEMD}`（SYSTEMD 在 capability 检测时按需加）
+- `hostlens.targets.ssh.SSHTarget`：基于 `asyncssh` 的实现；`type="ssh"`；**初始** capabilities = `{SSH, SHELL, FILE_READ}`（构造时即有）；`SYSTEMD` / `DOCKER_CLI` 在首次 `exec` 后通过 `which systemctl` / `which docker` 探测命中时加入并缓存（与 ssh-execution-target spec 一致）
 - **SSH connection pool（必须）**：每个 `SSHTarget` 实例维护**一个** asyncssh control connection（per-process per-target，类似 OpenSSH `ControlMaster auto`）；每次 `exec` 在该连接上**新建 channel**（`conn.create_session` / `conn.run`），不重新 SSH；空闲超过 `ssh.idle_timeout_seconds`（默认 300s）才关闭；连接断开 / EOF 时**1 次自动重连**（指数退避 1s → 4s → 16s），仍失败 raise `TargetError(kind="ssh_connection_lost")`。**严格对齐 docs/OPERABILITY.md §2.2 硬约束**——「连接中断 → 1 次自动重连（指数退避 1s→4s→16s）」+「不允许『每个 Inspector 重新 SSH 一次』」
 - 凭据加载：**仅支持 key 认证为主**（M1 也支持 password 但 doctor 必须 warn）；`password` / `passphrase` 字段通过 `${ENV_VAR}` 占位从环境读（明文落 yaml 触发 doctor warning）；`key_path` 字段是普通文件路径（路径本身非 secret，文件内容由 asyncssh 加载）
 - SSH env 传递的限制：远端 sshd 默认 `AcceptEnv` 仅允许 `LANG LC_*`；Hostlens 不假装能传任意 env，docs 与 doctor 必须明确说明——**禁止**通过 `export VAR=value; cmd` 拼到 cmd string 的方式传 secret（会进 process list / shell history，与 docs/ARCHITECTURE.md §4 secret 边界冲突）；推荐方式：(a) 用户在远端 sshd 配 `AcceptEnv HOSTLENS_*`；(b) Inspector 通过 stdin 传 secret
@@ -93,7 +93,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 - ❌ Bastion / Jump Host / Agent forwarding：M1 直连，bastion 推到有用户需求时
 - ❌ SSH password 加密存储：M1 password 必须走 `${ENV_VAR}` 占位（明文落 yaml → doctor warn）
 - ❌ Inspector 调度逻辑：下一提案 `add-inspector-plugin-system` 处理
-- ❌ Capability 自动发现的完备性：M1 只做 SSH/LOCAL 基础检测；SYSTEMD / DOCKER_CLI 探测靠运行时跑 `systemctl --version` / `docker --version` 简单 probe，false negative 可接受
+- ❌ Capability 自动发现的完备性：M1 只做 SSH/LOCAL 基础检测；SYSTEMD / DOCKER_CLI 探测靠运行时跑 `which systemctl` / `which docker`（POSIX 标准、轻量；与 execution-target spec 一致），false negative 可接受
 - ❌ 写操作 target API：M1 `exec` 只用于读类命令（与 M2 ToolRegistry `side_effects ∈ {none, read}` 一致）；M9 Remediation 才扩展写语义
 - ❌ Target health 持续监控 / 自动 disable 失败 target：M1 失败由调用方处理，不做后台守护
 - ❌ **不**做：SSH 跨进程连接共享（OpenSSH `ControlMaster` 用 unix socket 共享给其它进程）—— 本提案的 per-target connection pool 是**进程内**复用，跨进程不共享
@@ -105,7 +105,7 @@ CLAUDE.md §4.3 与 docs/ARCHITECTURE.md §5 已经把 Protocol 形状钉死（`
 | LocalTarget exec 超时 | `asyncio.wait_for` 取消 + `os.killpg(os.getpgid(proc.pid), signal.SIGKILL)` 杀整个进程组（`start_new_session=True` 保证 shell fork 的子进程也被回收）；返回 `ExecResult(timed_out=True, exit_code=None)` | finding-level: `inspector_status: timeout`（M1 下一提案体现）；本提案 ExecResult 用 `exit_code=None + timed_out=True` 表达，**禁止**用 `-1` 魔数（与 Linux signal-killed exit code 冲突） |
 | SSHTarget control connection 断开 / EOF | 1 次自动重连（指数退避 1s → 4s → 16s，对齐 OPERABILITY §2.2），仍失败则 raise `TargetError(kind="ssh_connection_lost", target=name)` | exit 1 + run status partial |
 | SSHTarget 主机不可达（DNS / 拒绝 / 防火墙） | 单 target 标 `target_unreachable`；其它 target 继续；error log 含目标 host + 错误码（**不含**凭据） | run status: `partial`（M4 Scheduler RunStatus 兜底） |
-| SSHTarget 凭据错误（key permission denied / wrong password） | raise `TargetError("ssh_auth_failed", target=name)`；error message 经 `scrub_exception_message`（agent-tool-adapter spec 已定义的字符串值脱敏函数，**不**复用 `redact_sensitive` 因为后者只按 key 名脱敏 mapping 无法清洗 string 子串）；CLI 显示 `hostlens target test <name>` 建议 | exit 1；doctor 也能预先 detect |
+| SSHTarget 凭据错误（key permission denied / wrong password） | raise `TargetError(kind="ssh_auth_failed", target=name)`；error message 必须按"三层脱敏"顺序清洗（**(1)** 用 `self._entry.password` / `passphrase` 等已知 secret 做 `str.replace(secret, "***")` 精确替换 → **(2)** `scrub_exception_message`（agent-tool-adapter spec 已定义的 5 类正则）→ **(3)** bare credential keyword scrub `(?i)(password\|passwd\|...)\s+\S+`）；**禁止**单独依赖 `redact_sensitive`（只按 key 名脱敏 mapping，无法清洗 string 子串）；CLI 显示 `hostlens target test <name>` 建议 | exit 1；doctor 也能预先 detect |
 | `targets.yaml` 引用的 `${ENV_VAR}` 未设置 | 加载时 raise `ConfigError(kind="missing_env_var", var_name=var_name, target=target_name)`（M1 落地需扩展 ConfigError 加 `kind` 与结构化 keyword 字段，详见 execution-target spec §需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段）；**禁止**默默用空 string 当 password | hostlens doctor exit 1，CLI 命令启动 fail-fast |
 | SSH env 注入但远端 sshd 拒收（`AcceptEnv` 限制） | env 被远端静默丢弃；本地无法检测；docs 必须说明；M1 不在 runtime 验证（成本太高）；推荐用户配 `AcceptEnv HOSTLENS_*` 前缀 | docs 警告 |
 | LocalTarget read_file 路径不存在 | raise `FileNotFoundError`；上层（Inspector）按 `requires_files` 自动 skip | finding-level: `requires_unmet` |

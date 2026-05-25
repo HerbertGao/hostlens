@@ -32,7 +32,7 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 4. SSH bastion / jump host / agent forwarding —— 用户需求出现后再做
 5. `exec` 的写操作语义（"返回的 exit_code 之外允许修改远端状态"）—— M9 Remediation 才扩展；M1 `exec` 用于读类命令，与 Tool Registry `side_effects ∈ {none, read}` 一致
 6. Target 自动 health 监控 / 自动 disable 失败 target —— 失败由调用方处理，不做后台守护
-7. Capability 自动发现的完备性 —— M1 只做基础探测（SSH 默认 + 运行时 `systemctl --version` / `docker --version` probe），false negative 可接受
+7. Capability 自动发现的完备性 —— M1 只做基础探测（SSH 默认 + 运行时 `which systemctl` / `which docker` probe；POSIX 标准且轻量，与 execution-target spec 一致），false negative 可接受
 8. **Windows 宿主支持** —— M1 LocalTarget 用 `os.killpg` + `start_new_session`（POSIX 专有 API），明确**只支持 POSIX 宿主（Linux / macOS）**；Windows 落地推到有用户需求时（届时实现路径走 `CREATE_NEW_PROCESS_GROUP` + `TerminateProcess`，是独立工作量）；M1 在 import 时跑 `if sys.platform == "win32": raise ImportError("LocalTarget requires POSIX host")` 给清晰错误
 
 ## 决策
@@ -163,31 +163,13 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 - ❌ 强制远端 sshd 加 `AcceptEnv *`：通配符等于没限制，运维抗拒
 - ❌ 把 secret 写到远端临时文件再 `source`：临时文件残留 + 跨平台 cleanup 复杂
 
-### 决策 9：写操作 CLI（`add` / `remove`）EUID==0 拒绝
-
-**选择**：
-
-- `hostlens target add` / `hostlens target remove` 入口检查 `os.geteuid() == 0`，是则立即 exit 1，stderr 输出修复建议
-- `hostlens target list` / `test` / `hostlens doctor` 是只读，**不**拒绝 root
-- M0 已落地的 `hostlens.core.privilege.require_unprivileged()` 函数（如未落地则本提案在 §M0 兼容性中新增）作为统一入口
-
-**理由**：
-
-- 全局 `~/.claude/CLAUDE.md`「写操作必须拒绝 root（EUID==0）」+ 项目 CLAUDE.md §4.5「写操作的硬约束」明确要求
-- 写 `~/.config/hostlens/targets.yaml` 含凭据引用，以 root 跑会创建 root-owned 配置文件，后续普通用户跑命令时无法读 → 调试地狱
-- 只读命令以 root 跑无副作用，强制拒绝反而妨碍合法运维场景（如 root daemon 调 `doctor --check-targets`）
-
-**替代**：
-
-- ❌ 全部 CLI 都拒绝 root：阻塞 daemon 运维场景
-- ❌ 只 warn 不 exit：用户会忽视，留下 root-owned 文件雷区
-
 ### 决策 8：`TargetsConfig` 是 Pydantic 模型，targets.yaml 由 loader 显式校验
 
 **选择**：
 
 - `hostlens.targets.config.TargetsConfig` Pydantic v2 模型，含 `version: Literal["1"]` + `targets: list[TargetEntry]`
-- 加载错误（schema / env_var 未设置 / 明文密码 / unknown type）有清晰文件路径 + 字段级 error
+- 加载错误（schema 错误 / env_var 未设置 / `${...}` 占位出现在非 secret 字段 / unknown type / name 不匹配正则）有清晰文件路径 + 字段级 error
+- **明文 password 字段不在加载错误清单内**：与决策 5 一致——明文 password 加载成功，仅 doctor warn（M2+ 才升级为加载时 error）
 - 与 M0 `Settings` 风格一致（pydantic-settings）
 
 **理由**：
@@ -199,6 +181,26 @@ M0 已交付项目骨架，M2 前置 `tool-registry-capability-layer` 已落地 
 
 - ❌ 直接 `yaml.safe_load()` 后手工 dict 访问：报错不友好
 - ❌ JSON Schema 校验：与项目其他模块不一致
+
+### 决策 9：写操作 CLI（`add` / `remove`）EUID==0 拒绝
+
+**选择**：
+
+- `hostlens target add` / `hostlens target remove` 入口检查 `os.geteuid() == 0`，是则立即 exit 1，stderr 输出修复建议
+- `hostlens target list` / `test` / `hostlens doctor` 是只读，**不**拒绝 root
+- M1 落地时**实现一次** inline `os.geteuid()` 检查到 `hostlens.cli.target` 的 `add` / `remove` 入口；**不**新增 `hostlens.core.privilege.require_unprivileged()` helper —— M1 范围内仅 2 个写命令，inline 比抽 helper 更直接；helper 可在 M9 Remediation（届时写命令数量增加）时再提取
+
+**理由**：
+
+- 全局 `~/.claude/CLAUDE.md`「写操作必须拒绝 root（EUID==0）」+ 项目 CLAUDE.md §4.5「写操作的硬约束」明确要求
+- 写 `~/.config/hostlens/targets.yaml` 含凭据引用，以 root 跑会创建 root-owned 配置文件，后续普通用户跑命令时无法读 → 调试地狱
+- 只读命令以 root 跑无副作用，强制拒绝反而妨碍合法运维场景（如 root daemon 调 `doctor --check-targets`）
+
+**替代**：
+
+- ❌ 全部 CLI 都拒绝 root：阻塞 daemon 运维场景
+- ❌ 只 warn 不 exit：用户会忽视，留下 root-owned 文件雷区
+- ❌ 抽 `require_unprivileged()` helper：M1 只有 2 个调用点，抽 helper 反而增加间接层；M9 多个写命令再抽即可
 
 ## 风险 / 权衡
 

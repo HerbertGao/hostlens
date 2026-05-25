@@ -163,7 +163,7 @@
 #### 场景:集成测试 control connection 复用
 
 - **当** 在同一 `SSHTarget` 实例上连续跑 3 次 `await target.exec("echo hi", timeout=5)`
-- **那么** 检查 hostlens 进程到 sshd 的 TCP 连接数（通过 fixture 在 sshd 容器内跑 `ss -tn '( sport = :22 )'`），整个过程必须**只看到 1 个**新增 ESTABLISHED 连接（验证 control connection 复用）
+- **那么** 检查 hostlens 进程到 sshd 的 TCP 连接数（通过 fixture 在 sshd 容器内跑 `ss -tn 'sport = :2222'`），整个过程必须**只看到 1 个**新增 ESTABLISHED 连接（验证 control connection 复用）
 
 #### 场景:不允许 mock asyncssh
 

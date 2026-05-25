@@ -206,7 +206,7 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
   - `passphrase: str | None` —— 加密私钥的 passphrase；CLI 参数 `--passphrase-env VAR`；yaml 同 `password` 规则
 - yaml 中 `${VAR_NAME}` 占位必须在加载时展开（从 `os.environ` 读取）；未设置时 raise `ConfigError(kind="missing_env_var", var_name=VAR_NAME, target=target_name)`（依赖 M1 落地的 ConfigError 扩展，见下方需求 §需求:`ConfigError` 必须扩展支持结构化 kind/extra 字段）
 - `${...}` 占位**仅**允许出现在 secret 字段（`password` / `passphrase`）—— 出现在 `host` / `user` / `port` / `key_path` 等字段时 raise `ConfigError(kind="env_placeholder_not_allowed_here", field=field_name, target=target_name)`
-- 加载文件不存在时返回空 `TargetsConfig(version="1", targets=[])`，但 `load_targets_config` 必须**同时**通过 structlog 输出 INFO 级日志「config file not found, returning empty registry」+ doctor 会以 hint 状态显示「没有任何已配置 target，跑 `hostlens target add` 开始」—— 不 raise 但也不静默通过
+- 加载文件不存在时返回空 `TargetsConfig(version="1", targets=[])`（**不**是 TargetRegistry——装配 registry 由 `build_registry_from_config` 负责）；`load_targets_config` 必须**同时**通过 structlog 输出 INFO 级日志「config file not found, returning empty TargetsConfig」+ doctor 会以 hint 状态显示「没有任何已配置 target，跑 `hostlens target add` 开始」—— 不 raise 但也不静默通过
 
 加载入口：`hostlens.targets.config.load_targets_config(path: Path) -> TargetsConfig`
 
@@ -225,7 +225,7 @@ Registry **不**持有连接状态 —— 它只是 (name → target 实例 + na
 - **当** yaml 含 `host: ${HOST_PLACEHOLDER}` 或 `user: ${USER_PLACEHOLDER}`
 - **那么** 加载必须 raise `ConfigError`，kind 为 `"env_placeholder_not_allowed_here"`（防止 host/user 通过 env 注入意外暴露）
 
-#### 场景:配置文件不存在返回空 registry
+#### 场景:配置文件不存在返回空 TargetsConfig
 
 - **当** `~/.config/hostlens/targets.yaml` 不存在
 - **那么** `load_targets_config(path)` 必须返回 `TargetsConfig(version="1", targets=[])`，**不** raise
