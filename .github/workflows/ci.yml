@@ -36,5 +36,8 @@ jobs:
       - name: Mypy strict type check
         run: mypy --strict src/
 
+      - name: Cassette lint (secrets + MessageResponse schema)
+        run: python scripts/cassette_lint.py
+
       - name: Pytest with coverage
         run: pytest --cov=hostlens --cov-report=term

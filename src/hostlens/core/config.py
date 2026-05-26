@@ -17,15 +17,40 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from hostlens.core.exceptions import ConfigError
 
 __all__ = [
+    "AgentSettings",
+    "BackendSettings",
     "Settings",
     "SshSettings",
     "load_settings",
+]
+
+
+# Allowed values for ``BackendSettings.type``. Constrained to a closed set so a
+# typo cannot silently pass through the schema layer and only surface as a
+# ``KeyError`` deep inside ``create_backend``. New backends added in M10.5 / 1.0
+# must extend this Literal and add a corresponding factory branch.
+BackendType = Literal[
+    "anthropic_api",
+    "fake",
+    "playback",
+    "bedrock",
+    "vertex",
+    "claude_subscription",
 ]
 
 
@@ -41,6 +66,86 @@ class SshSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idle_timeout_seconds: int = 300
+
+
+class BackendSettings(BaseModel):
+    """LLM backend configuration namespace (M2 add-llm-backend-protocol).
+
+    Per CLAUDE.md §4.11 rule #4, ``backend`` is a separate namespace from
+    ``agent``: backend manages "who we talk to / how we authenticate"; agent
+    manages "which model / behavior params". Splitting them means a future
+    Bedrock / Vertex switch only touches ``backend.type`` and not the model
+    layer — and conversely, swapping ``primary_model`` keeps the existing
+    transport untouched.
+
+    The ``model_validator`` below gates the **type-specific required fields**
+    at schema-load time so a config file with ``type=anthropic_api`` but a
+    missing ``api_key`` fails loudly at startup rather than at first LLM
+    call. ``bedrock`` / ``vertex`` / ``claude_subscription`` types are
+    intentionally **not** gated here so a future config file can land
+    ahead of the backend implementation (NotImplementedError fires in
+    ``create_backend`` instead — spec §场景:backend.type = bedrock 加载阶段
+    不 raise).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: BackendType
+    # ``SecretStr`` ensures ``model_dump_json()`` outputs ``"**********"``;
+    # the raw value is only accessible via ``.get_secret_value()``.
+    api_key: SecretStr | None = None
+    base_url: HttpUrl | None = None
+    cassette_path: Path | None = None
+    # Reserved placeholders for M10.5 (bedrock) / 1.0 (vertex) /
+    # M10.5 experimental (claude_subscription). Validation for these
+    # types lives in ``create_backend``, not here.
+    aws_region: str | None = None
+    aws_profile: str | None = None
+    oauth_token: SecretStr | None = None
+    accept_subscription_risks: bool = False
+
+    @model_validator(mode="after")
+    def _validate_type_specific_required_fields(self) -> BackendSettings:
+        """Gate ``api_key`` / ``cassette_path`` requirements by ``type``.
+
+        Only the two M2-implemented types (``anthropic_api`` / ``playback``)
+        get their required fields enforced here; bedrock / vertex /
+        claude_subscription are schema-only placeholders so a config file
+        can ship before the backend impl lands.
+        """
+
+        if self.type == "anthropic_api" and self.api_key is None:
+            raise ValueError("api_key required for type=anthropic_api")
+        if self.type == "playback" and self.cassette_path is None:
+            raise ValueError("cassette_path required for type=playback")
+        return self
+
+
+class AgentSettings(BaseModel):
+    """Agent-layer runtime settings (M2 add-llm-backend-protocol).
+
+    Holds the model identifiers and runtime budgets the Agent loop reads;
+    decoupled from ``BackendSettings`` per CLAUDE.md §4.11 rule #4 so
+    switching transport (``anthropic_api`` → ``bedrock``) does not require
+    rewriting the agent block.
+
+    The numeric bounds (``ge`` / ``le`` on ``Field``) defend against typos
+    that would otherwise burn a full ``token_budget_input=10_000_000``
+    quota in a single Agent turn. Bounds are aligned with the Anthropic
+    Messages API current limits.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    primary_model: str = "claude-opus-4-7"
+    fallback_model: str | None = None
+    # ``health_check_model`` defaults to a cheaper Haiku tier so doctor /
+    # ``BackendDiagnostics.health_check`` ping calls do not consume Opus
+    # quota (spec §需求:Settings 必须支持 backend 与 agent 两个独立 namespace).
+    health_check_model: str = "claude-haiku-4-5"
+    max_turns: int = Field(default=20, ge=1, le=100)
+    token_budget_input: int = Field(default=100_000, ge=1, le=1_000_000)
+    token_budget_output: int = Field(default=30_000, ge=1, le=200_000)
 
 
 _SENSITIVE_FIELD_PATTERN: re.Pattern[str] = re.compile(
@@ -78,6 +183,11 @@ class Settings(BaseSettings):
     inspectors_search_paths: Annotated[list[Path], NoDecode] = Field(
         default_factory=lambda: [Path("~/.config/hostlens/inspectors").expanduser()]
     )
+    # M2 add-llm-backend-protocol: both namespaces default to ``None`` so M0
+    # / M1 configs without LLM blocks load cleanly. ``create_backend`` raises
+    # ``ConfigError`` when ``backend is None`` and an LLM feature is used.
+    backend: BackendSettings | None = None
+    agent: AgentSettings | None = None
 
     @field_validator("inspectors_search_paths", mode="before")
     @classmethod

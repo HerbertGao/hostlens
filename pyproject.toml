@@ -27,7 +27,8 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 dependencies = [
-    "typer>=0.12",
+    "typer>=0.12,<0.26",
+    "click>=8.1,<9",
     "rich>=13.7",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
@@ -38,6 +39,7 @@ dependencies = [
     "simpleeval>=1.0,<2",
     "jinja2>=3.1,<4",
     "jsonschema>=4.20,<5",
+    "anthropic>=0.45,<2",
 ]
 
 [project.optional-dependencies]
@@ -109,7 +111,8 @@ warn_required_dynamic_aliases = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config -m 'not live'"
 markers = [
     "slow: long-running tests",
+    "live: tests that hit real Anthropic API (opt-in via -m live)",
 ]

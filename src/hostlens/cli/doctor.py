@@ -52,7 +52,13 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from hostlens.agent.backend import (
+    BackendDiagnostics,
+    api_key_fingerprint,
+    create_backend,
+)
 from hostlens.cli._doctor_schema import (
+    BackendHealthRow,
     CheckResult,
     DoctorReport,
     InspectorLoadErrorRow,
@@ -65,6 +71,7 @@ from hostlens.cli._doctor_schema import (
 from hostlens.core.config import Settings, load_settings
 from hostlens.core.exceptions import ConfigError, InspectorError, TargetError
 from hostlens.core.logging import configure_logging
+from hostlens.core.redact import redact_text
 from hostlens.inspectors.registry import build_registry_from_search_paths
 from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import TargetEntry, load_targets_config
@@ -512,6 +519,118 @@ def _is_ready(
     return inspectors.status != "fail"
 
 
+# ---------------------------------------------------------------------------
+# M2 (`add-llm-backend-protocol`): backend health probe
+# ---------------------------------------------------------------------------
+
+
+_BACKEND_HEALTH_CHECK_TIMEOUT_SECONDS = 5.0
+"""Hard timeout for ``BackendDiagnostics.health_check`` calls.
+
+Doctor must stay responsive even when the backend's HTTP endpoint hangs;
+the 5 s ceiling is generous for a Haiku ping (typical < 1 s) while
+keeping doctor below the operator's "is this hung?" threshold."""
+
+
+def _check_backend(settings: Settings) -> BackendHealthRow | None:
+    """Build the optional ``BackendHealthRow`` for ``DoctorReport.backend``.
+
+    Returns ``None`` so ``DoctorReport.backend`` is set to ``null`` in the
+    rendered JSON when ``settings.backend is None`` (M0 / M1 configs).
+    Otherwise:
+
+    - ``type`` mirrors ``settings.backend.type``.
+    - ``api_key_set`` is computed by membership; the fingerprint is computed
+      via ``api_key_fingerprint(get_secret_value(...))`` and never leaks the
+      full value (the helper returns ``"<unset>"`` / ``"<redacted>"`` /
+      ``"<first4>...<last4>"``).
+    - Health check fires only when the backend exposes
+      ``BackendDiagnostics`` (duck-typed). Construction failures
+      (``ConfigError`` / ``NotImplementedError`` / ``FileNotFoundError`` /
+      ``ValueError`` — the latter two cover ``PlaybackBackend`` cassette
+      load errors) leave the health fields ``None`` and surface the error
+      via ``health_check_error`` (passed through ``redact_text``) so doctor
+      stays exit-0 for "schema valid, backend not bootable" configs (e.g.
+      ``type=bedrock`` or a missing cassette path) — those are not local
+      readiness failures, they're "deferred" or "operator misconfig" markers.
+    """
+
+    if settings.backend is None:
+        return None
+
+    # api_key surface bits — always populated, never carry the raw value.
+    api_key = (
+        settings.backend.api_key.get_secret_value()
+        if settings.backend.api_key is not None
+        else None
+    )
+    fingerprint = api_key_fingerprint(api_key)
+
+    row = BackendHealthRow(
+        type=settings.backend.type,
+        api_key_set=settings.backend.api_key is not None,
+        api_key_fingerprint=fingerprint,
+    )
+
+    # Try to construct the backend — when this raises we still emit the
+    # row with type / api_key surface intact. We do NOT propagate the
+    # construction error to ``ready`` because (a) ``NotImplementedError``
+    # for bedrock / vertex / claude_subscription means "M2 deferred", not
+    # local broken; (b) ``ConfigError`` here would have already fired in
+    # ``load_settings()`` so reaching this branch means the user wired up
+    # something the factory still rejects (e.g. mutated post-construction).
+    try:
+        backend = create_backend(settings)
+    except (ConfigError, NotImplementedError, FileNotFoundError, ValueError) as exc:
+        # ``FileNotFoundError`` / ``ValueError`` cover ``PlaybackBackend``
+        # cassette-load failures (missing file / invalid JSON) — those
+        # construct-time exceptions would otherwise crash doctor instead of
+        # producing a diagnostic row. We deliberately list each exception
+        # class rather than ``except Exception`` so genuine programmer bugs
+        # still propagate. The message is run through ``redact_text`` so an
+        # exception that happens to embed a token-shaped path / value cannot
+        # leak via doctor output.
+        row.health_check_error = redact_text(str(exc))
+        return row
+
+    if not isinstance(backend, BackendDiagnostics):
+        # Fake / Playback backends opt out of BackendDiagnostics; doctor
+        # surfaces the type + api_key bits but skips the ping.
+        return row
+
+    # Run health_check with a hard timeout so a hung backend does not
+    # block doctor for tens of seconds.
+    try:
+        health = asyncio.run(
+            asyncio.wait_for(
+                backend.health_check(),
+                timeout=_BACKEND_HEALTH_CHECK_TIMEOUT_SECONDS,
+            )
+        )
+    except TimeoutError:
+        row.health_check_is_healthy = False
+        row.health_check_error = (
+            f"health_check timeout after {_BACKEND_HEALTH_CHECK_TIMEOUT_SECONDS}s"
+        )
+        return row
+    except Exception as exc:  # pragma: no cover — defensive
+        # Backend health_check should never raise (the contract is to
+        # return BackendHealth with is_healthy=False on failure); if it
+        # does we treat it like a timeout-shaped failure.
+        row.health_check_is_healthy = False
+        row.health_check_error = f"health_check raised {type(exc).__name__}"
+        return row
+
+    row.health_check_is_healthy = health.is_healthy
+    row.health_check_latency_ms = health.latency_ms
+    # ``BackendHealth.error`` already went through ``redact_text`` at the
+    # backend layer; doctor does NOT re-redact (the backend is the
+    # canonical scrubber and double-redacting could destroy useful
+    # operator hints).
+    row.health_check_error = health.error
+    return row
+
+
 def _build_report(settings: Settings) -> DoctorReport:
     checks: dict[str, CheckResult] = {
         "python_version": check_python_version(),
@@ -520,6 +639,7 @@ def _build_report(settings: Settings) -> DoctorReport:
     }
     targets = _check_targets(settings)
     inspectors = _check_inspectors(settings)
+    backend_row = _check_backend(settings)
     return DoctorReport(
         version="0.1.0",
         timestamp=datetime.now(UTC),
@@ -527,6 +647,7 @@ def _build_report(settings: Settings) -> DoctorReport:
         ready=_is_ready(checks, targets, inspectors),
         targets=targets,
         inspectors=inspectors,
+        backend=backend_row,
     )
 
 
@@ -580,6 +701,27 @@ def _render_human(report: DoctorReport, console: Console) -> None:
     itable.add_row("errors", str(len(report.inspectors.errors)))
     itable.add_row("missing_secrets", str(len(report.inspectors.missing_secrets)))
     console.print(itable)
+
+    # Backend summary — only when configured. Lays out a 2-column table
+    # so the api_key fingerprint stays visible without trailing whitespace
+    # in the Rich output.
+    if report.backend is not None:
+        btable = Table(title="backend")
+        btable.add_column("field", no_wrap=True)
+        btable.add_column("value")
+        btable.add_row("type", report.backend.type)
+        btable.add_row("api_key_set", str(report.backend.api_key_set))
+        btable.add_row("api_key_fingerprint", report.backend.api_key_fingerprint or "")
+        if report.backend.health_check_is_healthy is not None:
+            btable.add_row("health_check_is_healthy", str(report.backend.health_check_is_healthy))
+        if report.backend.health_check_latency_ms is not None:
+            btable.add_row(
+                "health_check_latency_ms",
+                f"{report.backend.health_check_latency_ms:.1f}",
+            )
+        if report.backend.health_check_error is not None:
+            btable.add_row("health_check_error", report.backend.health_check_error)
+        console.print(btable)
 
     console.print(f"ready: {report.ready}")
 

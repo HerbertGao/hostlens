@@ -23,6 +23,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "BackendHealthRow",
     "CheckResult",
     "CheckStatus",
     "DoctorReport",
@@ -165,6 +166,42 @@ class InspectorsHealth(BaseModel):
     missing_secrets: list[InspectorMissingSecretRow] = Field(default_factory=list)
 
 
+class BackendHealthRow(BaseModel):
+    """LLM backend section under ``DoctorReport.backend`` (M2).
+
+    Renders as a single row (not a list) because at most one backend is
+    configured per Hostlens instance — multi-backend setups are an M10.5
+    concern that ships with its own schema bump.
+
+    Field policy:
+
+    - ``type``: surfaced verbatim from ``settings.backend.type`` (one of the
+      ``BackendType`` Literal values).
+    - ``api_key_set``: boolean derived from ``settings.backend.api_key is
+      not None``. Never carries the actual value.
+    - ``api_key_fingerprint``: opaque, non-reversible fingerprint produced
+      by ``hostlens.agent.backend.api_key_fingerprint`` (``"<unset>"`` /
+      ``"<redacted>"`` / ``"<first4>...<last4>"``). The factory must never
+      surface the raw secret in this field.
+    - ``health_check_*``: populated when the backend implements
+      ``BackendDiagnostics``. ``error`` already passed through
+      ``redact_text`` at the backend layer; doctor does NOT re-redact (the
+      backend is the canonical scrubber).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    api_key_set: bool
+    api_key_fingerprint: str | None = None
+    # Optional — only populated when the backend exposes ``BackendDiagnostics``
+    # AND the health-check call completed (success OR failure) within the
+    # 5-second timeout.
+    health_check_is_healthy: bool | None = None
+    health_check_latency_ms: float | None = None
+    health_check_error: str | None = None
+
+
 class DoctorReport(BaseModel):
     """Top-level JSON contract emitted by `hostlens doctor --json`."""
 
@@ -186,3 +223,7 @@ class DoctorReport(BaseModel):
     inspectors: InspectorsHealth = Field(
         default_factory=lambda: InspectorsHealth(status="ok", loaded=0)
     )
+    # M2 add-llm-backend-protocol: optional backend section. ``None`` when
+    # ``settings.backend is None`` (M0/M1 configs); rendered as a single
+    # row when configured.
+    backend: BackendHealthRow | None = None

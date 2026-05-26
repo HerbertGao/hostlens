@@ -7,6 +7,11 @@ import pytest
 
 import hostlens.core.exceptions as exceptions_module
 from hostlens.core.exceptions import (
+    BackendCapabilityViolation,
+    BackendDaemonUnsafe,
+    BackendError,
+    BackendRateLimited,
+    BackendUnavailable,
     ConfigError,
     HostlensError,
     InspectorError,
@@ -20,6 +25,24 @@ def test_subclasses_inherit_from_hostlens_error() -> None:
     assert isinstance(ConfigError("x"), HostlensError)
     assert isinstance(TargetError("x"), HostlensError)
     assert isinstance(InspectorError(kind="manifest_parse_error"), HostlensError)
+    # Backend exception subclasses (add-llm-backend-protocol) also all reach
+    # ``HostlensError`` so callers can ``except HostlensError`` to catch
+    # every Hostlens-originated error regardless of subsystem.
+    assert isinstance(BackendError(backend_name="x"), HostlensError)
+    assert isinstance(BackendUnavailable(backend_name="x"), HostlensError)
+    assert isinstance(BackendRateLimited(backend_name="x", retry_after_seconds=None), HostlensError)
+    assert isinstance(
+        BackendCapabilityViolation(
+            backend_name="x",
+            capability="prompt_caching",
+            attempted_feature="cache_control_in_system_block",
+        ),
+        HostlensError,
+    )
+    assert isinstance(
+        BackendDaemonUnsafe(backend_name="x", reason="subscription_in_daemon"),
+        HostlensError,
+    )
 
 
 def test_hostlens_error_catches_all_subclasses() -> None:
@@ -63,16 +86,33 @@ def test_config_error_accepts_optional_original_exception() -> None:
     assert err_no_cause.original is None
 
 
-def test_module_exports_exactly_six_exception_classes_after_m2() -> None:
+def test_module_exports_exactly_eleven_exception_classes_after_m2_backend() -> None:
     """The exception module's public class set is locked.
 
-    Both M0 (which seeded four classes) and M2 (which added ``ToolError`` /
-    ``ToolPolicyViolation``) leave the set at six. M1
-    (``add-execution-target-abstraction``) does NOT add new classes — it
-    only extends ``ConfigError`` / ``TargetError`` signatures, so the
-    public-class count stays at six.
+    M0 seeded four classes (``HostlensError`` / ``ConfigError`` /
+    ``TargetError`` / ``InspectorError``); M2 ``add-tool-registry-capability-layer``
+    added ``ToolError`` / ``ToolPolicyViolation`` bringing the count to six;
+    M2 ``add-llm-backend-protocol`` adds five backend-domain subclasses
+    (``BackendError`` / ``BackendUnavailable`` / ``BackendRateLimited`` /
+    ``BackendCapabilityViolation`` / ``BackendDaemonUnsafe``) bringing the
+    count to exactly eleven. M1 ``add-execution-target-abstraction`` did NOT
+    add classes — it only extended ``ConfigError`` / ``TargetError``
+    signatures, so the public-class count stayed at four through M1.
     """
 
+    expected = [
+        "BackendCapabilityViolation",
+        "BackendDaemonUnsafe",
+        "BackendError",
+        "BackendRateLimited",
+        "BackendUnavailable",
+        "ConfigError",
+        "HostlensError",
+        "InspectorError",
+        "TargetError",
+        "ToolError",
+        "ToolPolicyViolation",
+    ]
     public_names = [
         name
         for name in dir(exceptions_module)
@@ -80,23 +120,9 @@ def test_module_exports_exactly_six_exception_classes_after_m2() -> None:
         and isinstance(getattr(exceptions_module, name), type)
         and issubclass(getattr(exceptions_module, name), BaseException)
     ]
-    assert sorted(public_names) == [
-        "ConfigError",
-        "HostlensError",
-        "InspectorError",
-        "TargetError",
-        "ToolError",
-        "ToolPolicyViolation",
-    ]
-    assert len(public_names) == 6
-    assert sorted(exceptions_module.__all__) == [
-        "ConfigError",
-        "HostlensError",
-        "InspectorError",
-        "TargetError",
-        "ToolError",
-        "ToolPolicyViolation",
-    ]
+    assert sorted(public_names) == expected
+    assert len(public_names) == 11
+    assert sorted(exceptions_module.__all__) == expected
 
 
 # ---------------------------------------------------------------------------

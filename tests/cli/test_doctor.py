@@ -670,8 +670,22 @@ def test_doctor_json_keeps_all_pre_existing_keys(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-placeholder")
     result = runner.invoke(app, ["doctor", "--json"])
     payload = json.loads(result.stdout)
-    expected = {"version", "timestamp", "checks", "ready", "targets", "inspectors"}
+    # M2 add-llm-backend-protocol adds an optional ``backend`` key
+    # (``None`` when ``settings.backend`` is unconfigured — which is the
+    # case in this M0/M1 baseline test). The schema evolution policy
+    # (design.md D-9) permits additive top-level fields without bumping
+    # ``DoctorReport.version``.
+    expected = {
+        "version",
+        "timestamp",
+        "checks",
+        "ready",
+        "targets",
+        "inspectors",
+        "backend",
+    }
     assert set(payload.keys()) == expected
+    assert payload["backend"] is None  # No backend configured in this test env.
     assert set(payload["checks"].keys()) >= {
         "python_version",
         "anthropic_key",

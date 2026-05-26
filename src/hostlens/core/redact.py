@@ -23,13 +23,22 @@ _KEYWORD_ASSIGN = re.compile(r"(?i)\b(password|secret|token|api[_-]?key|bearer)\
 """Matches `key:value` / `key=value` form, e.g. `password=<the-value>`
 or `api_key: sk-<the-value>`. The regex requires a `:` or `=` separator
 between keyword and value; the bare HTTP-header form `Bearer <token>`
-(space-separated) is **not** matched here — that case needs an HTTP
-header parser and is out of scope for the M1 default ruleset (the
-standalone `sk-...` / JWT regexes still catch the token itself when it
-appears verbatim in the text).
+(space-separated) is handled by `_BEARER_HEADER` below.
 
 Group 1 = keyword (preserved verbatim).
 Group 2 = the secret value to redact.
+"""
+
+_BEARER_HEADER = re.compile(r"(?i)\bBearer\s+(\S+)")
+"""Matches the bare HTTP `Authorization: Bearer <token>` form where
+keyword and token are separated by whitespace rather than `:` / `=`.
+This is the shape that flows into ``BackendError.__str__`` when an
+SDK exception message embeds an upstream HTTP header verbatim — the
+``_KEYWORD_ASSIGN`` regex's required ``[:=]`` separator does not cover
+it. The token is masked while the literal word ``Bearer`` is preserved
+to keep the redacted output recognizable as an auth header.
+
+Group 1 = the token to redact (any run of non-whitespace).
 """
 
 _SENSITIVE_KEY_NAMES = re.compile(r"(?i)(password|secret|token|api[_-]?key|bearer)")
@@ -78,6 +87,7 @@ def redact_text(s: str) -> str:
         return f"{keyword}={_mask(value)}"
 
     out = _KEYWORD_ASSIGN.sub(_sub_assign, s)
+    out = _BEARER_HEADER.sub(lambda m: f"Bearer {_mask(m.group(1))}", out)
     out = _JWT.sub(lambda m: _mask(m.group(0)), out)
     out = _SK_KEY.sub(lambda m: _mask(m.group(0)), out)
     return out
