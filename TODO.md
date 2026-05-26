@@ -12,7 +12,7 @@
 
 | 期 | 里程碑 | 核心交付 | 状态 |
 |---|---|---|---|
-| M0 | 项目脚手架 | 可跑 `hostlens doctor` 的空骨架 | ⬜ 未开始 |
+| M0 | 项目脚手架 | 可跑 `hostlens doctor` 的空骨架 | ✅ |
 | M1 | Core 抽象 + 最小管线 | `hostlens inspect localhost --inspector hello` 跑通 | ✅ |
 | M2 | 手写 Agent loop | 自然语言意图 → Agent 自选 Inspector → 出 markdown 报告 | ⬜ |
 | M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ⬜ |
@@ -26,6 +26,40 @@
 
 ---
 
+## 已完成 milestone 详情
+
+### M0 — 项目脚手架 ✅
+
+**对应 OpenSpec change**：[`add-bootstrap-project-skeleton`](openspec/changes/archive/2026-05-22-bootstrap-project-skeleton/)（已 archive）
+
+**验证**：`hostlens doctor --json | jq -e '.ready != null'` 输出合法 JSON；CI matrix [3.11, 3.12] 全绿。
+
+### M1 — Core 抽象 + 最小可跑通管线 ✅
+
+**对应 OpenSpec changes**（4 个 archived）：
+- [`add-execution-target-abstraction`](openspec/changes/archive/2026-05-25-add-execution-target-abstraction/)（M1.1 + M1.2 — ExecutionTarget Protocol + LocalTarget + SSHTarget + `hostlens target add/list/remove`）
+- [`add-tool-registry-capability-layer`](openspec/changes/archive/2026-05-25-add-tool-registry-capability-layer/)（M2 前置 — 双层 Capability Registry，M1 阶段先落地）
+- [`add-inspector-plugin-system`](openspec/changes/archive/2026-05-26-add-inspector-plugin-system/)（M1.3 + M1.4 + M1.5 — InspectorManifest schema + loader + runner + Finding DSL + 内置 hello.echo / system.uptime + `hostlens inspectors list/show`）
+- [`add-report-data-model`](openspec/changes/archive/2026-05-26-add-report-data-model/)（M1.6 + M1.7 — Report / Finding / Severity / Evidence 模型 + render_markdown / render_json + `hostlens inspect`）
+
+**端到端 demo path**（5 分钟内 reproduce）：
+
+```bash
+pip install -e ".[dev]"
+hostlens doctor --json | jq '.inspectors'                        # loaded: 2, errors: []
+hostlens target add local-host --type local
+hostlens inspect local-host --inspector hello.echo                # exit 0, md report on stdout
+hostlens inspect local-host --inspector hello.echo --format json --output /tmp/r.json
+hostlens inspect local-host --inspector nonexistent.foo           # exit 3, "inspector not found:"
+HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
+  hostlens inspect local-host --inspector demo.sleep_timeout \
+  --parameters '{"sleep_seconds": 30}' --timeout 1                 # exit 2, status=timeout
+```
+
+详见 [`examples/m1-report/README.md`](examples/m1-report/README.md) + [`docs/operations/inspect.md`](docs/operations/inspect.md)。
+
+---
+
 ## M0 — 项目脚手架（Bootstrap）
 
 **目标**：把空仓库变成"可装、可跑、可测、可 lint、可 doctor"的最小骨架。完成后不实现任何业务功能，但任何一个新增模块都有标准化的位置可放。
@@ -36,37 +70,37 @@
 
 ### 任务
 
-- [ ] **0.1 仓库布局**
-  - [ ] 创建 `src/hostlens/{agent,inspectors,targets,scheduler,notifiers,remediation,reporting,mcp_server,cli,core}/__init__.py`
-  - [ ] 创建顶层目录 `inspectors/`、`schedules/`、`tests/`、`docs/`
-  - [ ] 加 `.gitignore`（Python + macOS + venv + 本地配置）
-  - [ ] 加 `LICENSE`（Apache-2.0）
-- [ ] **0.2 打包与依赖**
-  - [ ] `pyproject.toml`：项目元数据、`[project.scripts] hostlens = "hostlens.cli:app"`
-  - [ ] 依赖分组：`core` / `mcp` / `dev`（lint+test）/ `docs`
-  - [ ] 锁定 Python `>=3.11`
-  - [ ] 验收：`pip install -e ".[dev]"` 成功，`hostlens --help` 输出
-- [ ] **0.3 代码质量工具链**
-  - [ ] 配置 `ruff`（lint + format，替代 black/isort/flake8）
-  - [ ] 配置 `mypy --strict`
-  - [ ] 配置 `pre-commit`：ruff、mypy、trailing-whitespace、yamllint
-  - [ ] 验收：`pre-commit run --all-files` 通过
-- [ ] **0.4 测试基线**
-  - [ ] 配置 `pytest`、`pytest-asyncio`、`pytest-cov`
-  - [ ] 写一个 dummy 测试验证 fixture/标记机制
-  - [ ] 验收：`pytest --cov` 跑通且有覆盖率报告
-- [ ] **0.5 CI（GitHub Actions）**
-  - [ ] workflow：lint + mypy + pytest（matrix: Python 3.11/3.12）
-  - [ ] 验收：本地 `act` 或 push 后 CI 绿
-- [ ] **0.6 配置与日志骨架**
-  - [ ] `core/config.py`：基于 `pydantic-settings`，支持 env + `~/.config/hostlens/*.yaml`
-  - [ ] `core/logging.py`：structlog 配置（dev=human、prod=json）
-  - [ ] `core/exceptions.py`：定义 `HostlensError` 基类与几个常用子类（`ConfigError` / `TargetError` / `InspectorError`）
-- [ ] **0.7 CLI 骨架 + doctor**
-  - [ ] `cli/__init__.py`：Typer app，注册子命令位
-  - [ ] `cli/doctor.py`：检查 Python 版本、`ANTHROPIC_API_KEY` 是否存在、配置目录可读、`--json` 输出
-  - [ ] 遵循全局 CLAUDE.md：写操作命令拒绝 root（EUID==0）的工具函数
-  - [ ] 验收：`hostlens doctor --json | jq .` 输出合法 JSON
+- [x] **0.1 仓库布局**
+  - [x] 创建 `src/hostlens/{agent,inspectors,targets,scheduler,notifiers,remediation,reporting,mcp_server,cli,core}/__init__.py`
+  - [x] 创建顶层目录 `inspectors/`、`schedules/`、`tests/`、`docs/`
+  - [x] 加 `.gitignore`（Python + macOS + venv + 本地配置）
+  - [x] 加 `LICENSE`（Apache-2.0）
+- [x] **0.2 打包与依赖**
+  - [x] `pyproject.toml`：项目元数据、`[project.scripts] hostlens = "hostlens.cli:app"`
+  - [x] 依赖分组：`core` / `mcp` / `dev`（lint+test）/ `docs`
+  - [x] 锁定 Python `>=3.11`
+  - [x] 验收：`pip install -e ".[dev]"` 成功，`hostlens --help` 输出
+- [x] **0.3 代码质量工具链**
+  - [x] 配置 `ruff`（lint + format，替代 black/isort/flake8）
+  - [x] 配置 `mypy --strict`
+  - [x] 配置 `pre-commit`：ruff、mypy、trailing-whitespace、yamllint
+  - [x] 验收：`pre-commit run --all-files` 通过
+- [x] **0.4 测试基线**
+  - [x] 配置 `pytest`、`pytest-asyncio`、`pytest-cov`
+  - [x] 写一个 dummy 测试验证 fixture/标记机制
+  - [x] 验收：`pytest --cov` 跑通且有覆盖率报告
+- [x] **0.5 CI（GitHub Actions）**
+  - [x] workflow：lint + mypy + pytest（matrix: Python 3.11/3.12）
+  - [x] 验收：本地 `act` 或 push 后 CI 绿
+- [x] **0.6 配置与日志骨架**
+  - [x] `core/config.py`：基于 `pydantic-settings`，支持 env + `~/.config/hostlens/*.yaml`
+  - [x] `core/logging.py`：structlog 配置（dev=human、prod=json）
+  - [x] `core/exceptions.py`：定义 `HostlensError` 基类与几个常用子类（`ConfigError` / `TargetError` / `InspectorError`）
+- [x] **0.7 CLI 骨架 + doctor**
+  - [x] `cli/__init__.py`：Typer app，注册子命令位
+  - [x] `cli/doctor.py`：检查 Python 版本、`ANTHROPIC_API_KEY` 是否存在、配置目录可读、`--json` 输出
+  - [x] 遵循全局 CLAUDE.md：写操作命令拒绝 root（EUID==0）的工具函数
+  - [x] 验收：`hostlens doctor --json | jq .` 输出合法 JSON
 
 ---
 
@@ -83,19 +117,19 @@
 
 ### 任务
 
-- [ ] **1.1 ExecutionTarget 抽象**
-  - [ ] `targets/base.py`：`ExecutionTarget` Protocol、`ExecResult` dataclass、`Capability` 枚举
-  - [ ] `targets/local.py`：本地子进程实现，**使用 `asyncio.create_subprocess_shell`**（Inspector `collect.command` 含 pipe / redirect / 变量引用，必须走 shell 求值；安全边界由 manifest 渲染层负责，详见 ARCHITECTURE.md §4 命令渲染安全规则）
-  - [ ] `targets/registry.py`：target 注册与查找
-  - [ ] 验收：单测覆盖正常退出、非零退出、超时取消、stderr 捕获
-- [ ] **1.2 SSH Target**
-  - [ ] `targets/ssh.py`：AsyncSSH 实现（key 认证为主，password 可选）
-  - [ ] 凭据加载：从 `~/.config/hostlens/targets.yaml` 读取
-  - [ ] CLI: `hostlens target add/list/remove`
-  - [ ] 集成测试：docker 起一个 sshd 容器，跑真实 SSH（不要 mock）
-  - [ ] 验收：非 root 用户能跑通 add → exec 流程
-- [ ] **1.3 Inspector manifest schema（扩展版，覆盖真实运维需求；详见 docs/ARCHITECTURE.md §4）**
-  - [ ] `inspectors/schema.py`：Pydantic 模型 `InspectorManifest`，必须包含：
+- [x] **1.1 ExecutionTarget 抽象**（OpenSpec change `add-execution-target-abstraction` 落地）
+  - [x] `targets/base.py`：`ExecutionTarget` Protocol、`ExecResult` dataclass、`Capability` 枚举
+  - [x] `targets/local.py`：本地子进程实现，**使用 `asyncio.create_subprocess_shell`**（Inspector `collect.command` 含 pipe / redirect / 变量引用，必须走 shell 求值；安全边界由 manifest 渲染层负责，详见 ARCHITECTURE.md §4 命令渲染安全规则）
+  - [x] `targets/registry.py`：target 注册与查找
+  - [x] 验收：单测覆盖正常退出、非零退出、超时取消、stderr 捕获
+- [x] **1.2 SSH Target**（OpenSpec change `add-execution-target-abstraction` 落地）
+  - [x] `targets/ssh.py`：AsyncSSH 实现（key 认证为主，password 可选）
+  - [x] 凭据加载：从 `~/.config/hostlens/targets.yaml` 读取
+  - [x] CLI: `hostlens target add/list/remove`
+  - [x] 集成测试：docker 起一个 sshd 容器，跑真实 SSH（不要 mock）
+  - [x] 验收：非 root 用户能跑通 add → exec 流程
+- [x] **1.3 Inspector manifest schema（扩展版，覆盖真实运维需求；详见 docs/ARCHITECTURE.md §4）**（OpenSpec change `add-inspector-plugin-system` 落地）
+  - [x] `inspectors/schema.py`：Pydantic 模型 `InspectorManifest`，必须包含：
     - 基础：`name` / `version` / `description` / `tags`
     - 目标兼容：`targets` (兼容的 ExecutionTarget 类型) / `requires_capabilities` (capability 集合)
     - 依赖：`requires_binaries` (远端需要的可执行文件，如 nginx/mysql/openssl) / `requires_files` (需要可读的路径)
@@ -107,25 +141,25 @@
     - 输出：`output_schema` (JSON Schema)
     - 判定：`findings` (`for_each` / `when` / `severity` / `message` 四字段 DSL；详见 docs/ARCHITECTURE.md §4 Finding DSL 求值语义)
     - 元数据：`artifacts` (列出额外产物，如"导出最近 50 行日志作为附件")
-  - [ ] `inspectors/loader.py`：YAML 解析 + JSON Schema 校验 + 可选 `hook.py` 加载 + 密钥占位展开
-  - [ ] `inspectors/registry.py`：按 name 索引，启动时 walk `inspectors/builtin/` 与用户 `inspectors/`
-  - [ ] 验收：
-    - [ ] 加载失败时给出文件路径 + 字段级错误
-    - [ ] `requires_binaries` 不满足时 Inspector 自动 skip 并报告（而非报错）
-    - [ ] 需要 sudo 的 Inspector 在未 opt-in 时 dispatch 必须拒绝
-    - [ ] secrets 占位未注入（doctor 应能预先检测） → 加载时清晰报错且不泄露 env 变量名以外的信息
-    - [ ] **Shell 注入防御**（详见 ARCHITECTURE.md §4 命令渲染安全规则）：
+  - [x] `inspectors/loader.py`：YAML 解析 + JSON Schema 校验 + 可选 `hook.py` 加载 + 密钥占位展开
+  - [x] `inspectors/registry.py`：按 name 索引，启动时 walk `inspectors/builtin/` 与用户 `inspectors/`
+  - [x] 验收：
+    - [x] 加载失败时给出文件路径 + 字段级错误
+    - [x] `requires_binaries` 不满足时 Inspector 自动 skip 并报告（而非报错）
+    - [x] 需要 sudo 的 Inspector 在未 opt-in 时 dispatch 必须拒绝
+    - [x] secrets 占位未注入（doctor 应能预先检测） → 加载时清晰报错且不泄露 env 变量名以外的信息
+    - [x] **Shell 注入防御**（详见 ARCHITECTURE.md §4 命令渲染安全规则）：
       - parameters 中 string 类型字段未声明 `pattern` 或 `enum` → 加载时拒绝
       - command 模板中 string parameter 未走 `| sh` filter → 加载时拒绝（除非显式 `unsafe_raw: true`）
       - secrets 在 command 模板中被 Jinja 插值（不通过 env var 引用 `$VAR`）→ 加载时拒绝
       - 跑一组注入 payload 测试：用 `'; whoami; #` / `$(curl evil)` 等作为 parameter 值，验证渲染结果转义正确
-- [ ] **1.4 Inspector runner**
-  - [ ] `inspectors/runner.py`：take(target, manifest) → 跑 collect → parse → 应用 findings → 返回 `InspectorResult`
-  - [ ] parse 内置 format：`raw` / `table` / `json` / `kv`
-  - [ ] findings 表达式引擎：基于 `simpleeval`（不要 `eval`），只允许只读表达式；按 ARCHITECTURE.md §4 Finding DSL 实现 `for_each`（遍历模式）与省略 `for_each`（聚合模式）；message 模板用 Python `.format(...)` 风格；loader 校验聚合模式 message 不引用 for_each 变量
-- [ ] **1.5 内置 hello inspector（管线验证用）**
-  - [ ] `inspectors/builtin/hello/echo.yaml`：跑 `echo hello`，输出 `{"message": "hello"}`
-  - [ ] `inspectors/builtin/system/uptime.yaml`：跑 `uptime`，解析负载
+- [x] **1.4 Inspector runner**（OpenSpec change `add-inspector-plugin-system` 落地）
+  - [x] `inspectors/runner.py`：take(target, manifest) → 跑 collect → parse → 应用 findings → 返回 `InspectorResult`
+  - [x] parse 内置 format：`raw` / `table` / `json` / `kv`
+  - [x] findings 表达式引擎：基于 `simpleeval`（不要 `eval`），只允许只读表达式；按 ARCHITECTURE.md §4 Finding DSL 实现 `for_each`（遍历模式）与省略 `for_each`（聚合模式）；message 模板用 Python `.format(...)` 风格；loader 校验聚合模式 message 不引用 for_each 变量
+- [x] **1.5 内置 hello inspector（管线验证用）**（OpenSpec change `add-inspector-plugin-system` 落地）
+  - [x] `inspectors/builtin/hello/echo.yaml`：跑 `echo hello`，输出 `{"message": "hello"}`
+  - [x] `inspectors/builtin/system/uptime.yaml`：跑 `uptime`，解析负载
 - [x] **1.6 报告数据模型**（OpenSpec change `add-report-data-model` 落地）
   - [x] `reporting/models.py`：`Report` / `Finding` / `Severity` / `Evidence` Pydantic 模型（含 Finding.tags + Evidence kind-discriminated 字段集 + Report.from_inspector_results 工厂）
   - [x] `reporting/render_markdown.py`：纯 f-string 渲染（≤ 200 行；含控制字符 escape；env var 不展开；渲染边界过 redact_report_for_render）
