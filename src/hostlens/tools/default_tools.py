@@ -40,7 +40,6 @@ from hostlens.tools.schemas.list_targets import (
     scrub_inventory_string,
 )
 from hostlens.tools.schemas.run_inspector import (
-    FindingSummary,
     RunInspectorInput,
     RunInspectorOutput,
 )
@@ -145,17 +144,13 @@ async def run_inspector_handler(args: RunInspectorInput, ctx: ToolContext) -> Ru
             inspector_name=result.name,
             findings=[],
         )
+    # `FindingSummary` is a type alias for `hostlens.reporting.models.Finding`
+    # (the same model `InspectorResult.findings` already holds), so we can
+    # reuse the runner's findings directly without re-constructing each one.
     return RunInspectorOutput(
         target_name=result.target_name,
         inspector_name=result.name,
-        findings=[
-            FindingSummary(
-                severity=finding.severity,
-                message=finding.message,
-                evidence={k: str(v) for k, v in finding.evidence.items()},
-            )
-            for finding in result.findings
-        ],
+        findings=list(result.findings),
     )
 
 

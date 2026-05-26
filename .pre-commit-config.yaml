@@ -3,6 +3,7 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: '\.ambr$'  # syrupy snapshot files use trailing whitespace inside ''' blocks to encode blank lines; auto-stripping breaks byte-equal snapshot comparison
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-toml

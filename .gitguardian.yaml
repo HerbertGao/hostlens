@@ -13,6 +13,17 @@ version: 2
 # This file at least ensures local ggshield runs (and any contributor
 # pre-commit hook) skips the test tree, where fixture values are
 # expected.
+#
+# Convention for new fake secrets used in tests / docstrings:
+#  - Test fixtures (tests/**/*.py): build secret-shaped strings via
+#    string concatenation or .join() so scanners cannot match a single
+#    contiguous literal in source. Runtime value remains identical.
+#    Example: _API_KEY = "sk-" + "abcdefghij" + "..."  (not "sk-abcdefghij...")
+#  - Docstring examples (src/**/*.py): use angle-bracket placeholders
+#    like `password=<the-value>` instead of `password=real-fake-value`.
+#    Scanners ignore these forms; readers still understand the regex.
+# Following both conventions means no new dashboard ignores are needed
+# per PR. See PR #18 for the precedent and rationale.
 
 secret:
   # Path-glob exclusions (POSIX style with `**` for recursive match).

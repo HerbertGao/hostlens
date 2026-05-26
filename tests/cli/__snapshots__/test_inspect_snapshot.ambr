@@ -1,0 +1,58 @@
+# serializer version: 1
+# name: test_render_markdown_snapshot
+  '''
+  # Hostlens Inspection Report
+  
+  | Field | Value |
+  |---|---|
+  | report_id | 00000000-0000-0000-0000-000000000001 |
+  | schema_version | 1.0 |
+  | target_name | local-host |
+  | intent | — |
+  | started_at | 2026-01-01T12:00:00+00:00 |
+  | finished_at | 2026-01-01T12:00:01+00:00 |
+  | duration_seconds | 1.00 |
+  
+  ## Summary
+  
+  - critical: 0
+  - warning: 0
+  - info: 1
+  
+  ## Findings
+  
+  ### [INFO] hello received: hello
+  
+  _tags: demo_
+  
+  <details><summary>Evidence (1 items)</summary>
+  
+  **Evidence 1 — kind: `command_output`**
+  
+  | Field | Value |
+  |---|---|
+  | command | `echo hello` |
+  | stdout | `hello
+  ` |
+  | exit_code | `0` |
+  
+  </details>
+  
+  ## Inspector Results
+  
+  ### hello.echo
+  
+  - **Version:** 1.0.0
+  - **Target:** local-host
+  - **Duration (s):** 0.01
+  - **Status:** ok
+  
+  ```json
+  {
+    "raw": "hello\n"
+  }
+  ```
+  
+  
+  '''
+# ---

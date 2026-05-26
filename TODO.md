@@ -13,7 +13,7 @@
 | 期 | 里程碑 | 核心交付 | 状态 |
 |---|---|---|---|
 | M0 | 项目脚手架 | 可跑 `hostlens doctor` 的空骨架 | ⬜ 未开始 |
-| M1 | Core 抽象 + 最小管线 | `hostlens inspect localhost --inspector hello` 跑通 | ⬜ |
+| M1 | Core 抽象 + 最小管线 | `hostlens inspect localhost --inspector hello` 跑通 | ✅ |
 | M2 | 手写 Agent loop | 自然语言意图 → Agent 自选 Inspector → 出 markdown 报告 | ⬜ |
 | M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ⬜ |
 | M4 | Scheduler | cron 定时跑 + 历史 run 持久化 | ⬜ |
@@ -126,15 +126,15 @@
 - [ ] **1.5 内置 hello inspector（管线验证用）**
   - [ ] `inspectors/builtin/hello/echo.yaml`：跑 `echo hello`，输出 `{"message": "hello"}`
   - [ ] `inspectors/builtin/system/uptime.yaml`：跑 `uptime`，解析负载
-- [ ] **1.6 报告数据模型**
-  - [ ] `reporting/models.py`：`Report` / `Finding` / `Severity` / `Evidence` Pydantic 模型
-  - [ ] `reporting/render_markdown.py`：最小可读的 md 渲染
-  - [ ] `reporting/render_json.py`
-- [ ] **1.7 CLI: inspect & inspectors**
-  - [ ] `hostlens inspect <target> --inspector <name> [--output file] [--format md|json]`
-  - [ ] `hostlens inspectors list [--tag] [--target-type]`
-  - [ ] `hostlens inspectors show <name>` 打印 manifest
-  - [ ] 验收：上述命令在本地 + 一个 SSH 测试容器上都能跑通
+- [x] **1.6 报告数据模型**（OpenSpec change `add-report-data-model` 落地）
+  - [x] `reporting/models.py`：`Report` / `Finding` / `Severity` / `Evidence` Pydantic 模型（含 Finding.tags + Evidence kind-discriminated 字段集 + Report.from_inspector_results 工厂）
+  - [x] `reporting/render_markdown.py`：纯 f-string 渲染（≤ 200 行；含控制字符 escape；env var 不展开；渲染边界过 redact_report_for_render）
+  - [x] `reporting/render_json.py`：Pydantic `model_dump_json` 包装（同走 redact_report_for_render）
+- [x] **1.7 CLI: inspect & inspectors**
+  - [x] `hostlens inspect <target> --inspector <name> [--output file] [--format md|json] [--parameters JSON] [--allow-privileged] [--timeout SECONDS]`（4 值退出码 0/1/2/3 + Typer usage exit 改写 + stdout/stderr 分离）
+  - [x] `hostlens inspectors list [--tag] [--target-type]`（archived `add-inspector-plugin-system` 已交付）
+  - [x] `hostlens inspectors show <name>` 打印 manifest（archived `add-inspector-plugin-system` 已交付）
+  - [x] 验收：本地 LocalTarget 端到端跑通 hello.echo + sleep_timeout demo Path 10 步（参见 `examples/m1-report/README.md`）；SSH 容器验证留给 M2 集成测试扩展
 
 ---
 

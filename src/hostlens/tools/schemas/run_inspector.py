@@ -1,17 +1,18 @@
 """Pydantic schemas for the `run_inspector` ToolSpec.
 
-`FindingSummary` is a deliberately minimal placeholder for M2 — M3's
-report data model will redefine the canonical finding type. Until then,
-three fields (severity / message / evidence) keep the surface stable
-enough for the agent loop demo path without forcing M2 to ship report
-persistence.
+`FindingSummary` is a type alias of `hostlens.reporting.models.Finding`
+(the unified report-data-model SOT introduced by the
+`add-report-data-model` proposal). Keeping the alias name preserves the
+existing `from hostlens.tools.schemas.run_inspector import FindingSummary`
+import path while letting the underlying schema track the canonical
+`Finding` definition exactly.
 """
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from hostlens.reporting.models import Finding
 
 __all__ = [
     "FindingSummary",
@@ -30,19 +31,12 @@ class RunInspectorInput(BaseModel):
     parameters: dict[str, str] = Field(default_factory=dict)
 
 
-class FindingSummary(BaseModel):
-    """Minimal M2 placeholder for an inspector finding.
-
-    M3 (`add-report-data-model`) will replace this with the full finding
-    identity model. For M2 the agent loop only needs severity + a human
-    message + opaque evidence dict.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    severity: Literal["info", "warning", "critical"]
-    message: str
-    evidence: dict[str, str] = Field(default_factory=dict)
+# Type alias — `FindingSummary` is exactly the canonical `Finding` model
+# from `hostlens.reporting.models`. JSON schema for the ToolSpec surface
+# is produced by `Finding.model_json_schema()` at adapter projection
+# time, so this alias automatically tracks any field-set evolution of
+# `Finding` without requiring schema duplication.
+FindingSummary = Finding
 
 
 class RunInspectorOutput(BaseModel):
