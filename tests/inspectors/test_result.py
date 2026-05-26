@@ -23,7 +23,7 @@ class TestFinding:
     def test_minimal_finding_accepted(self) -> None:
         f = Finding(severity="info", message="hello")
         assert f.severity == "info"
-        assert f.evidence == {}
+        assert f.evidence == []
 
     @pytest.mark.parametrize("severity", ["info", "warning", "critical"])
     def test_all_severities_accepted(self, severity: str) -> None:
@@ -35,11 +35,13 @@ class TestFinding:
         with pytest.raises(ValidationError):
             Finding(severity=severity, message="x")  # type: ignore[arg-type]
 
-    def test_evidence_must_be_str_to_str(self) -> None:
-        # `evidence: dict[str, str]` — int values must be rejected so the
-        # runner is forced to stringify upstream (no silent coercion).
+    def test_evidence_dict_form_rejected(self) -> None:
+        # `evidence: list[Evidence]` post-`add-report-data-model` BREAKING.
+        # Passing the legacy `dict[str, str]` shape must surface as a
+        # `ValidationError` (no silent coercion) — callers must construct
+        # `Evidence` instances explicitly.
         with pytest.raises(ValidationError):
-            Finding(severity="info", message="x", evidence={"k": 123})  # type: ignore[dict-item]
+            Finding(severity="info", message="x", evidence={"k": "v"})  # type: ignore[arg-type]
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -115,6 +117,22 @@ class TestInspectorResultExceptionStatuses:
                 **_base_kwargs(),  # type: ignore[arg-type]
             )
         assert f"{status}_status_with_missing" in exc_info.value.errors()[0]["msg"]
+
+    @pytest.mark.parametrize("status", ["timeout", "target_unreachable", "exception"])
+    def test_status_without_error_rejected(self, status: str) -> None:
+        """Archived inspector-plugin-system spec §需求:`InspectorResult` Pydantic
+        模型字段集 — `status != "ok"` requires a non-empty error description so
+        the rendered Report surfaces the root cause."""
+
+        with pytest.raises(ValidationError) as exc_info:
+            InspectorResult(status=status, **_base_kwargs())  # type: ignore[arg-type]
+        assert f"{status}_status_without_error" in exc_info.value.errors()[0]["msg"]
+
+    @pytest.mark.parametrize("status", ["timeout", "target_unreachable", "exception"])
+    def test_status_with_blank_error_rejected(self, status: str) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InspectorResult(status=status, error="   ", **_base_kwargs())  # type: ignore[arg-type]
+        assert f"{status}_status_without_error" in exc_info.value.errors()[0]["msg"]
 
 
 class TestInspectorResultMisc:

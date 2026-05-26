@@ -1,0 +1,30 @@
+name: demo.sleep_timeout
+version: 1.0.0
+description: Sleep for a parameterised number of seconds to exercise the runner timeout path.
+tags: [demo, timeout-test]
+targets: [local]
+requires_capabilities: []
+requires_binaries: [sleep]
+privilege: none
+
+parameters:
+  type: object
+  properties:
+    sleep_seconds:
+      type: integer
+      minimum: 1
+      maximum: 300
+  required: [sleep_seconds]
+  additionalProperties: false
+
+collect:
+  command: "sleep {{ sleep_seconds }}"
+  timeout_seconds: 60
+
+parse:
+  format: raw
+
+output_schema:
+  type: object
+
+findings: []

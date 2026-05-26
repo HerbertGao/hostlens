@@ -330,7 +330,12 @@ class InspectorRunner:
                     duration_seconds=time.monotonic() - start,
                     output={},
                     findings=[],
-                    error=None,
+                    # Per archived inspector-plugin-system spec §需求:
+                    # `InspectorResult` Pydantic 模型字段集 — `status != "ok"`
+                    # must carry a brief error description. The same text is
+                    # surfaced by `render_markdown` / `render_json` so users
+                    # see the timeout root cause in the rendered Report.
+                    error=(f"collect.command exceeded {manifest.collect.timeout_seconds} seconds"),
                     missing=[],
                 ),
                 stdout_length=len(exec_result.stdout),
@@ -695,11 +700,16 @@ class InspectorRunner:
                     error=str(exc),
                 )
                 continue
+            # M1 finding DSL does not yet produce structured evidence —
+            # `Finding.evidence: list[Evidence]` stays empty until the M3
+            # finding-DSL evidence extension lands. The `for_each` bound
+            # variable is already interpolated into `message` via
+            # `format_message`, so no information is lost.
             out.append(
                 Finding(
                     severity=rule.severity,
                     message=message,
-                    evidence={var_name: str(item)},
+                    evidence=[],
                 )
             )
 
@@ -734,11 +744,14 @@ class InspectorRunner:
                 error=str(exc),
             )
             return
+        # M1 finding DSL does not yet produce structured evidence — see
+        # the iterative-rule branch above for context. `evidence=[]` is
+        # the stable M1 surface; M3 will populate `list[Evidence]`.
         out.append(
             Finding(
                 severity=rule.severity,
                 message=message,
-                evidence={},
+                evidence=[],
             )
         )
 

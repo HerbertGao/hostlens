@@ -51,13 +51,14 @@ dev = [
     "pytest-docker>=3.1,<4",
     "pytest-rerunfailures>=14.0,<16",
     "psutil>=5.9",
+    "syrupy>=4.6,<5",
     "types-PyYAML",
 ]
 mcp = []
 docs = []
 
 [project.scripts]
-hostlens = "hostlens.cli:app"
+hostlens = "hostlens.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/HerbertGao/hostlens"

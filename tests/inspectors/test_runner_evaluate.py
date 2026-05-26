@@ -44,9 +44,11 @@ async def test_iterative_mode_produces_one_finding_per_match() -> None:
     assert findings[0].message == "proc value high: 60"
     assert findings[1].message == "proc value high: 80"
     assert all(f.severity == "warning" for f in findings)
-    # Evidence carries the for_each variable.
-    assert findings[0].evidence == {"p": "60"}
-    assert findings[1].evidence == {"p": "80"}
+    # M1 finding DSL does not produce structured evidence yet
+    # (`Finding.evidence: list[Evidence]` stays empty); M3 will extend
+    # the DSL to populate it.
+    assert findings[0].evidence == []
+    assert findings[1].evidence == []
 
 
 async def test_iterative_mode_skip_on_evaluate_failure() -> None:
@@ -95,7 +97,7 @@ async def test_aggregate_mode_produces_one_when_true() -> None:
     assert len(findings) == 1
     assert findings[0].severity == "critical"
     assert findings[0].message == "items count = 3"
-    assert findings[0].evidence == {}
+    assert findings[0].evidence == []
 
 
 # ---------------------------------------------------------------------- #

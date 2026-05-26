@@ -154,7 +154,11 @@ async def test_status_timeout() -> None:
     )
     result = await runner.run(manifest, target)
     assert result.status == "timeout"
-    assert result.error is None
+    # Per archived inspector-plugin-system spec §需求:`InspectorResult`
+    # Pydantic 模型字段集, status != "ok" must carry a non-empty error
+    # description; the runner reports the manifest's timeout limit so
+    # render_markdown / render_json surface the root cause.
+    assert result.error == (f"collect.command exceeded {manifest.collect.timeout_seconds} seconds")
     assert result.missing == []
 
 

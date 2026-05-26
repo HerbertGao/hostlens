@@ -1,14 +1,24 @@
-"""InspectorResult / Finding Pydantic models.
+"""InspectorResult Pydantic model and `Finding` re-export.
 
-Both models are frozen and reject unknown fields. `Finding`'s field set
-(`severity` / `message` / `evidence: dict[str, str]`) is deliberately kept
-in sync with `hostlens.tools.schemas.run_inspector.FindingSummary` so the
-M2 `run_inspector` ToolSpec handler can project an `InspectorResult.findings`
-list straight to `RunInspectorOutput.findings` without renaming fields.
+`Finding` is the canonical model defined in
+`hostlens.reporting.models` (the unified report-data-model SOT). This
+module re-exports it as a type alias so existing
+`from hostlens.inspectors.result import Finding` import paths keep
+working without behaviour change.
 
 `InspectorResult.status` is the M1-final five-value closed set; the
 `model_validator` enforces cross-field invariants (`ok` ⇒ no error / no
 missing; `requires_unmet` ⇒ non-empty missing; others ⇒ no missing).
+
+`reporting.models.Report.inspector_results: list[InspectorResult]` is
+declared with a forward-reference to `InspectorResult` so the two
+modules can co-import without a runtime cycle. The
+`Report.model_rebuild(...)` call at the bottom of this module resolves
+that forward-ref once `InspectorResult` is fully defined — this is the
+mechanism that lets either import order (`hostlens.inspectors.result`
+first or `hostlens.reporting.models` first) work as long as
+`hostlens.inspectors.result` is imported before the first `Report(...)`
+construction.
 """
 
 from __future__ import annotations
@@ -16,6 +26,8 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from hostlens.reporting.models import Finding as Finding
 
 __all__ = [
     "Finding",
@@ -31,23 +43,6 @@ InspectorStatus = Literal[
     "requires_unmet",
     "exception",
 ]
-
-
-class Finding(BaseModel):
-    """Minimal M1 finding model — three fields kept in lockstep with
-    `hostlens.tools.schemas.run_inspector.FindingSummary` so the
-    `run_inspector` handler projects 1:1.
-
-    M3 (`add-report-data-model`) will extend this with `id`,
-    `inspector_run_id`, `seen_at`, etc. as add-only fields; the three
-    fields here will stay name- and type-stable.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    severity: Literal["info", "warning", "critical"]
-    message: str
-    evidence: dict[str, str] = Field(default_factory=dict)
 
 
 class InspectorResult(BaseModel):
@@ -100,4 +95,43 @@ class InspectorResult(BaseModel):
                     f"missing == [], got missing={self.missing!r}"
                 )
 
+        # Archived inspector-plugin-system spec §需求:`InspectorResult` Pydantic
+        # 模型字段集 — `status != "ok"` 时含错误简述 (`error` must be a
+        # non-empty string); `status == "ok"` 时必须为 None (already enforced
+        # above). `requires_unmet` is exempted because its `missing` list
+        # already carries the structured "why" — duplicating it into `error`
+        # would be redundant noise; the renderer surfaces `missing` instead.
+        if status in ("timeout", "target_unreachable", "exception") and (
+            self.error is None or not self.error.strip()
+        ):
+            raise ValueError(
+                f"{status}_status_without_error: status={status!r} requires "
+                "a non-empty error description"
+            )
+
         return self
+
+
+# ---------------------------------------------------------------------------
+# Resolve `Report.inspector_results: list[InspectorResult]` forward ref.
+# ---------------------------------------------------------------------------
+#
+# `hostlens.reporting.models.Report` declares its `inspector_results` field
+# with a string forward-ref to `InspectorResult` (guarded by TYPE_CHECKING)
+# to break the import cycle between this module and `reporting.models`.
+# Resolution happens here, once `InspectorResult` is fully defined.
+#
+# Both arguments are mandatory:
+#   * `_types_namespace={"InspectorResult": InspectorResult}` — the
+#     TYPE_CHECKING guard hides `InspectorResult` from the module globals
+#     `model_rebuild()` would otherwise consult, so a bare call raises
+#     `PydanticUndefinedAnnotation`.
+#   * `force=True` — Pydantic v2 short-circuits `model_rebuild()` to a
+#     no-op if a partial build exists, which would leave the forward-ref
+#     silently unresolved.
+from hostlens.reporting.models import Report as _Report  # noqa: E402
+
+_Report.model_rebuild(
+    _types_namespace={"InspectorResult": InspectorResult},
+    force=True,
+)
