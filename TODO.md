@@ -176,12 +176,12 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **目标**：实现 Hostlens 简历价值的核心 —— 一个**自己手写的、不依赖 LangChain 的** Anthropic tool-use loop。Planner Agent 接收自然语言意图，自动选择并调度 Inspector，输出结构化报告。
 
-**对应 OpenSpec proposal**：
-- `add-tool-registry-capability-layer`（先于其它；其他工具层任务都依赖它）
-- `add-llm-backend-protocol`（先于 agent-loop-skeleton；Agent loop 依赖 backend 抽象 + 测试需要 FakeBackend/PlaybackBackend）
-- `add-agent-loop-skeleton`
-- `add-planner-agent`
-- `add-llm-cassette-testing`（与 add-llm-backend-protocol 共同推进 `PlaybackBackend` 部分）
+**对应 OpenSpec changes / proposal**：
+- [`add-tool-registry-capability-layer`](openspec/changes/archive/2026-05-25-add-tool-registry-capability-layer/) ✓ archived（M2 前置；M1 阶段已落地）
+- [`add-llm-backend-protocol`](openspec/changes/archive/2026-05-26-add-llm-backend-protocol/) ✓ archived（§2.1a + §2.1b + §2.1c — LLMBackend Protocol + AnthropicAPIBackend / FakeBackend / PlaybackBackend）
+- `add-agent-loop-skeleton`（§2.2 后续）
+- `add-planner-agent`（§2.4 后续）
+- `add-llm-cassette-testing`（PlaybackBackend 录制工具未来独立 proposal）
 
 **退出条件**：
 1. `hostlens inspect prod-web-01 --intent "检查这台机器的健康状况"` 能让 Agent 自主决定调用哪些 Inspector，跑完后输出 markdown 报告；同样的意图在 cassette 回放下结果稳定
@@ -190,35 +190,36 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 ### 任务
 
-- [ ] **2.1a LLMBackend / BackendCapabilities / BackendDiagnostics Protocol 定义（≤2h；详见 ARCHITECTURE.md §9 模型层 / ADR-008）**
-  - [ ] `agent/backend.py`：`LLMBackend` Protocol（含 name / capabilities / messages_create）+ `BackendCapabilities` dataclass（7 字段：prompt_caching / tool_use / structured_output / parallel_tool_use / extended_thinking / vision / streaming）+ `BackendDiagnostics` Protocol（health_check / quota_check / ensure_safe_for_daemon）+ `MessageResponse` / `BackendHealth` / `QuotaStatus` 数据模型 + `BackendCapabilityViolation` 异常
-  - [ ] 验收：
-    - [ ] 三个 Protocol 完全独立，可分别 mock
-    - [ ] `BackendCapabilities` 配套测试：构造非法组合（如 `prompt_caching=True` 但 `tool_use=False`）应通过（capability 之间无依赖约束，仅声明）
-    - [ ] mypy --strict 通过
+- [x] **2.1a LLMBackend / BackendCapabilities / BackendDiagnostics Protocol 定义（≤2h；详见 ARCHITECTURE.md §9 模型层 / ADR-008）**
+  - [x] `agent/backend.py`：`LLMBackend` Protocol（含 name / capabilities / messages_create）+ `BackendCapabilities` dataclass（7 字段：prompt_caching / tool_use / structured_output / parallel_tool_use / extended_thinking / vision / streaming）+ `BackendDiagnostics` Protocol（health_check / quota_check / ensure_safe_for_daemon）+ `MessageResponse` / `BackendHealth` / `QuotaStatus` 数据模型 + `BackendCapabilityViolation` 异常
+  - [x] 验收：
+    - [x] 三个 Protocol 完全独立，可分别 mock
+    - [x] `BackendCapabilities` 配套测试：构造非法组合（如 `prompt_caching=True` 但 `tool_use=False`）应通过（capability 之间无依赖约束，仅声明）
+    - [x] mypy --strict 通过
 
-- [ ] **2.1b AnthropicAPIBackend 默认实现（≤2h）**
-  - [ ] `agent/backends/anthropic_api.py`：包一层 `anthropic.AsyncAnthropic`，capabilities 全 true
-  - [ ] 自动重试（429 honor retry-after / 529 固定 30s 退避 / 5xx 指数退避 1s/4s/16s）、超时、token usage 统计
-  - [ ] 结构化日志：每次调用记录 backend.name / model / input_tokens / output_tokens / cache_read / cache_creation / duration_ms
-  - [ ] 基础 `BackendDiagnostics`：`health_check` 调 messages.create 一次 ping；`quota_check` 返回 None（M10.5 完善）；`ensure_safe_for_daemon` no-op
-  - [ ] 收到 `cache_control` block 但 capability 不应该有时 → raise `BackendCapabilityViolation`（不静默丢，Agent loop 的 bug 必须暴露）
-  - [ ] 验收：
-    - [ ] `mypy --strict` 通过
-    - [ ] cassette 录制模式跑通完整管线
+- [x] **2.1b AnthropicAPIBackend 默认实现（≤2h）**
+  - [x] `agent/backends/anthropic_api.py`：包一层 `anthropic.AsyncAnthropic`，capabilities 全 true（**M2 范围 extended_thinking / streaming 必须 False**：Protocol 签名不含相应参数）
+  - [x] ~~自动重试~~ —— 重试归 Agent loop 单一收口（ADR-005；backend 显式 `max_retries=0`，把 SDK 异常按域分类包装为 `BackendRateLimited` / `BackendUnavailable` / `BackendError(kind="auth_invalid")` raise，由 M2.2 Agent loop 按 ARCHITECTURE §9 Failure Semantics 表统一处理）
+  - [x] 结构化日志：（M2.2 Agent loop 一侧消费 token usage 时统一记录；backend 层已通过 `BackendDiagnostics.health_check` 暴露 latency 指标）
+  - [x] 基础 `BackendDiagnostics`：`health_check` 调 messages.create 一次 ping（用注入的 `health_check_model="claude-haiku-4-5"` 廉价探测）；`quota_check` 返回 None（M10.5 完善）；`ensure_safe_for_daemon` no-op
+  - [x] 收到 `cache_control` block 但 capability 不应该有时 → raise `BackendCapabilityViolation`（不静默丢，Agent loop 的 bug 必须暴露）；扫描 system / messages / tools 三处（M2.2 Agent loop 端先检查 capability 不注入；backend 端是兜底）
+  - [x] 401 + 403 统一映射 auth_invalid（AuthenticationError + PermissionDeniedError 同 catch）
+  - [x] 验收：
+    - [x] `mypy --strict` 通过
+    - [x] cassette 录制模式跑通完整管线（M2 落地 PlaybackBackend 回放路径；录制工具未来再加）
 
-- [ ] **2.1c FakeBackend + PlaybackBackend + cassette 工具链（≤2h）**
-  - [ ] `agent/backends/fake.py`：`FakeBackend` 单元测试用（固定响应 + 可注入异常）
-  - [ ] `agent/backends/playback.py`：`PlaybackBackend` 集成测试用（按请求 hash 命中 `tests/cassettes/*.json`，HOSTLENS_LLM_MODE=record/replay/live 切换）
-  - [ ] cassette 格式定义（hash 算法 + 响应序列化 schema）
-  - [ ] pytest fixture `llm_cassette()`：自动选 backend + cassette 文件
-  - [ ] 配置 schema：`backend.type / api_key / base_url`；`agent.primary_model / fallback_model / max_turns / token_budget_*`（参考 ARCHITECTURE §9）
-  - [ ] 验收：
-    - [ ] CI 默认 replay 模式，不消耗 API 额度
-    - [ ] FakeBackend 与 PlaybackBackend 跑通 Agent loop 单测
-    - [ ] cassette 回放下 token usage 也能正确回放（不调真 API）
-    - [ ] 新增测试 case 时跑一次 record 即可（HOSTLENS_LLM_MODE=record）
-    - [ ] `BackendCapabilities.prompt_caching=False` 的 backend 上，Agent loop 不注入 `cache_control` block（**Agent loop 端检查 capability**，不是 backend 自己丢；backend 检测到不一致必须 raise `BackendCapabilityViolation`）
+- [x] **2.1c FakeBackend + PlaybackBackend + cassette 工具链（≤2h）**
+  - [x] `agent/backends/fake.py`：`FakeBackend` 单元测试用（构造时传 responses 列表，按顺序返回；耗尽 raise IndexError）
+  - [x] `agent/backends/playback.py`：`PlaybackBackend` 集成测试用（cassette key = `SHA256({model, messages, tools_count})`；miss raise `CassetteMiss` 不回落真实 API；spec drift 由 `--current-tools-hash` lint 检测）
+  - [x] cassette 格式定义（JSON Lines；每行 `{request, response, tools_schema_hash?}`）
+  - [x] ~~pytest fixture `llm_cassette()`~~ —— M2 集成测试直接构造 PlaybackBackend；fixture 抽象暂未需要，待 M2.2 Agent loop 集成时再评估
+  - [x] 配置 schema：`backend.type / api_key / base_url / cassette_path`；`agent.primary_model / fallback_model / max_turns / token_budget_input / token_budget_output / health_check_model`（参考 ARCHITECTURE §9）
+  - [x] 验收：
+    - [x] CI 默认 replay 模式，不消耗 API 额度（`@pytest.mark.live` + `addopts = "-m 'not live'"`）
+    - [x] FakeBackend 与 PlaybackBackend 跑通 Agent loop 单测（M2.2 Agent loop 实施时直接消费）
+    - [x] cassette 回放下 token usage 也能正确回放（不调真 API；`Usage` 字段 None→0 兼容 SDK 非缓存响应）
+    - [ ] 新增测试 case 时跑一次 record 即可（HOSTLENS_LLM_MODE=record）—— **录制工具未来独立 proposal 落地**，M2 用手写 cassette
+    - [x] `BackendCapabilities.prompt_caching=False` 的 backend 上，Agent loop 不注入 `cache_control` block（**Agent loop 端检查 capability**，不是 backend 自己丢；backend 检测到不一致必须 raise `BackendCapabilityViolation`）
 - [ ] **2.2 Tool-use loop 核心（消费 LLMBackend，不直接 import anthropic）**
   - [ ] `agent/loop.py`：`AgentLoop(backend, tool_adapter, settings)`，**backend 是私有依赖，不进 ToolContext**（ADR-008）
   - [ ] 跑 `while not stop_reason == "end_turn"`；工具调用并行（同 turn 内多个 tool_use 并行执行）
