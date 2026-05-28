@@ -15,7 +15,8 @@ Hostlens 的简历核心价值是「面试官打开 `agent/loop.py` 能直接看
 - **工具结果处理（按 `ToolsAdapter.dispatch` 真实契约）**：`dispatch(name, args_json, ctx) -> dict[str, Any]` —— 成功返回 `result.model_dump()` dict；handler 内部异常**已被 dispatch 捕获并 scrub**成 `{"is_error": True, "error_kind", "tool_name", "message", "cause"}` envelope dict 返回（循环**不再二次 scrub**）。循环按下列规则分流（详见 design D-5）：
   - **幻觉工具名用前置成员检查拦截，不靠 `KeyError`**：`dispatch` 的 `KeyError` 既可能是 registry 查无此名、也可能是 handler 内部 re-raise，同类型不可区分；故循环先查 `block.name ∈ list_for_agent() 名字集`，不在 → 不调 dispatch 直接回灌「无此工具」让模型改用真实工具。
   - **error envelope 用多键签名判别**：`is_error is True` 且含 `error_kind`、`message` 键 → 映射 Anthropic `tool_result(is_error=True)` + 记 `ToolInvocation(error=...)`（**禁止**仅凭裸 `is_error` 真值判别，业务 output schema 理论上可含同名字段）；否则正常 `tool_result`。
-  - **会从 `dispatch` 抛出**的：`TypeError`（malformed tool args，循环捕获 + scrub 回灌让模型自纠）；`KeyError`（此时 name 已确认注册 → handler 内部 bug，**向上抛** fail-loud 不掩盖）；`ToolPolicyViolation`（loop 广告了一个自己拒绝 dispatch 的工具 = 配置/loop bug —— 向上抛暴露）。
+  - **会从 `dispatch` 抛出**的：`TypeError`（malformed tool args，循环捕获 + scrub 回灌让模型自纠）；`KeyError`（此时 name 已确认注册 → handler 内部 bug，**向上抛** fail-loud 不掩盖）；`ToolPolicyViolation`（loop 广告了一个自己拒绝 dispatch 的工具 = 配置/loop bug —— 向上抛暴露）；`ToolError`（output-schema 校验失败 = handler 返回类型错误的代码 bug —— 向上抛 fail-loud）。
+  - **并行中任一工具 fail-loud 时取消其余未完成的 sibling**：同 turn 多个 tool_use 并行执行，若其中之一抛出 fail-loud 异常（`KeyError`/`ToolPolicyViolation`/`ToolError`/`CancelledError`），循环必须取消并 drain 其余仍在跑的 sibling task 后再向上抛原异常，避免 orphaned 长跑 handler 泄漏资源（`asyncio.gather` 默认不取消 sibling）。
 - **统一退出状态**：`run()` 返回一个新的 `LoopResult` 数据模型（含 final assistant 文本、累积的 tool 调用与输出、token usage 汇总、turn 数、`terminal_status`）。
 
 `terminal_status` 取一个 M2 范围的字符串闭集（`ok` / `degraded_rate_limited` / `degraded_token_budget` / `degraded_max_turns` / `degraded_no_planner` / `empty_response` / `failed_api_unavailable`）。这是 M3 `ReportStatus` enum 的前身；M2 先用字符串承载，M3 `add-report-persistence-and-diff` 再升级为 typed enum。
@@ -26,8 +27,7 @@ Hostlens 的简历核心价值是「面试官打开 `agent/loop.py` 能直接看
 - `agent-loop`: 手写 Anthropic tool-use 循环 —— `AgentLoop` 类（构造契约、backend 私有持有、依赖注入边界）、turn 循环与并行 tool dispatch 语义、capability-gated `cache_control` 注入规则、token 预算 / max-turns 兜底、§9 Failure Semantics 到 `terminal_status` 的映射、`LoopResult` 输出 schema。
 
 ### 修改功能
-<!-- 无 spec 级行为变更：本变更纯消费 llm-backend-protocol / tool-registry-capability-layer / agent-tool-adapter 三个已归档 spec 的既有契约，不修改它们的需求。 -->
-（无）
+- `agent-tool-adapter`: `ToolsAdapter.dispatch` 的 **output-schema 校验失败**（handler 返回非 `output_schema` 类型 = handler/adapter 代码 bug）从 raise `TypeError` 改为 raise `ToolError`。理由：input-schema 失败（malformed model args，可回灌让模型自纠）已 spec-locked 为 `TypeError`，而 output-contract 失败语义完全不同（代码 bug，应 fail-loud）；二者共用 `TypeError` 会让 Agent loop 无法区分，导致把代码 bug 误当可恢复的模型错误回灌。output-contract 失败异常此前未被 spec 约定，本变更补充约定为 `ToolError`。
 
 ## 影响
 
@@ -69,7 +69,7 @@ Hostlens 的简历核心价值是「面试官打开 `agent/loop.py` 能直接看
 1. **Backend 持续 429（限流）**：`messages_create` raise `BackendRateLimited`。循环 honor `retry_after_seconds`（无则固定退避），最多 3 次；超限后强制收尾，`terminal_status=degraded_rate_limited`，返回已累积的 tool 结果而非裸抛。
 2. **Backend 5xx / 连接超时（不可达）**：raise `BackendUnavailable`。指数退避（1s/4s/16s，≤3 次）；超限后——已有 tool 结果则降级收尾（`degraded_no_planner`），无结果则 `failed_api_unavailable`（无可用产物）。
 3. **Token 预算 / max turns 耗尽**：循环检测到超限 → 强制收尾（`degraded_token_budget` / `degraded_max_turns`），输出当前已收集结果，**不**再发起新一轮调用。
-4. **Malformed tool_use args / 幻觉工具名 / handler 异常**：路径行为不同（按 `dispatch` 真实契约）。malformed args → `dispatch` raise `TypeError`，循环捕获 + `scrub_exception_message` 后作为 `is_error` tool_result 回灌；幻觉工具名 → 由前置成员检查（`block.name ∉ list_for_agent() 名字集`）在调用 dispatch 前拦截，回灌「无此工具」error tool_result；handler 内部异常 → 已被 `dispatch` 捕获 scrub 成 `is_error` envelope dict 返回（循环按多键签名识别，**不二次 scrub**，映射协议层 `is_error=True`）。上述均 continue，**一个工具失败不拖垮整轮**（并行 dispatch 下其余工具结果照常）。**向上抛不掩盖**的两类：`ToolPolicyViolation`（loop 广告了一个自己拒绝的工具 = 配置/loop bug）与已注册工具的 handler 内部 `KeyError`（name 已确认注册 → 代码 bug，不当幻觉名处理）。
+4. **Malformed tool_use args / 幻觉工具名 / handler 异常**：路径行为不同（按 `dispatch` 真实契约）。malformed args → `dispatch` raise `TypeError`，循环捕获 + `scrub_exception_message` 后作为 `is_error` tool_result 回灌；幻觉工具名 → 由前置成员检查（`block.name ∉ list_for_agent() 名字集`）在调用 dispatch 前拦截，回灌「无此工具」error tool_result；handler 内部异常 → 已被 `dispatch` 捕获 scrub 成 `is_error` envelope dict 返回（循环按多键签名识别，**不二次 scrub**，映射协议层 `is_error=True`）。上述均 continue，**一个工具失败不拖垮整轮**（并行 dispatch 下其余工具结果照常）。**向上抛不掩盖**的三类：`ToolPolicyViolation`（loop 广告了一个自己拒绝的工具 = 配置/loop bug）、已注册工具的 handler 内部 `KeyError`（name 已确认注册 → 代码 bug，不当幻觉名处理）、`ToolError`（output-schema 校验失败 = handler 返回类型错误的代码 bug）。fail-loud 上抛前，循环会取消并 drain 同 turn 其余未完成的并行 sibling task（防 orphaned handler 泄漏）。
 5. **模型返回空内容 / 非预期 stop_reason**：`end_turn` 但无可用内容、或 `stop_reason=refusal`（§9「拒绝回答」行）→ `terminal_status=empty_response`，原始响应留存便于调试；`max_tokens`（单次输出被截断）→ `degraded_token_budget` 收尾；`stop_sequence`/`pause_turn`（Hostlens 不使用 stop sequences / server-tool pause）→ raise `UnexpectedStopReason`（明确暴露，不静默）。
 
 ## Operational Limits

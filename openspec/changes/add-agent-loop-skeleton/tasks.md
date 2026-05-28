@@ -29,6 +29,8 @@
 - [x] 4.5 dispatch raise `KeyError`（name 已确认注册 → handler 内部 bug）/ `ToolPolicyViolation` / `asyncio.CancelledError` → 不捕获，原样向上传播（fail-loud）
 - [x] 4.6 同 turn 多 block 用 `asyncio.gather` 并行（不 `return_exceptions=True`）；结果按 `tool_use_id` 一一对应组装
 - [x] 4.7 tool_result `content` 必须 Anthropic-valid：把 dispatch 返回 dict / error envelope `json.dumps` 成文本承载进 `content`（禁止裸 dict）；结构化 dict 仍存入 `ToolInvocation.output/error`
+- [x] 4.8 `tools_adapter.py` 步骤7 output-schema 校验失败 raise `ToolError`（非 `TypeError`），使 loop 能按异常类型区分「input-malformed 回灌」与「output-contract 代码 bug fail-loud」；loop 无需改（`except TypeError` 天然不捕 `ToolError`）。agent-tool-adapter spec delta 已记
+- [x] 4.9 `_run_tool_turn` 并行 fail-loud 取消 sibling：用 `asyncio.create_task` 包裹各 `_dispatch_one`；gather 抛异常时 cancel 未完成 task + `await gather(..., return_exceptions=True)` drain 再 re-raise 原异常（**不用 TaskGroup**，避免 ExceptionGroup 包装破坏 fail-loud 类型契约）；结果保序不变
 
 ## 5. Backend 故障处理（§9 Failure Semantics）
 
@@ -50,6 +52,8 @@
 - [x] 6.8 stop_reason（D-8）：空 end_turn→empty_response / refusal→empty_response / max_tokens→degraded_token_budget / stop_sequence→UnexpectedStopReason
 - [x] 6.9 构造：`settings.agent is None`→ConfigError；含 AgentSettings→构造成功
 - [x] 6.10 LoopResult schema：terminal_status 越界 ValidationError；usage_totals 多轮累加正确
+- [x] 6.11 output-contract fail-loud：advertise 工具的 handler 返回非 output_schema 类型 → dispatch raise `ToolError` → `run()` 原样上抛（不回灌）；同时在 `tests/agent/test_tools_adapter_error_handling.py` 加 adapter 层单测（handler 返回错误类型 → raise `ToolError`，不是 `TypeError`/envelope）
+- [x] 6.12 并行 sibling 取消测试：一个工具 fail-loud（如 `ToolError`）+ 一个长跑 handler（`await asyncio.Event().wait()`），断言 `run()` 抛原异常类型，且长跑 handler 被 cancel（未跑完，用标志/CancelledError 捕获验证）
 
 ## 7. 收尾
 

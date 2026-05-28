@@ -324,12 +324,27 @@ class AgentLoop:
         the per-block paths that the model can self-correct (hallucinated
         name / malformed args / handler envelope) never raise; fail-loud
         paths (``KeyError`` from a registered handler, ``ToolPolicyViolation``,
-        ``CancelledError``) must abort the whole turn and propagate.
+        ``ToolError`` from an output-schema mismatch, ``CancelledError``) must
+        abort the whole turn, cancel any sibling tasks, and propagate.
         """
         tool_use_blocks = [b for b in response.content if isinstance(b, ToolUseBlock)]
-        per_block = await asyncio.gather(
-            *(self._dispatch_one(block, advertised_names) for block in tool_use_blocks)
-        )
+        tasks = [
+            asyncio.create_task(self._dispatch_one(block, advertised_names))
+            for block in tool_use_blocks
+        ]
+        try:
+            per_block = await asyncio.gather(*tasks)
+        except BaseException:
+            # asyncio.gather defaults to propagating only the first exception
+            # without cancelling siblings. Explicitly cancel and drain the
+            # unfinished parallel tasks to keep an orphaned long-running handler
+            # (SSH / inspector collection) from leaking resources, then re-raise
+            # verbatim to preserve the fail-loud exception type (TaskGroup is
+            # avoided because it would wrap into an ExceptionGroup).
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         tool_results = [result for result, _ in per_block]
         invocations = [inv for _, inv in per_block]

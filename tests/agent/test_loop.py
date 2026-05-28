@@ -11,6 +11,7 @@ so they do not actually sleep 1/4/16s.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -35,6 +36,7 @@ from hostlens.core.exceptions import (
     BackendRateLimited,
     BackendUnavailable,
     ConfigError,
+    ToolError,
     ToolPolicyViolation,
     UnexpectedStopReason,
 )
@@ -44,6 +46,7 @@ from hostlens.tools.registry import ToolRegistry
 from ._helpers import (
     EmptyOutput,
     TypedInput,
+    TypedOutput,
     ctx_factory,
     make_spec,
     ok_handler,
@@ -309,6 +312,44 @@ async def test_parallel_dispatch_results_route_by_id_one_fails() -> None:
     assert error_block.get("is_error") is True
 
 
+async def test_parallel_failloud_cancels_siblings() -> None:
+    # One parallel tool fails loud (output-contract ToolError), while a sibling
+    # tool is a long-running handler that never returns on its own. The loop
+    # must cancel the still-running sibling instead of orphaning it (gather
+    # default leaks unfinished siblings on first exception).
+    cancelled = {"v": False}
+
+    async def _long_running_handler(args: Any, ctx: ToolContext) -> EmptyOutput:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled["v"] = True
+            raise
+        return EmptyOutput()
+
+    # bad_out: ok_handler returns EmptyOutput but output_schema declares
+    # TypedOutput → dispatch raises ToolError (fail-loud).
+    bad_spec = make_spec(name="bad_out", output_schema=TypedOutput, handler=ok_handler)
+    long_spec = make_spec(name="long_running", handler=_long_running_handler)
+    backend = _ScriptedBackend(
+        [
+            _msg(
+                content=[
+                    _tool_use(block_id="toolu_bad", name="bad_out", tool_input={}),
+                    _tool_use(block_id="toolu_long", name="long_running", tool_input={}),
+                ],
+                stop_reason="tool_use",
+            ),
+        ]
+    )
+    loop = _loop(backend, _adapter_with(bad_spec, long_spec), _settings())
+
+    with pytest.raises(ToolError):
+        await loop.run("one fails, one hangs")
+
+    assert cancelled["v"] is True
+
+
 # ---------------------------------------------------------------------------
 # 6.3 error routing (D-5)
 # ---------------------------------------------------------------------------
@@ -374,6 +415,27 @@ async def test_malformed_args_typeerror_fed_back() -> None:
     assert inv.error is not None
     assert inv.error["error_kind"] == "TypeError"
     assert inv.output is None
+
+
+async def test_output_contract_toolerror_propagates() -> None:
+    # ok_handler returns EmptyOutput, but output_schema declares TypedOutput →
+    # dispatch raises ToolError (handler/adapter code bug). ToolError is not a
+    # TypeError subclass, so the loop's malformed-args TypeError branch does not
+    # catch it; it propagates out of run() to fail loud.
+    spec = make_spec(name="bad_out", output_schema=TypedOutput, handler=ok_handler)
+    backend = _ScriptedBackend(
+        [
+            _msg(
+                content=[_tool_use(block_id="toolu_1", name="bad_out", tool_input={})],
+                stop_reason="tool_use",
+            ),
+            _msg(content=[_text("unreached")], stop_reason="end_turn"),
+        ]
+    )
+    loop = _loop(backend, _adapter_with(spec), _settings())
+
+    with pytest.raises(ToolError):
+        await loop.run("bad output")
 
 
 async def test_hallucinated_tool_name_intercepted_before_dispatch() -> None:

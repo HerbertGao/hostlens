@@ -26,7 +26,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from hostlens.core.exceptions import ToolPolicyViolation
+from hostlens.core.exceptions import ToolError, ToolPolicyViolation
 from hostlens.tools.base import ToolContext
 from hostlens.tools.registry import ToolRegistry
 
@@ -240,7 +240,12 @@ class ToolsAdapter:
 
         # 7. Output schema sanity check (handler contract).
         if not isinstance(result, spec.output_schema):
-            raise TypeError(
+            # WHY ToolError (not TypeError): an output-schema mismatch is a
+            # handler/adapter code bug, distinct from the step-5 input-schema
+            # TypeError which signals recoverable malformed model args that the
+            # Agent loop feeds back for self-correction. A separate exception
+            # class lets the loop type-discriminate and fail loud on code bugs.
+            raise ToolError(
                 f"ToolsAdapter.dispatch({name!r}) expected handler to return "
                 f"{spec.output_schema.__name__}, got {type(result).__name__}"
             )

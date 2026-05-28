@@ -18,11 +18,19 @@ import asyncio
 import pytest
 
 from hostlens.agent.tools_adapter import ToolsAdapter
-from hostlens.core.exceptions import ToolPolicyViolation
+from hostlens.core.exceptions import ToolError, ToolPolicyViolation
 from hostlens.tools.base import ToolContext
 from hostlens.tools.registry import ToolRegistry
 
-from ._helpers import EmptyInput, EmptyOutput, ctx_factory, make_ctx, make_spec
+from ._helpers import (
+    EmptyInput,
+    EmptyOutput,
+    TypedOutput,
+    ctx_factory,
+    make_ctx,
+    make_spec,
+    ok_handler,
+)
 
 
 async def _value_error_handler(args: EmptyInput, ctx: ToolContext) -> EmptyOutput:
@@ -93,6 +101,23 @@ def test_handler_cancelled_error_propagates_unwrapped() -> None:
     async def go() -> None:
         with pytest.raises(asyncio.CancelledError):
             await adapter.dispatch("cancelled_tool", {}, make_ctx())
+
+    asyncio.run(go())
+
+
+def test_output_schema_mismatch_raises_tool_error() -> None:
+    """A handler returning a type other than the declared ``output_schema`` is
+    a code bug: dispatch must raise ``ToolError`` (fail-loud), not wrap it into
+    an ``is_error`` envelope nor raise the recoverable-args ``TypeError``.
+    """
+    reg = ToolRegistry()
+    # ok_handler returns EmptyOutput, but output_schema declares TypedOutput.
+    reg.register(make_spec(name="bad_out", output_schema=TypedOutput, handler=ok_handler))
+    adapter = ToolsAdapter(reg, ctx_factory())
+
+    async def go() -> None:
+        with pytest.raises(ToolError):
+            await adapter.dispatch("bad_out", {}, make_ctx())
 
     asyncio.run(go())
 

@@ -46,12 +46,17 @@
 
 ### 需求:同一 turn 内多个 `tool_use` 并行 dispatch
 
-当一个响应含多个 `ToolUseBlock` 时，`AgentLoop` 必须用 `asyncio.gather` 并行 dispatch 它们，并把每个结果按对应 `tool_use_id` 组装为 tool_result。
+当一个响应含多个 `ToolUseBlock` 时，`AgentLoop` 必须用 `asyncio.gather` 并行 dispatch 它们，并把每个结果按对应 `tool_use_id` 组装为 tool_result。当其中任一 dispatch 抛出 fail-loud 异常（`KeyError` / `ToolPolicyViolation` / `ToolError` / `asyncio.CancelledError`）时，`AgentLoop` 必须**取消并 drain 同 turn 其余尚未完成的并行 task** 后再向上抛出原异常 —— `asyncio.gather` 默认只传播首个异常、不取消 sibling，会留下 orphaned 长跑 handler（如仍在执行的 SSH/inspector 采集）泄漏资源。
 
 #### 场景:两个 tool_use 并行执行且结果各归其位
 
 - **当** 单个响应含两个 ToolUseBlock（不同 `id`）
 - **那么** 两次 dispatch 并行发生（非串行），下一轮 user 消息含两个 tool_result，每个 `tool_use_id` 与发起的 block `id` 一一对应
+
+#### 场景:并行中一个工具 fail-loud 时其余 sibling 被取消
+
+- **当** 同一 turn 两个 tool_use 并行，其一 dispatch 抛 fail-loud 异常（如 `ToolError` / `ToolPolicyViolation`），另一是仍在运行的长跑 handler
+- **那么** `run()` 向上抛出该 fail-loud 异常前，未完成的 sibling task 被 `cancel()` 并 drain（不留 orphaned 运行中的 handler）；向上抛的异常类型是原 fail-loud 异常本身（不被包装成 `ExceptionGroup`）
 
 ### 需求:`cache_control` 注入由 backend capability 决定
 
@@ -129,7 +134,7 @@
 
 ### 需求:工具结果按 `ToolsAdapter.dispatch` 真实契约分流，单工具失败不中断循环
 
-`ToolsAdapter.dispatch(name, args_json, ctx) -> dict[str, Any]` 的真实语义（本变更必须据此实现，禁止假设它返回 `BaseModel` 或对 handler 异常 raise）：成功返回 `model_dump()` dict；**handler 内部异常已被 dispatch 捕获并经 `scrub_exception_message` 脱敏**，以 `{"is_error": True, "error_kind", "tool_name", "message", "cause"}` envelope dict **返回**（不 raise）；malformed args（输入不过 schema）raise `TypeError`；模型幻觉的工具名 raise `KeyError`。
+`ToolsAdapter.dispatch(name, args_json, ctx) -> dict[str, Any]` 的真实语义（本变更必须据此实现，禁止假设它返回 `BaseModel` 或对 handler 异常 raise）：成功返回 `model_dump()` dict；**handler 内部异常已被 dispatch 捕获并经 `scrub_exception_message` 脱敏**，以 `{"is_error": True, "error_kind", "tool_name", "message", "cause"}` envelope dict **返回**（不 raise）；malformed args（输入不过 input schema）raise `TypeError`；output-schema 校验失败（handler 返回类型错误）raise `ToolError`（fail-loud，见独立需求）；模型幻觉的工具名 raise `KeyError`。
 
 **幻觉工具名必须用「名字成员检查」拦截，禁止依赖 `KeyError` 判别。** 因为 `dispatch` 的 `KeyError` 同类型不可区分两种来源：① step1 `registry.get(name)` 查不到（裸 `KeyError`）；② handler 内部 re-raise 的裸 `KeyError`（adapter step6 原样 raise）。把所有 `KeyError` 当幻觉工具名回灌会**掩盖 handler 内部 bug**。`AgentLoop` 必须用 `list_for_agent()` 已得的 advertise 工具名集合做前置成员检查。
 
@@ -176,14 +181,19 @@
 - **当** 两个并行 tool_use 中一个失败（envelope 或 `TypeError` 或幻觉名）、另一个成功
 - **那么** 两个 tool_result 都生成（一个 error、一个正常），各按其 `tool_use_id` 归位，循环 continue
 
-### 需求:`ToolPolicyViolation` 与取消异常向上传播
+### 需求:`ToolPolicyViolation` / `ToolError` / 取消异常向上传播
 
-当 `ToolsAdapter.dispatch` raise `ToolPolicyViolation`（循环 advertise 了一个在 dispatch 被 policy gate 拒绝的工具 = registry/loop 配置 bug）时，`AgentLoop` 必须**不捕获、不回灌**，原样向上抛出 —— fail-loud 暴露配置错误，禁止喂回模型掩盖。`asyncio.CancelledError` 同样必须向上传播以支持协作取消。
+当 `ToolsAdapter.dispatch` raise `ToolPolicyViolation`（循环 advertise 了一个在 dispatch 被 policy gate 拒绝的工具 = registry/loop 配置 bug）或 `ToolError`（output-schema 校验失败 = handler 返回类型错误的代码 bug）时，`AgentLoop` 必须**不捕获、不回灌**，原样向上抛出 —— fail-loud 暴露代码/配置错误，禁止喂回模型掩盖。`asyncio.CancelledError` 同样必须向上传播以支持协作取消。注意：循环只 `except TypeError`（input-malformed 回灌），故 `ToolError`（非 `TypeError` 子类）天然不被捕获、自然向上传播。
 
 #### 场景:ToolPolicyViolation 中断并上抛
 
 - **当** 某轮 dispatch 一个工具时 raise `ToolPolicyViolation`
 - **那么** `run()` 不捕获该异常，原样向上传播（不映射为 `terminal_status`、不回灌为 tool_result）
+
+#### 场景:output-contract ToolError 中断并上抛
+
+- **当** 某 advertise 工具的 handler 返回非 `output_schema` 类型，dispatch raise `ToolError`
+- **那么** `run()` 不捕获该异常，原样向上传播（fail-loud，不回灌为 tool_result）
 
 ### 需求:全部 6 个 `stop_reason` 都有明确归属
 
