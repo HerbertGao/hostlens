@@ -2,7 +2,9 @@
 
 ### 需求:`AgentLoop` 构造契约与 backend 私有持有
 
-`hostlens.agent.loop.AgentLoop` 必须以 `AgentLoop(backend: LLMBackend, tool_adapter: ToolsAdapter, settings: Settings)` 构造。`backend` 必须作为 `AgentLoop` 的私有属性持有，**禁止**经由 `ToolContext` 或任何全局单例暴露给 tool handler（ADR-008 / CLAUDE.md §7 反模式）。`AgentLoop` 必须不直接 `import anthropic` —— 所有模型调用经 `backend.messages_create`。
+`hostlens.agent.loop.AgentLoop` 必须以 `AgentLoop(backend: LLMBackend, tool_adapter: ToolsAdapter, settings: Settings, *, system: list[dict] | str | None = None)` 构造。`system` 是调用方注入的系统提示词（design D-2「调用方传入 system」），构造期存为实例属性供 `run()` 使用；`None` 视为空（`[]`）。`backend` 必须作为 `AgentLoop` 的私有属性持有，**禁止**经由 `ToolContext` 或任何全局单例暴露给 tool handler（ADR-008 / CLAUDE.md §7 反模式）。`AgentLoop` 必须不直接 `import anthropic` —— 所有模型调用经 `backend.messages_create`。
+
+> M2.2 不构造 system prompt 内容（那是 M2.4 Planner 的职责）；本骨架只负责把调用方注入的 `system` 透传给 backend，并按 capability 决定是否在其上注入 `cache_control`。
 
 #### 场景:构造后 backend 不出现在 tool dispatch 路径
 
@@ -53,17 +55,17 @@
 
 ### 需求:`cache_control` 注入由 backend capability 决定
 
-调用 `messages_create` 前，`AgentLoop` 必须检查 `backend.capabilities.prompt_caching`：为 `True` 时在 `system`（`list[dict]` 形态）注入 `cache_control: ephemeral`；为 `False` 时**禁止**注入任何 `cache_control`。注入判定必须在 loop 端完成，禁止依赖 backend 静默丢弃。
+调用 `messages_create` 前，`AgentLoop` 必须检查 `backend.capabilities.prompt_caching`：为 `True` 且构造期注入的 `system` 为非空 `list[dict]` 时，在其最后一个 block 注入 `cache_control: ephemeral`；为 `False` 时**禁止**注入任何 `cache_control`。注入判定必须在 loop 端完成，禁止依赖 backend 静默丢弃。
 
 #### 场景:prompt_caching=False 不注入
 
-- **当** backend 的 `capabilities.prompt_caching == False`，`run()` 触发一次 `messages_create`
-- **那么** 传入的 `system` 任一 block 不含 `cache_control` key（因此 backend 的 `check_capability_consistency` 不会 raise `BackendCapabilityViolation`）
+- **当** 以非空 `list[dict]` 的 `system` 构造 `AgentLoop`、backend 的 `capabilities.prompt_caching == False`，`run()` 触发一次 `messages_create`
+- **那么** 传给 `messages_create` 的 `system` 任一 block 不含 `cache_control` key（因此 backend 的 `check_capability_consistency` 不会 raise `BackendCapabilityViolation`）
 
 #### 场景:prompt_caching=True 注入 ephemeral
 
-- **当** backend 的 `capabilities.prompt_caching == True`，传入 `system` 为 `list[dict]`，`run()` 触发一次 `messages_create`
-- **那么** 传入的 `system` 至少一个 block 含 `{"cache_control": {"type": "ephemeral"}}`
+- **当** 以非空 `list[dict]` 的 `system` 构造 `AgentLoop`、backend 的 `capabilities.prompt_caching == True`，`run()` 触发一次 `messages_create`
+- **那么** 传给 `messages_create` 的 `system` 至少一个 block 含 `{"cache_control": {"type": "ephemeral"}}`
 
 ### 需求:token 预算耗尽时强制收尾
 
@@ -141,6 +143,13 @@
   - raise `KeyError`（此时 name 已确认注册 → 只可能是 handler 内部 bug）→ **不捕获，向上抛**（fail-loud，禁止当幻觉工具名掩盖）。
 
 **禁止**因 malformed args / 幻觉工具名 / handler envelope 中断整个循环；**禁止**把未脱敏异常原文写入 messages 或 `LoopResult`。
+
+回灌给 backend 的 `tool_result` block 的 `content` 必须是 Anthropic API 接受的形态（字符串或 content-block 列表），**禁止**直接放裸 `dict`（`messages` 由 backend verbatim 透传给 SDK，裸 dict 在真实 backend 上非法）。loop 必须把 dispatch 返回的 dict（成功结果或 error envelope）序列化为 JSON 文本承载；结构化 dict 仍原样保留在 `ToolInvocation.output/error` 供调用方读取。
+
+#### 场景:tool_result content 为 Anthropic-valid 形态
+
+- **当** 任一工具 dispatch 成功（或返回 error envelope），其结果被组装进下一轮 user 消息
+- **那么** 该 `tool_result` block 的 `content` 是字符串（JSON 序列化）或 content-block 列表，不是裸 `dict`；同一结果的结构化 dict 仍可在对应 `ToolInvocation.output`/`error` 读到
 
 #### 场景:handler 内部异常以 dispatch 的 envelope 回灌且不二次脱敏
 
