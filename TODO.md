@@ -229,12 +229,12 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [ ] **重要**：代码必须可读、注释 WHY，让面试官能快速读懂
 - [ ] **2.3 Tool Registry（双层 capability 模型；详见 CLAUDE.md §4.10）**
   - [ ] `tools/base.py`：`ToolSpec`（含 surfaces / side_effects / requires_approval / permissions / sensitive_output / target_constraints / tags 等 policy 字段）+ `ToolContext`（依赖注入容器）
-  - [ ] `tools/registry.py`：`register` / `list_for(surface)` / `dispatch`；dispatch 前强制校验 surfaces 与 policy gate（surface 不匹配 → `PermissionError`）
+  - [ ] `tools/registry.py`：`register` / `list_for(surface)` / `dispatch`；dispatch 前强制校验 surfaces 与 policy gate（surface 不匹配 → `ToolPolicyViolation`）
   - [ ] `@tool` 装饰器：声明式注册；Anthropic / MCP JSON Schema **不**进 ToolSpec，由 adapter 在投影时从 Pydantic 生成
   - [ ] `agent/tools_adapter.py`：把 `surfaces ∋ "agent"` 的 ToolSpec 投成 Anthropic `tool_use` schema（M2 仅此一个 adapter；MCP adapter 留到 M7）
-  - [ ] 首批注册的能力：`run_inspector` / `list_inspectors` / `list_targets` / `read_finding_detail`
+  - [ ] 首批注册的能力：`run_inspector` / `list_inspectors` / `list_targets`（**不含 `read_finding_detail`** —— 已归档 `add-tool-registry-capability-layer` design §选择 明确否决：M2 由 `run_inspector` 一次返回完整 finding 列表，跨 turn 引用 finding 推到 M3 报告持久化后再加）
   - [ ] 验收：
-    - [ ] `surfaces={"mcp"}` only 的 ToolSpec 在 agent 上下文 dispatch 必须报 `PermissionError`
+    - [ ] `surfaces={"mcp"}` only 的 ToolSpec 在 agent 上下文 dispatch 必须报 `ToolPolicyViolation`
     - [ ] CLAUDE.md §4.10 的 6 条硬规则每条对应至少 1 个单测
     - [ ] handler 必须从 `ctx` 拿 registry —— 用 mypy + 静态检查防止 module-level singleton
 - [ ] **2.4 Planner Agent（消费 ToolRegistry）**
@@ -457,7 +457,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [ ] **不**重写工具集 —— 通过新增的 `mcp_server/tools_adapter.py` 把 `registry.list_for("mcp")` 投成 MCP tool definition（参考 CLAUDE.md §4.10）
   - [ ] adapter 必须强制要求 ToolSpec 显式声明 `sensitive_output`，缺省禁止暴露
 - [ ] **7.2 在 ToolRegistry 增量注册 MCP-only 能力**
-  - [ ] 把 M2 已有的 ToolSpec 中 `surfaces` 加 `"mcp"`：`list_targets` / `list_inspectors` / `run_inspector` / `read_finding_detail`
+  - [ ] 把已有 ToolSpec 的 `surfaces` 加 `"mcp"`：M2 首批 `list_targets` / `list_inspectors` / `run_inspector`，以及 M3 落地的 `read_finding_detail`（若届时已注册）
   - [ ] 新增 MCP 专用 ToolSpec（如有必要）：`run_inspection(target, intent?)` / `get_report(run_id)` / `list_recent_runs(target?)`
   - [ ] 每个 MCP 暴露的 ToolSpec 必须撰写 `mcp_description`（面向远程 LLM）—— 不能复用 `agent_description`
 - [ ] **7.3 资源（Resources）暴露**

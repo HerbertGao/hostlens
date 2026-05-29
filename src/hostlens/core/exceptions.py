@@ -47,6 +47,7 @@ __all__ = [
     "TargetError",
     "ToolError",
     "ToolPolicyViolation",
+    "UnexpectedStopReason",
 ]
 
 
@@ -673,3 +674,28 @@ class BackendDaemonUnsafe(BackendError):  # noqa: N818 - spec mandates this exac
 
     def __str__(self) -> str:
         return f"BackendDaemonUnsafe(backend={self.backend_name}, reason={self.reason})"
+
+
+# ---------------------------------------------------------------------------
+# add-agent-loop-skeleton: Agent loop control-flow exceptions
+# ---------------------------------------------------------------------------
+
+
+class UnexpectedStopReason(HostlensError):  # noqa: N818 - intentional control-flow name (no "Error" suffix)
+    """Raised when the model returns a ``stop_reason`` Hostlens never solicits.
+
+    Hostlens does not send ``stop_sequences`` and does not use server-tool
+    pause, so ``"stop_sequence"`` / ``"pause_turn"`` arriving from the backend
+    means either the request was constructed wrong or the provider changed
+    behavior — both must fail loud rather than be mapped to a degraded status
+    (which would hide the cause). The offending value is carried verbatim
+    because ``MessageResponse.stop_reason`` is a closed Literal set with no
+    free-text / secret content.
+    """
+
+    def __init__(self, stop_reason: str) -> None:
+        super().__init__(stop_reason)
+        self.stop_reason: str = stop_reason
+
+    def __str__(self) -> str:
+        return f"UnexpectedStopReason(stop_reason={self.stop_reason})"

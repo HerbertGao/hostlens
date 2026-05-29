@@ -86,18 +86,21 @@ def test_config_error_accepts_optional_original_exception() -> None:
     assert err_no_cause.original is None
 
 
-def test_module_exports_exactly_eleven_exception_classes_after_m2_backend() -> None:
+def test_module_exports_exactly_twelve_exception_classes_after_agent_loop() -> None:
     """The exception module's public class set is locked.
 
     M0 seeded four classes (``HostlensError`` / ``ConfigError`` /
     ``TargetError`` / ``InspectorError``); M2 ``add-tool-registry-capability-layer``
     added ``ToolError`` / ``ToolPolicyViolation`` bringing the count to six;
-    M2 ``add-llm-backend-protocol`` adds five backend-domain subclasses
+    M2 ``add-llm-backend-protocol`` added five backend-domain subclasses
     (``BackendError`` / ``BackendUnavailable`` / ``BackendRateLimited`` /
     ``BackendCapabilityViolation`` / ``BackendDaemonUnsafe``) bringing the
-    count to exactly eleven. M1 ``add-execution-target-abstraction`` did NOT
-    add classes — it only extended ``ConfigError`` / ``TargetError``
-    signatures, so the public-class count stayed at four through M1.
+    count to eleven; M2 ``add-agent-loop-skeleton`` adds
+    ``UnexpectedStopReason`` (raised by the Agent loop on a stop_reason it
+    does not solicit) bringing the count to exactly twelve. M1
+    ``add-execution-target-abstraction`` did NOT add classes — it only
+    extended ``ConfigError`` / ``TargetError`` signatures, so the
+    public-class count stayed at four through M1.
     """
 
     expected = [
@@ -112,6 +115,7 @@ def test_module_exports_exactly_eleven_exception_classes_after_m2_backend() -> N
         "TargetError",
         "ToolError",
         "ToolPolicyViolation",
+        "UnexpectedStopReason",
     ]
     public_names = [
         name
@@ -121,7 +125,7 @@ def test_module_exports_exactly_eleven_exception_classes_after_m2_backend() -> N
         and issubclass(getattr(exceptions_module, name), BaseException)
     ]
     assert sorted(public_names) == expected
-    assert len(public_names) == 11
+    assert len(public_names) == 12
     assert sorted(exceptions_module.__all__) == expected
 
 
