@@ -127,6 +127,7 @@ class _ScriptedBackend:
         self.last_system: list[dict[str, Any]] | str | None = None
         self.last_messages: list[dict[str, Any]] | None = None
         self.last_tools: list[dict[str, Any]] | None = None
+        self.last_max_tokens: int | None = None
         self.capabilities = capabilities if capabilities is not None else _DEFAULT_CAPS
 
     async def messages_create(
@@ -145,6 +146,7 @@ class _ScriptedBackend:
         # snapshot we assert against.
         self.last_messages = list(messages)
         self.last_tools = tools
+        self.last_max_tokens = max_tokens
         event = self._events[min(self._idx, len(self._events) - 1)]
         self._idx += 1
         if isinstance(event, Exception):
@@ -566,6 +568,26 @@ async def test_token_budget_exceeded_stops_after_one_call() -> None:
     assert backend.calls == 1
 
 
+async def test_max_tokens_shrinks_to_remaining_budget() -> None:
+    spec = make_spec(name="t", handler=ok_handler)
+    backend = _ScriptedBackend(
+        [
+            _msg(
+                content=[_tool_use(block_id="toolu_1", name="t", tool_input={})],
+                stop_reason="tool_use",
+                output_tokens=30,
+            ),
+            _msg(content=[_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    loop = _loop(backend, _adapter_with(spec), _settings_with(token_budget_output=100))
+
+    await loop.run("shrink budget")
+
+    # Second turn requests only the remaining 100 - 30 = 70 output tokens.
+    assert backend.last_max_tokens == 70
+
+
 async def test_max_turns_guard_stops_at_limit() -> None:
     spec = make_spec(name="t", handler=ok_handler)
     backend = _ScriptedBackend(
@@ -711,6 +733,16 @@ async def test_max_tokens_is_degraded_token_budget() -> None:
     result = await loop.run("truncated")
 
     assert result.terminal_status == "degraded_token_budget"
+
+
+async def test_max_tokens_stop_preserves_partial_text() -> None:
+    backend = FakeBackend(responses=[_msg(content=[_text("partial")], stop_reason="max_tokens")])
+    loop = _loop(backend, _empty_adapter(), _settings())
+
+    result = await loop.run("truncated partial")
+
+    assert result.terminal_status == "degraded_token_budget"
+    assert result.final_text == "partial"
 
 
 async def test_stop_sequence_raises_unexpected_stop_reason() -> None:

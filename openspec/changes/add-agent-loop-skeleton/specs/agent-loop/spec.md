@@ -72,14 +72,22 @@
 - **当** 以非空 `list[dict]` 的 `system` 构造 `AgentLoop`、backend 的 `capabilities.prompt_caching == True`，`run()` 触发一次 `messages_create`
 - **那么** 传给 `messages_create` 的 `system` 至少一个 block 含 `{"cache_control": {"type": "ephemeral"}}`
 
-### 需求:token 预算耗尽时强制收尾
+### 需求:token 预算是 per-run 硬上限，逐轮收缩 max_tokens 强制收尾
 
-`AgentLoop` 必须累加每轮 `response.usage` 的 input/output token。在发起下一轮 `messages_create` **之前**，若累计 input 超过 `settings.agent.token_budget_input` 或累计 output 超过 `settings.agent.token_budget_output`，必须停止循环、强制收尾，**禁止**再发起新一轮调用，并返回 `terminal_status == "degraded_token_budget"`，携带已累积的 `tool_invocations`。
+`token_budget_output` 是**整个 `run()`** 的输出 token 上限（per-run，非 per-call）。`AgentLoop` 必须累加每轮 `response.usage` 的 input/output token，并据此：
+
+1. **逐轮收缩 `max_tokens`**：每次调 `messages_create` 传的 `max_tokens` 必须是**剩余**输出预算 `token_budget_output - usage.output_tokens`（至少为 1），**禁止**每轮都传完整 `token_budget_output`（否则 per-run 上限退化成 per-call，单次 run 输出最坏可超支近一倍）。
+2. **发起下一轮前的兜底闸**：若累计 input `>= token_budget_input` 或累计 output `>= token_budget_output`，必须停止循环、强制收尾，**禁止**再发起新一轮调用，返回 `terminal_status == "degraded_token_budget"`，携带已累积的 `tool_invocations`。
 
 #### 场景:超预算后不再发起调用
 
-- **当** 设置极小的 `token_budget_output`，记录调用次数的测试 backend 首轮返回 `tool_use` 且 usage 已超该预算
+- **当** 设置极小的 `token_budget_output`，记录调用次数的测试 backend 首轮返回 `tool_use` 且 usage 已达/超该预算
 - **那么** 循环在收到首轮后停止，`terminal_status == "degraded_token_budget"`，backend 收到的 `messages_create` 调用次数为 1（未发起第二轮）
+
+#### 场景:后续轮次 max_tokens 收缩为剩余预算
+
+- **当** `token_budget_output == 100`，第一轮 `response.usage.output_tokens == 30`，第二轮继续（仍 tool_use）
+- **那么** 第二轮传给 `messages_create` 的 `max_tokens == 70`（剩余预算），而非完整 100
 
 ### 需求:最大 turn 数兜底
 
@@ -202,7 +210,7 @@
 - `end_turn`：有可用内容 → `ok`；`content` 空 → `empty_response`（保留原始响应便于调试）。
 - `tool_use`：dispatch 工具并续跑。
 - `refusal`：→ `empty_response`（ARCHITECTURE §9「拒绝回答」行映射到 empty_response，**禁止**抛 `UnexpectedStopReason`）。
-- `max_tokens`：→ `degraded_token_budget`（单次输出被截断，语义等同预算耗尽）。
+- `max_tokens`：→ `degraded_token_budget`（单次输出被截断，语义等同预算耗尽）；必须用 `_join_text(response)` 保留截断前已生成的 assistant 文本到 `LoopResult.final_text`（不丢部分输出）。
 - `stop_sequence` / `pause_turn`：Hostlens 不传 stop sequences、不使用 server-tool pause，出现即非预期 → raise `hostlens.core.exceptions.UnexpectedStopReason`（携带该 stop_reason 值）。
 
 #### 场景:空 end_turn 标记 empty_response
@@ -215,10 +223,10 @@
 - **当** backend 返回 `stop_reason="refusal"`
 - **那么** `run()` 返回 `terminal_status == "empty_response"`（不抛异常）
 
-#### 场景:max_tokens 映射 degraded_token_budget
+#### 场景:max_tokens 映射 degraded_token_budget 且保留部分文本
 
-- **当** backend 返回 `stop_reason="max_tokens"`
-- **那么** `run()` 返回 `terminal_status == "degraded_token_budget"`
+- **当** backend 返回 `stop_reason="max_tokens"` 且 content 含一个 text block `"partial"`
+- **那么** `run()` 返回 `terminal_status == "degraded_token_budget"` 且 `final_text == "partial"`（截断前的部分输出未被丢弃）
 
 #### 场景:真正非预期 stop_reason 抛 UnexpectedStopReason
 

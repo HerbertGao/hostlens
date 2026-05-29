@@ -124,7 +124,9 @@ loop 在每次调 backend 前：当 `capabilities.prompt_caching == True` 且 `s
 
 ### D-6：token 预算与 max-turns 在「下一轮发起前」检查
 
-每轮结束 `_track_token_usage` 后，进入下一轮前检查：累计 input > `token_budget_input` 或累计 output > `token_budget_output` → `degraded_token_budget` 收尾；turn 计数 ≥ `max_turns` → `degraded_max_turns` 收尾。**先收尾再返回**，绝不在超限后再发一次 `messages_create`（防止「检查完又烧一轮」）。
+每轮结束 `_track_token_usage` 后，进入下一轮前检查：累计 input `>=` `token_budget_input` 或累计 output `>=` `token_budget_output` → `degraded_token_budget` 收尾；turn 计数 ≥ `max_turns` → `degraded_max_turns` 收尾。**先收尾再返回**，绝不在超限后再发一次 `messages_create`（防止「检查完又烧一轮」）。
+
+**`token_budget_output` 是 per-run 硬上限，必须逐轮收缩 `max_tokens`**：每次调 `messages_create` 传的 `max_tokens` = 剩余预算 `token_budget_output - usage.output_tokens`（兜底闸保证 > 0），**不是**每轮都传完整 `token_budget_output`。否则「单次 loop 预算上限」（ARCH §9）退化成 per-call 上限——某轮把 output 用到接近 budget 后，下一轮仍以完整 budget 再发一次，单次 run 输出最坏可达 ~2×budget。逐轮收缩使总输出严格 ≤ budget。守卫用 `>=`（非 `>`）以正确处理「恰好用满」边界。`_call_with_retry` 接受 `max_tokens` 参数（由 `run()` 按剩余预算算出传入），不再硬编码读 settings。
 
 ### D-7：`settings.agent is None` 在构造期 raise `ConfigError`
 

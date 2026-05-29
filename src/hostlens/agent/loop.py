@@ -191,8 +191,8 @@ class AgentLoop:
         while True:
             # Pre-flight guards (design.md D-6): never burn a turn we already
             # know is over budget / over the turn cap.
-            if usage.input_tokens > self._agent.token_budget_input or (
-                usage.output_tokens > self._agent.token_budget_output
+            if usage.input_tokens >= self._agent.token_budget_input or (
+                usage.output_tokens >= self._agent.token_budget_output
             ):
                 return self._finalize(
                     "degraded_token_budget",
@@ -210,10 +210,16 @@ class AgentLoop:
                     last_stop_reason,
                 )
 
+            # Per-run output budget shrinks max_tokens each turn so total output
+            # <= budget; passing full-budget-per-call would let a run overshoot
+            # ~2x. The guard above ensures usage.output_tokens < budget, so
+            # remaining >= 1 (max(1, ...) is belt-and-suspenders).
+            remaining_output = max(1, self._agent.token_budget_output - usage.output_tokens)
             outcome = await self._call_with_retry(
                 system=self._inject_cache_control(self._system, self._backend.capabilities),
                 messages=messages,
                 tools=tools,
+                max_tokens=remaining_output,
             )
             if isinstance(outcome, str):
                 # Retry budget exhausted → degraded terminal status. For the
@@ -258,6 +264,7 @@ class AgentLoop:
                     turns,
                     usage,
                     last_stop_reason,
+                    self._join_text(response),
                 )
 
             # stop_sequence / pause_turn — Hostlens solicits neither (D-8).
@@ -271,6 +278,7 @@ class AgentLoop:
         system: list[dict[str, Any]] | str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        max_tokens: int,
     ) -> MessageResponse | _TerminalStatus:
         """Call ``messages_create`` honoring the §9 per-family retry policy.
 
@@ -290,7 +298,7 @@ class AgentLoop:
                     system=system,
                     messages=messages,
                     tools=tools,
-                    max_tokens=self._agent.token_budget_output,
+                    max_tokens=max_tokens,
                     timeout=_MESSAGES_CREATE_TIMEOUT,
                 )
             except BackendRateLimited as exc:
