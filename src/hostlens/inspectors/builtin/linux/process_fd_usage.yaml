@@ -1,0 +1,34 @@
+name: linux.process.fd_usage
+version: 1.0.0
+description: Report system-wide file-descriptor allocation against the kernel limit.
+tags: [fd, linux, resources]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [awk]
+privilege: none
+
+collect:
+  # /proc/sys/fs/file-nr columns are: allocated, free, max. Emit allocated
+  # and max as kv (parse_kv returns strings; DSL casts with int()). The
+  # used_pct is derived in the DSL from allocated / max.
+  command: |
+    awk '{printf "allocated=%s\nmax=%s\n", $1, $3}' /proc/sys/fs/file-nr
+  timeout_seconds: 10
+
+parse:
+  format: kv
+
+output_schema:
+  type: object
+  properties:
+    allocated: { type: string }
+    max:       { type: string }
+  additionalProperties: false
+
+findings:
+  - when: "allocated and max and int(max) > 0 and int(allocated) / int(max) >= 0.9"
+    severity: critical
+    message: "File descriptors {allocated}/{max} allocated (>= 90% of limit)"
+  - when: "allocated and max and int(max) > 0 and int(allocated) / int(max) >= 0.7 and int(allocated) / int(max) < 0.9"
+    severity: warning
+    message: "File descriptor usage high: {allocated}/{max} allocated"

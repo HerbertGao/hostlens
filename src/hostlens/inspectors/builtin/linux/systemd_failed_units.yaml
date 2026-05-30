@@ -1,0 +1,46 @@
+name: linux.systemd.failed_units
+version: 1.0.0
+description: List systemd units in the failed state.
+tags: [linux, systemd]
+targets: [local, ssh]
+requires_capabilities: [shell, systemd]
+requires_binaries: [systemctl, awk]
+privilege: none
+
+collect:
+  # `systemctl --failed` lists failed units; awk extracts the unit name
+  # (first column) and emits a JSON array. The empty case still prints a
+  # valid top-level object ({"failed":[]}) so parse_json never crashes
+  # (trap b).
+  command: |
+    systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null \
+      | awk '{ unit=$1; if (unit != "") { printf "%s{\"unit\":\"%s\"}", (n++ ? "," : ""), unit } }' \
+      > /tmp/.hostlens_failed_$$ || true
+    printf '{"failed":['
+    cat /tmp/.hostlens_failed_$$ 2>/dev/null || true
+    printf ']}'
+    rm -f /tmp/.hostlens_failed_$$
+  timeout_seconds: 10
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    failed:
+      type: array
+      items:
+        type: object
+        properties:
+          unit: { type: string }
+  required: [failed]
+  additionalProperties: false
+
+findings:
+  # The message uses no `{len(...)}` — Python str.format cannot call
+  # functions inside `{}` (it would raise KeyError and skip the rule), so
+  # the count stays in the `when` expression only.
+  - when: "len(failed) > 0"
+    severity: critical
+    message: "One or more systemd units are in the failed state (see failed for details)"

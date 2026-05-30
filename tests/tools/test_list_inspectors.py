@@ -4,15 +4,17 @@ Covers the inspector-plugin-system spec MODIFIED block in
 `tool-registry-capability-layer/spec.md` §需求:M2 首批 ToolSpec... §场景:
 list_inspectors handler:
 
-(a) Real registry containing builtin `hello.echo` + `system.uptime` →
-    `ListInspectorsOutput.inspectors` has both entries, sorted by name in
-    dictionary order; `tags` / `compatible_target_kinds` are themselves
-    sorted dictionary order (prompt-cache prefix stability).
-(b) `tag="linux"` filter returns only `system.uptime` (which carries the
-    `linux` tag; `hello.echo` carries `demo` / `hello`).
-(c) `target_kind="ssh"` filter returns both (both builtins declare
-    `targets: [local, ssh]`).
-(d) No filter returns both, sorted ascending by name.
+(a) Real registry containing the M1 builtins (`hello.echo` +
+    `system.uptime`) plus the M2.8 incident-pack →
+    `ListInspectorsOutput.inspectors` includes the M1 entries, sorted by
+    name in dictionary order; `tags` / `compatible_target_kinds` are
+    themselves sorted dictionary order (prompt-cache prefix stability).
+(b) `tag="linux"` filter includes `system.uptime` (which carries the
+    `linux` tag) and excludes `hello.echo` (which carries `demo` /
+    `hello`).
+(c) `target_kind="ssh"` filter includes both M1 builtins (all builtins
+    declare `targets: [local, ssh]`).
+(d) No filter returns the full set, sorted ascending by name.
 """
 
 from __future__ import annotations
@@ -63,25 +65,37 @@ def test_list_inspectors_no_filter_returns_both_builtins_sorted() -> None:
 
     output = asyncio.run(go())
     names = [summary.name for summary in output.inspectors]
-    assert names == ["hello.echo", "system.uptime"]
+    # The two M1 builtins are always present; the M2.8 incident-pack adds
+    # more. Pin presence + ascending sort rather than the exact set so the
+    # test does not drift every time a builtin is added.
+    assert {"hello.echo", "system.uptime"} <= set(names)
+    assert names == sorted(names)
     for summary in output.inspectors:
         assert summary.tags == sorted(summary.tags)
         assert summary.compatible_target_kinds == sorted(summary.compatible_target_kinds)
 
 
 # ---------------------------------------------------------------------------
-# (b) tag="linux" → only system.uptime
+# (b) tag="linux" → includes system.uptime, excludes hello.echo
 # ---------------------------------------------------------------------------
 
 
-def test_list_inspectors_tag_linux_filters_to_system_uptime_only() -> None:
+def test_list_inspectors_tag_linux_filters_to_linux_tagged_only() -> None:
     ctx = _ctx(_make_inspector_registry())
 
     async def go() -> ListInspectorsOutput:
         return await list_inspectors_handler(ListInspectorsInput(tag="linux"), ctx)
 
     output = asyncio.run(go())
-    assert [s.name for s in output.inspectors] == ["system.uptime"]
+    names = [s.name for s in output.inspectors]
+    # `system.uptime` carries the `linux` tag; `hello.echo` (demo/hello)
+    # does not. The incident-pack adds more `linux`-tagged inspectors, so
+    # pin the filter behaviour (include uptime, exclude echo) instead of
+    # the exact set.
+    assert "system.uptime" in names
+    assert "hello.echo" not in names
+    for summary in output.inspectors:
+        assert "linux" in summary.tags
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +110,11 @@ def test_list_inspectors_target_kind_ssh_returns_both() -> None:
         return await list_inspectors_handler(ListInspectorsInput(target_kind="ssh"), ctx)
 
     output = asyncio.run(go())
-    assert [s.name for s in output.inspectors] == ["hello.echo", "system.uptime"]
+    names = [s.name for s in output.inspectors]
+    # Both M1 builtins declare `targets: [local, ssh]`; so do all
+    # incident-pack inspectors. Pin presence + ascending sort.
+    assert {"hello.echo", "system.uptime"} <= set(names)
+    assert names == sorted(names)
 
 
 # ---------------------------------------------------------------------------

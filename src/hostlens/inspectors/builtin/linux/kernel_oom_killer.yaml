@@ -1,0 +1,49 @@
+name: linux.kernel.oom_killer
+version: 1.0.0
+description: Detect recent OOM-killer events in the kernel ring buffer.
+tags: [linux, memory, oom]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [dmesg, awk]
+privilege: none
+
+collect:
+  # Scan dmesg for OOM-killer kills and emit a JSON object. The empty case
+  # MUST still print a valid top-level object ({"oom_events":[]}) or
+  # parse_json crashes (trap b). awk builds the array; the final printf
+  # guards the no-match path.
+  command: |
+    dmesg 2>/dev/null | awk '
+      /Out of memory: Killed process/ || /invoked oom-killer/ {
+        line=$0; gsub(/"/, "\\\"", line);
+        printf "%s{\"event\":\"%s\"}", (n++ ? "," : ""), line
+      }
+      END { } ' > /tmp/.hostlens_oom_$$ || true
+    printf '{"oom_events":['
+    cat /tmp/.hostlens_oom_$$ 2>/dev/null || true
+    printf ']}'
+    rm -f /tmp/.hostlens_oom_$$
+  timeout_seconds: 10
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    oom_events:
+      type: array
+      items:
+        type: object
+        properties:
+          event: { type: string }
+  required: [oom_events]
+  additionalProperties: false
+
+findings:
+  # The message uses no `{len(...)}` — Python str.format cannot call
+  # functions inside `{}` (it would raise KeyError and skip the rule), so
+  # the count stays in the `when` expression only.
+  - when: "len(oom_events) > 0"
+    severity: critical
+    message: "Kernel OOM-killer fired recently (see oom_events for details)"

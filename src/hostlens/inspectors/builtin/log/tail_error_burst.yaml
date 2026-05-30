@@ -1,0 +1,38 @@
+name: log.tail.error_burst
+version: 1.0.0
+description: Count error-priority journal entries within a recent time window.
+tags: [linux, logs, errors]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [journalctl, wc]
+privilege: none
+
+collect:
+  # sampling_window injects window_start/window_end as journalctl-friendly
+  # "YYYY-MM-DD HH:MM:SS" UTC strings (see runner._build_window_context).
+  # `-p err` selects error+ priority; wc -l yields the count, emitted as kv
+  # (parse_kv returns a string, cast with int() in the DSL).
+  command: |
+    count=$(journalctl --since "{{ window_start }}" --until "{{ window_end }}" -p err --no-pager -q 2>/dev/null | wc -l)
+    printf 'error_count=%s\nwindow_seconds=%s\n' "$count" "{{ window_seconds }}"
+  timeout_seconds: 30
+  sampling_window:
+    duration_seconds: 300
+
+parse:
+  format: kv
+
+output_schema:
+  type: object
+  properties:
+    error_count:    { type: string }
+    window_seconds: { type: string }
+  additionalProperties: false
+
+findings:
+  - when: "error_count and int(error_count) >= 100"
+    severity: critical
+    message: "{error_count} error log entries in the last {window_seconds}s"
+  - when: "error_count and int(error_count) >= 20 and int(error_count) < 100"
+    severity: warning
+    message: "Elevated error log rate: {error_count} entries in the last {window_seconds}s"

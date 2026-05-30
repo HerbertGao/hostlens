@@ -1,0 +1,66 @@
+name: net.dependency.tcp_check
+version: 1.0.0
+description: Check TCP reachability of configured dependency endpoints.
+tags: [connectivity, dependency, network]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [nc]
+privilege: none
+
+parameters:
+  type: object
+  required: [endpoints]
+  properties:
+    endpoints:
+      type: array
+      items: { type: string, pattern: "^[a-zA-Z0-9.-]+:[0-9]+$" }   # pattern blocks shell injection
+    timeout_seconds: { type: integer, default: 3 }
+
+collect:
+  # Probe each endpoint with `nc -z` and emit a JSON object. The output
+  # array key is `results` (NOT `endpoints`) so it never collides with the
+  # `endpoints` parameter in the merged Finding DSL context — a same-named
+  # output key would be shadowed by the parameter (a list of host:port
+  # strings) and the `for_each` would iterate strings, not result dicts.
+  # Each element flows through `| map('sh') | join(' ')` (shlex.quote) so
+  # the pattern-constrained host:port can never break out of the loop word.
+  # The empty case still prints {"results":[]} (trap b).
+  command: |
+    printf '{"results":['
+    sep=""
+    for ep in {{ endpoints | map('sh') | join(' ') }}; do
+      host=${ep%%:*}; port=${ep##*:}
+      if nc -z -w {{ timeout_seconds | sh }} "$host" "$port" 2>/dev/null; then
+        reachable=true
+      else
+        reachable=false
+      fi
+      printf '%s{"endpoint":"%s","reachable":%s}' "$sep" "$ep" "$reachable"
+      sep=","
+    done
+    printf ']}'
+  timeout_seconds: 30
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          endpoint:  { type: string }
+          reachable: { type: boolean }
+  required: [results]
+  additionalProperties: false
+
+findings:
+  # `when` uses attribute access (resolves dict keys via simpleeval); the
+  # message uses subscript form so str.format reads dict keys correctly.
+  - for_each: "results as e"
+    when: "e.reachable == False"
+    severity: critical
+    message: "Dependency endpoint {e[endpoint]} is unreachable"

@@ -1,0 +1,36 @@
+name: linux.memory.pressure
+version: 1.0.0
+description: Report available memory percentage to detect memory pressure.
+tags: [linux, memory, performance]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [awk]
+privilege: none
+
+collect:
+  # avail_pct (MemAvailable / MemTotal * 100) is computed in awk so the DSL
+  # only compares an already-derived number. Output is kv; parse_kv returns
+  # strings, so the DSL casts with float().
+  command: |
+    awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2}
+         END{printf "mem_total_kb=%d\nmem_avail_kb=%d\navail_pct=%.1f\n", t, a, (t>0 ? a/t*100 : 0)}' /proc/meminfo
+  timeout_seconds: 10
+
+parse:
+  format: kv
+
+output_schema:
+  type: object
+  properties:
+    mem_total_kb: { type: string }
+    mem_avail_kb: { type: string }
+    avail_pct:    { type: string }
+  additionalProperties: false
+
+findings:
+  - when: "avail_pct and float(avail_pct) < 5.0"
+    severity: critical
+    message: "Only {avail_pct}% memory available"
+  - when: "avail_pct and float(avail_pct) >= 5.0 and float(avail_pct) < 15.0"
+    severity: warning
+    message: "Memory available is low at {avail_pct}%"

@@ -488,16 +488,18 @@ def test_doctor_json_inspectors_status_ok_with_builtins_only(
     """Spec §场景:全部加载成功 status=ok.
 
     The builtin set always loads cleanly; with an empty user path and no
-    declared secrets, ``inspectors.status`` is ``ok``, ``loaded == 2``
-    (``hello.echo`` + ``system.uptime``), and both error lists are
-    empty.
+    declared secrets, ``inspectors.status`` is ``ok``, ``loaded`` is at
+    least the two M1 builtins (``hello.echo`` + ``system.uptime``; the
+    M2.8 incident-pack adds more), and both error lists are empty.
     """
 
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["inspectors"]["status"] == "ok"
-    assert payload["inspectors"]["loaded"] == 2
+    # Floor on the two M1 builtins rather than the exact count so the test
+    # does not drift each time a builtin manifest is added.
+    assert payload["inspectors"]["loaded"] >= 2
     assert payload["inspectors"]["errors"] == []
     assert payload["inspectors"]["missing_secrets"] == []
 

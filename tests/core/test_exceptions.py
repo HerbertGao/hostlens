@@ -86,7 +86,7 @@ def test_config_error_accepts_optional_original_exception() -> None:
     assert err_no_cause.original is None
 
 
-def test_module_exports_exactly_twelve_exception_classes_after_agent_loop() -> None:
+def test_module_exports_exactly_thirteen_exception_classes_after_replay_target() -> None:
     """The exception module's public class set is locked.
 
     M0 seeded four classes (``HostlensError`` / ``ConfigError`` /
@@ -97,7 +97,11 @@ def test_module_exports_exactly_twelve_exception_classes_after_agent_loop() -> N
     ``BackendCapabilityViolation`` / ``BackendDaemonUnsafe``) bringing the
     count to eleven; M2 ``add-agent-loop-skeleton`` adds
     ``UnexpectedStopReason`` (raised by the Agent loop on a stop_reason it
-    does not solicit) bringing the count to exactly twelve. M1
+    does not solicit) bringing the count to twelve; M2.8 ``add-incident-pack``
+    adds ``ReplayMiss`` (raised by ``ReplayTarget`` on a fixture miss;
+    inherits ``HostlensError`` NOT ``TargetError`` so the runner's
+    ``except TargetError`` does not swallow it into ``target_unreachable``)
+    bringing the count to exactly thirteen. M1
     ``add-execution-target-abstraction`` did NOT add classes — it only
     extended ``ConfigError`` / ``TargetError`` signatures, so the
     public-class count stayed at four through M1.
@@ -112,6 +116,7 @@ def test_module_exports_exactly_twelve_exception_classes_after_agent_loop() -> N
         "ConfigError",
         "HostlensError",
         "InspectorError",
+        "ReplayMiss",
         "TargetError",
         "ToolError",
         "ToolPolicyViolation",
@@ -125,7 +130,7 @@ def test_module_exports_exactly_twelve_exception_classes_after_agent_loop() -> N
         and issubclass(getattr(exceptions_module, name), BaseException)
     ]
     assert sorted(public_names) == expected
-    assert len(public_names) == 12
+    assert len(public_names) == 13
     assert sorted(exceptions_module.__all__) == expected
 
 

@@ -128,6 +128,9 @@ def load_manifest(path: Path) -> InspectorManifest:
     # ---- 4. parameters JSON Schema walk ----
     _validate_parameters_schema(manifest.parameters)
 
+    # ---- 4b. reserved sampling_window injection names ----
+    _validate_no_reserved_window_params(manifest.parameters)
+
     # ---- 5. Jinja2 AST walk on collect.command ----
     _validate_command_template(
         manifest.collect.command,
@@ -152,6 +155,37 @@ def load_manifest(path: Path) -> InspectorManifest:
 # bypassing user input is still allowed via the manifest itself, not via the
 # parameters schema.
 _STRING_CONSTRAINT_KEYS: frozenset[str] = frozenset({"pattern", "enum"})
+
+
+# Names the runner injects at runtime when `collect.sampling_window` is
+# declared (see `InspectorRunner._build_window_context`). A `parameters`
+# property declaring any of these would silently shadow / be shadowed by the
+# injected value, making the render / DSL context ambiguous — reject at load.
+_RESERVED_WINDOW_PARAM_NAMES: frozenset[str] = frozenset(
+    {"window_start", "window_end", "window_seconds"}
+)
+
+
+def _validate_no_reserved_window_params(parameters: dict[str, Any] | None) -> None:
+    """Reject a manifest whose ``parameters`` declares a reserved window name.
+
+    ``window_start`` / ``window_end`` / ``window_seconds`` are runtime-injected
+    by the runner for `sampling_window`; a same-named parameter would collide
+    in the merged render / DSL context, so the loader fails with a field-level
+    ``parameter_reserved_window_name`` error.
+    """
+
+    if parameters is None:
+        return
+    properties = parameters.get("properties")
+    if not isinstance(properties, dict):
+        return
+    for name in properties:
+        if name in _RESERVED_WINDOW_PARAM_NAMES:
+            raise InspectorError(
+                kind="parameter_reserved_window_name",
+                parameter=name,
+            )
 
 
 def _validate_parameters_schema(parameters: dict[str, Any] | None) -> None:
