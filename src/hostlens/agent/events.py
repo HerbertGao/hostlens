@@ -81,11 +81,22 @@ LoopEvent = TurnStarted | ModelResponded | ToolStarted | ToolCompleted | RunFina
 
 @runtime_checkable
 class LoopObserver(Protocol):
-    """Synchronous, non-blocking sink for ``LoopEvent`` values.
+    """Synchronous, non-blocking, read-only sink for ``LoopEvent`` values.
 
     ``on_event`` MUST NOT raise: the loop calls it directly with no defensive
     try/except (design D-2), so isolating internal (e.g. rendering) errors is
     the observer's own responsibility.
+
+    Observation MUST be read-only: an observer MUST NOT mutate any event payload
+    — including nested values inside ``ToolStarted.tool_input`` and the
+    ``ToolInvocation`` carried by ``ToolCompleted`` (whose ``output`` / ``error``
+    dicts are the very objects the loop also feeds back to the model). The loop
+    deliberately does **not** deep-copy these payloads on every emit: that would
+    be a defensive fallback against an impossible branch on the agent hot path
+    (CLAUDE.md §6 / §8), since observers are first-party and read-only. The
+    ``ToolStarted.tool_input`` top-level dict is detached so the event container
+    is an honest value object; deeper isolation is the observer's contract to
+    honor, not the loop's to enforce.
     """
 
     def on_event(self, event: LoopEvent) -> None: ...

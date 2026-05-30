@@ -432,7 +432,10 @@ class AgentLoop:
                     turn=turn,
                     tool_name=block.name,
                     tool_use_id=block.id,
-                    tool_input=block.input,
+                    # Detached copy: the frozen event must be a true value object,
+                    # so an observer can never mutate the dict dispatched to the
+                    # tool right after (keeps observation side-effect-free).
+                    tool_input=dict(block.input),
                 )
             )
 

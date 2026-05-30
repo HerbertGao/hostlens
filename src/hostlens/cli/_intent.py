@@ -144,9 +144,14 @@ class RichLiveObserver:
         self._stop()
 
     def _stop(self) -> None:
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
+        # Best-effort teardown: clear ``_live`` FIRST so the observer is left in
+        # a stopped state even if ``Live.stop()`` raises, then suppress the stop
+        # error. ``close()`` runs in the CLI's ``finally``; a raising teardown
+        # would mask the original planner exception per Python finally semantics.
+        live, self._live = self._live, None
+        if live is not None:
+            with contextlib.suppress(Exception):
+                live.stop()
 
 
 def _one_line(text: str, *, limit: int = 120) -> str:
