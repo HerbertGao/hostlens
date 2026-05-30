@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -316,3 +317,68 @@ def test_construction_failure_leaves_no_stale_path(
     backend = _recorder(cassette, [_response("a")])
     assert cassette in _ACTIVE_CASSETTE_PATHS
     backend.flush()
+
+
+# ---------------------------------------------------------------------------
+# Review regressions (Bugbot/Copilot): teardown must never clobber a committed
+# cassette with an empty / partial / failed-run recording.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_flush_does_not_clobber_committed_cassette(tmp_path: Path) -> None:
+    """#1: flush() with zero recorded calls must NOT overwrite an existing
+    cassette with an empty file (a record run that exits before any LLM call)."""
+    cassette = tmp_path / "committed.jsonl"
+    committed = {"request": {"model": "m", "messages": [], "tools_count": 0}, "response": {}}
+    cassette.write_text(json.dumps(committed) + "\n", encoding="utf-8")
+
+    backend = _recorder(cassette, [_response("unused")])
+    # No messages_create call → _records empty.
+    backend.flush()
+
+    assert _read_records(cassette) == [committed]  # untouched, not emptied
+    assert cassette not in _ACTIVE_CASSETTE_PATHS
+
+
+@pytest.mark.asyncio
+async def test_flush_persist_false_does_not_write(tmp_path: Path) -> None:
+    """#2: a FAILED test teardown passes persist=False; the recorded (clean but
+    possibly partial) scenario must NOT overwrite the committed cassette."""
+    cassette = tmp_path / "committed.jsonl"
+    cassette.write_text('{"keep": true}\n', encoding="utf-8")
+
+    backend = _recorder(cassette, [_response("recorded")])
+    await _call(backend, messages=[{"role": "user", "content": "x"}])
+    backend.flush(persist=False)
+
+    assert _read_records(cassette) == [{"keep": True}]  # not overwritten
+    assert cassette not in _ACTIVE_CASSETTE_PATHS
+
+
+@pytest.mark.asyncio
+async def test_write_failure_keeps_records_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#3: a failed _atomic_write must NOT mark the recorder flushed — the
+    in-memory records survive so a retry can still persist them."""
+    cassette = tmp_path / "scenario.jsonl"
+    backend = _recorder(cassette, [_response("ok")])
+    await _call(backend, messages=[{"role": "user", "content": "x"}])
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def _flaky(src: Any, dst: Any, *a: Any, **k: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("os.replace", _flaky)
+    with pytest.raises(OSError, match="disk full"):
+        backend.flush()
+
+    # Retry now succeeds because the first failure did not mark _flushed.
+    backend.flush()
+    assert len(_read_records(cassette)) == 1

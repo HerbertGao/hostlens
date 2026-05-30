@@ -188,26 +188,38 @@ class RecordingBackend:
         )
         return response
 
-    def flush(self) -> None:
-        """Persist the scenario, or no-op when poisoned / already flushed.
+    def flush(self, *, persist: bool = True) -> None:
+        """Persist the scenario, or no-op (deregister only) when it must not write.
 
         Idempotent (spec §需求:poisoned (c)): teardown may call this more than
-        once. When poisoned or already flushed it only deregisters the active
-        path and skips the write — persisting a poisoned/partial scenario
-        would produce a semantically broken cassette that replay always
-        misses (spec §需求:poisoned 状态...teardown 不得写出部分 cassette).
+        once. The write is **skipped** (only the active path is deregistered) in
+        any of these cases, so a committed cassette is never clobbered by a
+        broken / partial / empty recording:
+
+        - ``self._poisoned`` — a ``messages_create`` gate hit or error occurred
+          (spec §需求:poisoned 状态...teardown 不得写出部分 cassette).
+        - ``self._flushed`` — already flushed.
+        - ``persist is False`` — the caller (fixture teardown) detected the test
+          FAILED; persisting a recording from a failing run would overwrite a
+          good committed cassette with a truncated/wrong scenario.
+        - ``not self._records`` — nothing was recorded; writing would replace an
+          existing cassette with an empty file.
         """
 
-        if self._poisoned or self._flushed:
+        if self._poisoned or self._flushed or not persist or not self._records:
+            self._flushed = True
             self._deregister()
             return
 
         try:
             self._atomic_write()
+            # Mark flushed ONLY after a successful write, so a failed
+            # ``_atomic_write`` (e.g. ``os.replace`` error) leaves the recorder
+            # retry-able rather than silently dropping the in-memory records.
+            self._flushed = True
         finally:
             # Deregister even if the write raised, so a write failure does not
             # leave the path occupied for the rest of the run.
-            self._flushed = True
             self._deregister()
 
     def _atomic_write(self) -> None:

@@ -23,7 +23,7 @@ import asyncio
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 import structlog
@@ -49,6 +49,19 @@ if TYPE_CHECKING:
 _CASSETTES_DIR = Path(__file__).parent / "fixtures" / "cassettes"
 
 _VALID_LLM_MODES = ("replay", "record", "live")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]) -> Any:
+    """Stash each phase's report on the test item so fixture teardown can tell
+    whether the test passed. Used by ``llm_cassette`` to refuse persisting a
+    record-mode cassette from a FAILED test (which would overwrite a good
+    committed cassette with a truncated/wrong recording).
+    """
+
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"_hostlens_rep_{rep.when}", rep)
 
 
 def _resolve_llm_mode() -> Literal["replay", "record", "live"]:
@@ -136,7 +149,7 @@ def tool_context_factory() -> Callable[..., ToolContext]:
 
 
 @pytest.fixture
-def llm_cassette() -> Iterator[Callable[..., LLMBackend]]:
+def llm_cassette(request: pytest.FixtureRequest) -> Iterator[Callable[..., LLMBackend]]:
     """Return a factory producing an ``LLMBackend`` selected by the current mode.
 
     Usage: ``llm_cassette("planner_health_check", target_registry=<registry>)``
@@ -224,8 +237,13 @@ def llm_cassette() -> Iterator[Callable[..., LLMBackend]]:
 
     yield _make
 
-    # Teardown: flush every recorder built this test (a single test may
-    # ``_make`` multiple scenarios). ``flush`` is a no-op when poisoned /
-    # already flushed and is idempotent.
+    # Teardown: persist each recorder built this test ONLY if the test passed.
+    # A single test may ``_make`` multiple scenarios. If the test failed/errored,
+    # ``persist=False`` makes ``flush`` skip the write (deregister only) so a
+    # recording from a failing run never overwrites a good committed cassette
+    # (Bugbot/Copilot: "failed test persists partial cassette"). ``flush`` is
+    # idempotent and also no-ops on poisoned/empty recordings.
+    call_rep = getattr(request.node, "_hostlens_rep_call", None)
+    test_passed = call_rep is not None and call_rep.passed
     for recorder in recorders:
-        recorder.flush()  # type: ignore[attr-defined]
+        recorder.flush(persist=test_passed)  # type: ignore[attr-defined]
