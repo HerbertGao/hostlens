@@ -21,77 +21,31 @@ Two modes, mutually exclusive:
    error (the spec rejects silent skips).
 
 The lint is intentionally a standalone script: it imports only the
-narrow ``hostlens.core.redact`` and ``hostlens.agent.backend`` symbols
-needed to validate cassettes, and refuses to import the wider
-``hostlens.tools`` / ``hostlens.agent.backends`` packages so a CI job can
-run it without provisioning the full Agent runtime. The tools-schema
-hash for ``--check-schema-drift`` is computed externally and injected
-via ``--current-tools-hash``.
+narrow ``hostlens.core.redact`` (shared sensitive-pattern set),
+``hostlens.agent.backend`` (``MessageResponse`` schema), and
+``hostlens.agent.cassette_key`` (single-source request-key helper, used
+to flag duplicate request-keys within a file) symbols needed to validate
+cassettes, and refuses to import the wider ``hostlens.tools`` /
+``hostlens.agent.backends`` packages so a CI job can run it without
+provisioning the full Agent runtime. The tools-schema hash for
+``--check-schema-drift`` is computed externally and injected via
+``--current-tools-hash``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from hostlens.agent.backend import MessageResponse
-from hostlens.core.redact import redact_text
+from hostlens.agent.cassette_key import request_key_for_payload
+from hostlens.core.redact import detect_sensitive_text, redact_text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASSETTE_DIR = REPO_ROOT / "tests" / "fixtures" / "cassettes"
-
-
-# Patterns checked in scan mode. Each tuple is ``(name, compiled_regex)``;
-# ``name`` is what gets reported on a hit so a reviewer can identify the
-# rule that fired without re-scanning the file. The set is intentionally
-# broader than ``hostlens.core.redact`` so cassettes (which a reviewer
-# will commit to git) are held to a higher standard than runtime log
-# output (where the redact module only needs to scrub the most obvious
-# leaks).
-SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # API-key prefixes (Anthropic / OpenAI ``sk-...``).
-    ("anthropic_or_openai_sk_key", re.compile(r"sk-[A-Za-z0-9_-]{6,}")),
-    # ``Authorization: Bearer <token>``.
-    ("bearer_token", re.compile(r"(?i)\bBearer\s+\S+")),
-    # Three-segment JWT (header.payload.signature).
-    ("jwt", re.compile(r"eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+")),
-    # ``password=...`` / ``api_key=...`` / ``token=...`` / ``secret=...``
-    # assignment forms. The trailing value must be at least two chars to
-    # avoid matching empty-value JSON-encoded ``"password":""`` keys that
-    # cassettes occasionally need to express literal empty-string fields.
-    (
-        "credential_assignment",
-        re.compile(r"(?i)\b(password|secret|token|api[_-]?key)\s*[:=]\s*\S{2,}"),
-    ),
-    # User home directories — macOS ``/Users/<name>`` and Linux ``/home/<name>``.
-    ("user_home_path", re.compile(r"/(Users|home)/[A-Za-z0-9._-]+")),
-    # ``.ssh`` directories, anywhere in the path.
-    ("ssh_path", re.compile(r"\.ssh(/|\\)")),
-    # IPv4 literals (not 0.0.0.0 / 127.0.0.1 ish — block both private and
-    # public; cassettes have no business holding any specific IP).
-    ("ipv4_address", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
-    # Email addresses.
-    ("email_address", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
-    # Hostnames / FQDNs with at least one label + a common TLD or environment
-    # suffix. Catches strings like ``prod-db.internal.example.com`` or
-    # ``auth.corp.local`` that may leak via inspector output into cassettes.
-    # The suffix set is narrow on purpose: a generic ``\.[a-z]{2,}`` would
-    # collide with model IDs ("claude-opus-4-7"), tool names, and other
-    # legitimate dotted tokens we expect inside cassette bodies.
-    (
-        "hostname_or_fqdn",
-        re.compile(
-            r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-            r"(?:internal|intranet|local|lan|corp|company|enterprise|prod|production"
-            r"|staging|dev|test|example|home|office|com|net|org|io|app|cloud|tech)\b",
-            re.IGNORECASE,
-        ),
-    ),
-)
 
 
 class LintError(Exception):
@@ -119,17 +73,17 @@ def iter_cassette_files(directory: Path) -> Iterator[Path]:
 def scan_line_for_sensitive_substrings(line: str) -> str | None:
     """Return the name of the first sensitive pattern matched in ``line``.
 
-    Uses both the curated ``SENSITIVE_PATTERNS`` set above and the
-    ``hostlens.core.redact.redact_text`` baseline: if ``redact_text``
-    rewrites the line at all, the line contained a secret per the runtime
-    redaction rules. ``SENSITIVE_PATTERNS`` extends that with cassette-
-    specific rules (paths / IPv4 / email) that ``redact_text`` does not
-    cover.
+    Uses both the shared ``hostlens.core.redact.detect_sensitive_text``
+    (which walks ``CASSETTE_SENSITIVE_PATTERNS`` — the same rule set
+    ``RecordingBackend`` uses, so "recorded then linted" stays consistent)
+    and the ``hostlens.core.redact.redact_text`` baseline: if
+    ``detect_sensitive_text`` misses but ``redact_text`` still rewrites the
+    line, the line contained a secret per the runtime redaction rules.
     """
 
-    for name, pattern in SENSITIVE_PATTERNS:
-        if pattern.search(line):
-            return name
+    hit = detect_sensitive_text(line)
+    if hit is not None:
+        return hit
     if redact_text(line) != line:
         return "redact_text_baseline"
     return None
@@ -156,14 +110,45 @@ def validate_record_schema(record: dict[str, object], *, path: Path, line_no: in
         ) from exc
 
 
+def request_key_for_record(record: dict[str, object]) -> str | None:
+    """Compute the request-key for a cassette ``record`` via the shared helper.
+
+    Reads the canonical ``request`` subset (``model`` / ``messages`` /
+    ``tools_count``) and delegates to ``cassette_key.request_key_for_payload``
+    — the same single-source keying used by ``PlaybackBackend`` (lookup) and
+    ``RecordingBackend`` (write), so the duplicate-key check cannot drift from
+    what playback actually collides on. Returns ``None`` when ``request`` is
+    absent or not shaped as the canonical subset (such records are out of
+    scope for the duplicate check; schema validation guards ``response``).
+    """
+
+    request = record.get("request")
+    if not isinstance(request, dict):
+        return None
+    model = request.get("model")
+    messages = request.get("messages")
+    tools_count = request.get("tools_count")
+    if not isinstance(model, str) or not isinstance(messages, list):
+        return None
+    if not isinstance(tools_count, int) or isinstance(tools_count, bool):
+        return None
+    return request_key_for_payload(model, messages, tools_count)
+
+
 def scan_cassette_file(path: Path) -> None:
     """Run scan-mode checks on a single cassette file.
 
     Raises ``LintError`` on the first failing line so the script aborts
     early — running through all lines after a failure would just add
     noise.
+
+    Besides per-line secret / schema checks, accumulates each record's
+    request-key within the file: a repeated key means ``PlaybackBackend``
+    would silently serve the first matching record and swallow the rest, so
+    a duplicate within one cassette is a hard ``LintError``.
     """
 
+    seen_keys: dict[str, int] = {}
     with path.open("r", encoding="utf-8") as fh:
         for line_no, raw in enumerate(fh, start=1):
             line = raw.rstrip("\n")
@@ -191,6 +176,20 @@ def scan_cassette_file(path: Path) -> None:
                     reason=f"record not a JSON object (got {type(record).__name__})",
                 )
             validate_record_schema(record, path=path, line_no=line_no)
+            key = request_key_for_record(record)
+            if key is not None:
+                first_line = seen_keys.get(key)
+                if first_line is not None:
+                    raise LintError(
+                        path=path,
+                        line_no=line_no,
+                        reason=(
+                            f"duplicate request-key {key[:12]}... "
+                            f"(first seen at line {first_line}); "
+                            "PlaybackBackend would silently serve only the first record"
+                        ),
+                    )
+                seen_keys[key] = line_no
 
 
 def check_schema_drift(paths: Iterable[Path], *, current_hash: str) -> None:

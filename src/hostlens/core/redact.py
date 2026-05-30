@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["redact_text"]
+__all__ = ["CASSETTE_SENSITIVE_PATTERNS", "detect_sensitive_text", "redact_text"]
 
 
 # Compiled once at import time; OPERABILITY.md §7.2 default rule set.
@@ -91,3 +91,74 @@ def redact_text(s: str) -> str:
     out = _JWT.sub(lambda m: _mask(m.group(0)), out)
     out = _SK_KEY.sub(lambda m: _mask(m.group(0)), out)
     return out
+
+
+# Cassette commit gate uses a broader standard than runtime log redaction:
+# a cassette is committed to git and reviewed by a human, so it is held to a
+# higher bar than runtime log output (where `redact_text` only scrubs the
+# most obvious leaks while deliberately keeping HOME / paths that aid
+# debugging). Both `cassette_lint.py` and `RecordingBackend` import this
+# single source so "recorded then linted" stays consistent. Each tuple is
+# ``(name, compiled_regex)``; ``name`` is reported on a hit so a reviewer can
+# identify the firing rule without re-scanning.
+CASSETTE_SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # API-key prefixes (Anthropic / OpenAI ``sk-...``).
+    ("anthropic_or_openai_sk_key", re.compile(r"sk-[A-Za-z0-9_-]{6,}")),
+    # ``Authorization: Bearer <token>``.
+    ("bearer_token", re.compile(r"(?i)\bBearer\s+\S+")),
+    # Three-segment JWT (header.payload.signature).
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+")),
+    # ``password=...`` / ``api_key=...`` / ``token=...`` / ``secret=...``
+    # assignment forms. The trailing value must be at least two chars to
+    # avoid matching empty-value JSON-encoded ``"password":""`` keys that
+    # cassettes occasionally need to express literal empty-string fields.
+    (
+        "credential_assignment",
+        re.compile(r"(?i)\b(password|secret|token|api[_-]?key)\s*[:=]\s*\S{2,}"),
+    ),
+    # User home directories — macOS ``/Users/<name>`` and Linux ``/home/<name>``.
+    ("user_home_path", re.compile(r"/(Users|home)/[A-Za-z0-9._-]+")),
+    # ``.ssh`` directories, anywhere in the path.
+    ("ssh_path", re.compile(r"\.ssh(/|\\)")),
+    # IPv4 literals (not 0.0.0.0 / 127.0.0.1 ish — block both private and
+    # public; cassettes have no business holding any specific IP).
+    ("ipv4_address", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
+    # Email addresses.
+    ("email_address", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
+    # Hostnames / FQDNs with at least one label + a common TLD or environment
+    # suffix. Catches strings like ``prod-db.internal.example.com`` or
+    # ``auth.corp.local`` that may leak via inspector output into cassettes.
+    # The suffix set is narrow on purpose: a generic ``\.[a-z]{2,}`` would
+    # collide with model IDs ("claude-opus-4-7"), tool names, and other
+    # legitimate dotted tokens we expect inside cassette bodies.
+    (
+        "hostname_or_fqdn",
+        re.compile(
+            r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+            r"(?:internal|intranet|local|lan|corp|company|enterprise|prod|production"
+            r"|staging|dev|test|example|home|office|com|net|org|io|app|cloud|tech)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def detect_sensitive_text(text: str) -> str | None:
+    """Return the name of the first `CASSETTE_SENSITIVE_PATTERNS` rule that
+    matches `text`, or `None` if none match.
+
+    This is the cassette commit gate's detector. It differs from
+    `redact_text` in two ways:
+
+    - **Detection vs masking**: this returns a rule name (or None) so a caller
+      can fail-and-reject; `redact_text` rewrites the string in place to mask
+      secrets and is used at runtime rendering boundaries.
+    - **Wider standard**: cassettes are committed to git, so this gate flags
+      categories runtime redaction deliberately keeps (HOME / `.ssh` paths,
+      IPv4, email, hostname-FQDN) to aid debugging. `redact_text`'s runtime
+      masking semantics are intentionally narrower and are not changed here.
+    """
+    for name, pattern in CASSETTE_SENSITIVE_PATTERNS:
+        if pattern.search(text):
+            return name
+    return None

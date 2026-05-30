@@ -15,7 +15,6 @@ drift is detected separately by ``scripts/cassette_lint.py``.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any, ClassVar
@@ -25,6 +24,7 @@ from hostlens.agent.backend import (
     MessageResponse,
     check_capability_consistency,
 )
+from hostlens.agent.cassette_key import request_key_for_payload
 from hostlens.core.exceptions import BackendError
 
 __all__ = ["CassetteMiss", "PlaybackBackend"]
@@ -173,16 +173,11 @@ class PlaybackBackend:
         only). Trade-offs documented in spec §需求:`PlaybackBackend`.
         """
 
-        payload = {
-            "model": model,
-            "messages": messages,
-            "tools_count": len(tools),
-        }
-        # ``sort_keys=True`` makes the hash order-independent; ``ensure_ascii=False``
-        # keeps non-ASCII characters (e.g. Chinese user prompts) byte-stable
-        # across platforms.
-        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return request_key_for_payload(
+            model=model,
+            messages=messages,
+            tools_count=len(tools),
+        )
 
     async def messages_create(
         self,
@@ -235,10 +230,8 @@ class PlaybackBackend:
         identical canonical payloads always produce identical hex.
         """
 
-        payload = {
-            "model": str(request.get("model", "")),
-            "messages": list(request.get("messages", [])),
-            "tools_count": int(request.get("tools_count", 0)),
-        }
-        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return request_key_for_payload(
+            model=str(request.get("model", "")),
+            messages=list(request.get("messages", [])),
+            tools_count=int(request.get("tools_count", 0)),
+        )
