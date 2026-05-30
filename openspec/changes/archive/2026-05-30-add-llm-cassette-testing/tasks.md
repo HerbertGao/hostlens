@@ -55,8 +55,8 @@
 
 ## 9. Git 工作流（CLAUDE.md §5.1）
 
-- [ ] 9.1 feature branch `feat/add-llm-cassette-testing`；`git add` 显式文件（禁 `git add -A`）；conventional commit 含 change name 引用
-- [ ] 9.2 commit 后、push 前按 §5.3 跑对抗性 review（本提案含运行时行为 + 安全检测边界，属「应该跑 review」类）；triage + 修复到 APPROVE/CLEAR
-- [ ] 9.3 push branch + `\gh pr create --base main`；PR 描述含 spec 引用 `openspec/changes/add-llm-cassette-testing/` 与 Demo Path
-- [ ] 9.4 CI 全绿 + review 后 `\gh pr merge <num> --squash --delete-branch`
-- [ ] 9.5 准备归档：`openspec-cn validate add-llm-cassette-testing` 确认可归档；后续 `/opsx:archive` 推进到 `openspec/specs/llm-cassette-testing/`
+- [x] 9.1 feature branch `feat/add-llm-cassette-testing`；`git add` 显式文件（禁 `git add -A`）；conventional commit 含 change name 引用
+- [x] 9.2 commit 后、push 前按 §5.3 跑对抗性 review（本提案含运行时行为 + 安全检测边界，属「应该跑 review」类）；triage + 修复到 APPROVE/CLEAR
+- [x] 9.3 push branch + `\gh pr create --base main`；PR 描述含 spec 引用 `openspec/changes/add-llm-cassette-testing/` 与 Demo Path
+- [x] 9.4 CI 全绿 + review 后 `\gh pr merge <num> --squash --delete-branch`
+- [x] 9.5 准备归档：`openspec-cn validate add-llm-cassette-testing` 确认可归档；后续 `/opsx:archive` 推进到 `openspec/specs/llm-cassette-testing/`
