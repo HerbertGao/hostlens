@@ -405,12 +405,17 @@ async def test_static_prefix_cache_read_hits_across_rounds_live() -> None:
     betting on a real Planner prefix being large enough.
 
     Rather than relying on the model to deterministically emit a tool_use every
-    turn (non-deterministic), we issue three sequential ``messages_create``
-    calls in the EXACT request shape ``AgentLoop`` emits — padded ``system`` with
-    breakpoint A via ``_inject_cache_control``, and a per-round-growing
-    ``messages`` list with the rolling breakpoint B via
-    ``_roll_message_cache_breakpoint``. This drives the same static-prefix reuse
-    the spec scenarios require without depending on model tool-calling behavior.
+    turn (non-deterministic), we drive the real injection helpers
+    (``_inject_cache_control`` / ``_roll_message_cache_breakpoint``) directly
+    across three sequential ``messages_create`` calls. The request carries the
+    same **cache-relevant** shape ``AgentLoop.run()`` emits: a padded stable
+    ``system`` (breakpoint A) and a per-round-growing ``messages`` list seeded
+    with the bare-str turn-1 intent (so breakpoint B is skipped on round 1,
+    matching the loop's ``[1,2,2,…]``). The message *contents* here are plain
+    text rather than the loop's ``tool_use`` / ``tool_result`` blocks — only
+    "tail is a non-empty block list" matters for breakpoint B, so the breakpoint
+    placement is identical. This exercises the same static-prefix reuse the spec
+    scenarios require without depending on model tool-calling behavior.
     """
     from hostlens.agent.backends.anthropic_api import AnthropicAPIBackend
 
@@ -421,7 +426,8 @@ async def test_static_prefix_cache_read_hits_across_rounds_live() -> None:
     model = "claude-haiku-4-5"
     # Pad the static prefix well past Haiku's ≈2048-token minimum cacheable
     # threshold with a stable, byte-identical filler so the cache key is stable
-    # across the three rounds. ~6000 words comfortably clears the threshold.
+    # across the three rounds: 600 repeats of a 6-word sentence (~3600 words)
+    # comfortably clears the ~2048-token threshold.
     filler = ("hostlens inspects servers and reports findings. " * 600).strip()
     system: list[dict[str, Any]] = [{"type": "text", "text": filler}]
 
@@ -437,11 +443,10 @@ async def test_static_prefix_cache_read_hits_across_rounds_live() -> None:
             timeout=30.0,
         )
 
-    # Round 1 — cold: writes the static prefix (A). Tail message is a block list
-    # so B is created here too.
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": [{"type": "text", "text": "Reply with the word ok."}]}
-    ]
+    # Round 1 — cold: writes the static prefix (A). Tail message is the bare-str
+    # intent exactly as AgentLoop.run() seeds it, so breakpoint B is skipped here
+    # (mirrors the loop's [1,2,2,…] count: turn1 = A only).
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "Reply with the word ok."}]
     await call_round(messages)
 
     # Round 2 — static prefix A must now be a cache READ.

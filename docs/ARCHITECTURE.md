@@ -979,7 +979,7 @@ class AgentLoop:
 ### Prompt Caching 策略
 
 - 系统 prompt + Tool Registry 概览：标记 `cache_control: ephemeral`
-- 每次新调用先看上一次 `cache_read_input_tokens` 是否 > 0，作为单测断言
+- 验证两层职责分离：CI 用本地 recording backend（捕获每次请求快照）做结构断言（断点位置 / `[1,2,2,…]` 序列 / 负例），**不**验真实命中；`cache_read_input_tokens > 0` 只在 `@pytest.mark.live` opt-in 测试里断言（CI 默认 `-m 'not live'` 跳过）
 - 两层断点（静态前缀 A + 滚动对话前缀 B）的完整策略、前缀顺序图与命中时序详见 [docs/agent-cache-strategy.md](agent-cache-strategy.md)
 
 ### 安全网
