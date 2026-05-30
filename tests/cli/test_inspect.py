@@ -122,18 +122,20 @@ def test_inspect_help_lists_all_options_and_exits_0(
     Spec §场景:`--help` 输出含全部参数 + §场景:`--help` 退出码必须为 0.
     The click-UsageError wrapper must NOT demote ``--help``'s exit 0 to
     exit 3 because ``HelpOption`` raises ``SystemExit(0)`` directly,
-    bypassing UsageError.
+    bypassing UsageError. After add-intent-cli the option count is 7
+    (``--intent`` added).
     """
 
     exit_code, stdout, _stderr = _run_main(["inspect", "--help"], capsys, monkeypatch)
     assert exit_code == 0
-    # All six options listed. Normalise first so the assertion survives
+    # All seven options listed. Normalise first so the assertion survives
     # Rich's ANSI-coloured ``--<flag>`` rendering on CI (where ``--`` and
     # the flag name are wrapped in separate escape sequences, breaking a
     # naive substring search).
     normalised = _normalise_help(stdout)
     for name in (
         "--inspector",
+        "--intent",
         "--output",
         "--format",
         "--parameters",
@@ -163,15 +165,19 @@ def test_inspect_missing_inspector_exits_3(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`hostlens inspect local-host` (no --inspector) -> exit 3.
+    """`hostlens inspect local-host` (no --inspector, no --intent) -> exit 3.
 
-    Spec §场景:缺 --inspector 报错.
+    Spec (add-intent-cli MODIFIED) §场景:缺 --inspector 且缺 --intent 报错. After
+    add-intent-cli made ``--inspector`` optional + mutually exclusive with
+    ``--intent``, the missing-both case is no longer Click's ``Missing option``
+    usage error — it is the command body's explicit mutual-exclusion gate
+    (``typer.Exit(code=3)``) with the new one-line message.
     """
 
     exit_code, _stdout, stderr = _run_main(["inspect", "local-host"], capsys, monkeypatch)
     assert exit_code == 3
-    assert "Missing option" in stderr
-    assert "--inspector" in stderr
+    assert "must provide exactly one of --inspector or --intent" in stderr
+    assert "Traceback" not in stderr
 
 
 def test_inspect_invalid_format_exits_3(

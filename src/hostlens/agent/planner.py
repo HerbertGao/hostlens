@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from hostlens.agent.backend import LLMBackend
+    from hostlens.agent.events import LoopObserver
     from hostlens.core.config import Settings
     from hostlens.tools.base import ToolContext
     from hostlens.tools.registry import ToolRegistry
@@ -133,7 +134,7 @@ class PlannerAgent:
         )
         return template.replace(_TOOL_OVERVIEW_PLACEHOLDER, overview)
 
-    async def run(self, intent: str) -> PlannerResult:
+    async def run(self, intent: str, *, observer: LoopObserver | None = None) -> PlannerResult:
         """Drive the loop, then condense ``LoopResult`` into ``PlannerResult``.
 
         Findings are collected from successful ``run_inspector`` invocations
@@ -141,8 +142,12 @@ class PlannerAgent:
         ``loop_result.tool_invocations`` for debugging. terminal_status and
         ``final_text`` are passed through verbatim — the loop is the single
         owner of retry and status semantics (ADR-005 / design D-4).
+
+        ``observer`` is passed straight through to ``AgentLoop.run`` — the
+        Planner never interprets, filters, or consumes ``LoopEvent`` (it is a
+        direct channel between the caller and the loop; design D-3 / spec).
         """
-        loop_result = await self._loop.run(intent)
+        loop_result = await self._loop.run(intent, observer=observer)
 
         findings: list[Finding] = []
         for inv in loop_result.tool_invocations:

@@ -50,10 +50,12 @@ import structlog
 import typer
 from pydantic import ValidationError
 
-from hostlens.core.config import load_settings
+from hostlens.agent.planner import PlannerResult
+from hostlens.cli._intent import RichLiveObserver, build_planner, render_planner_result
+from hostlens.core.config import Settings, load_settings
 from hostlens.core.exceptions import ConfigError, InspectorError, TargetError
 from hostlens.core.logging import configure_logging
-from hostlens.inspectors.registry import build_registry_from_search_paths
+from hostlens.inspectors.registry import InspectorRegistry, build_registry_from_search_paths
 from hostlens.inspectors.result import InspectorResult
 from hostlens.inspectors.runner import InspectorRunner
 from hostlens.inspectors.schema import CollectSpec, InspectorManifest
@@ -464,6 +466,128 @@ def _emit_output(rendered: str, output: str | None) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Intent (Planner Agent) path
+# --------------------------------------------------------------------------- #
+
+
+def _load_inspector_registry(settings: Settings) -> InspectorRegistry:
+    """Assemble the InspectorRegistry for the Planner Agent's tool context.
+
+    Per-file load errors are surfaced by ``hostlens inspectors list`` /
+    ``doctor``; here a registry-level ``InspectorError`` is a usage/config
+    failure (exit 3) with a single stderr line.
+    """
+
+    try:
+        result = build_registry_from_search_paths(
+            settings.inspectors_search_paths,
+            settings=settings,
+        )
+    except InspectorError as exc:
+        typer.echo(f"hostlens inspect: inspector registry error: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    return result.registry
+
+
+def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
+    """Assemble + run the Planner Agent for ``--intent`` (design D-5/D-6).
+
+    Live progress (the ``RichLiveObserver``) streams to stderr; the rendered
+    report goes to stdout (or ``--output``). The structlog reconfiguration is
+    done inside the same restored-config guard as the ``--inspector`` path (the
+    caller's ``try/finally`` in ``inspect_cmd``).
+
+    Exit code (design D-6, priority 3>2>1>0):
+      0 ok + no critical finding / 1 ok + ≥1 critical finding /
+      2 terminal_status != ok (degraded / failed / empty) /
+      3 backend not configured (ConfigError) / --output write failure.
+    """
+
+    # The whole body runs inside one boundary try so the assembly phase
+    # (load_settings / inspector registry load / build_planner) can never leak
+    # a Python traceback past the CLI surface — only build_planner's ConfigError
+    # has a more specific (doctor-pointing) message, kept as an inner handler.
+    try:
+        settings = load_settings()
+        configure_logging(settings.log_mode)
+        _redirect_structlog_to_stderr()
+        logger = structlog.get_logger(__name__)
+
+        target_registry = _load_target_registry()
+        # Resolve target up front so an unknown target fails fast (exit 3) before
+        # any backend / Agent assembly.
+        _resolve_target(target_registry, target)
+        inspector_registry = _load_inspector_registry(settings)
+
+        try:
+            planner = build_planner(settings, target_registry, inspector_registry, logger)
+        except ConfigError as exc:
+            # Backend not configured (e.g. missing ANTHROPIC_API_KEY). Point the
+            # operator at the doctor diagnostic; never leak a traceback.
+            typer.echo(
+                f"hostlens inspect: backend not configured ({exc}); run 'hostlens doctor'",
+                err=True,
+            )
+            raise typer.Exit(code=3) from exc
+
+        observer = RichLiveObserver()
+        try:
+            result = asyncio.run(planner.run(intent, observer=observer))
+        finally:
+            # fail-loud loop paths don't emit RunFinalized, so close the Live
+            # region here regardless of success / degrade / raise.
+            observer.close()
+
+        rendered = render_planner_result(result, fmt)
+        _emit_output(rendered, output)
+
+        exit_code = _compute_intent_exit_code(result)
+        if exit_code != 0:
+            if exit_code == 2:
+                typer.echo(
+                    f"hostlens inspect: degraded run (terminal_status="
+                    f"{result.loop_result.terminal_status})",
+                    err=True,
+                )
+            raise typer.Exit(code=exit_code)
+    except typer.Exit:
+        # Re-raise verbatim so the explicit exit codes set above and inside
+        # _resolve_target / _emit_output / build_planner drive the exit status.
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+        typer.echo("internal: cancelled: intent run interrupted", err=True)
+        raise typer.Exit(code=2) from exc
+    except ConfigError as exc:
+        # Configuration errors from load_settings / inspector registry / planner
+        # prompt loading (build_planner's backend-config ConfigError is handled
+        # by the more specific inner branch above and re-raised as typer.Exit).
+        typer.echo(f"hostlens inspect: configuration error ({exc})", err=True)
+        raise typer.Exit(code=3) from exc
+    except Exception as exc:
+        # CLI boundary: any unexpected error (incl. non-retriable backend
+        # errors passed through from the loop, e.g. CassetteMiss) becomes one
+        # ``internal: <kind>: <msg>`` line — never a Python traceback.
+        kind = type(exc).__name__
+        typer.echo(f"internal: {kind}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def _compute_intent_exit_code(result: PlannerResult) -> int:
+    """Map ``PlannerResult`` to the closed 4-value exit set (design D-6).
+
+    ``ok`` + no critical → 0; ``ok`` + ≥1 critical finding → 1; any non-``ok``
+    terminal_status (degraded / failed / empty) → 2. Exit 3 is owned by the
+    caller paths (mutual-exclusion / backend config / --output write).
+    """
+
+    if result.loop_result.terminal_status != "ok":
+        return 2
+    if any(f.severity == "critical" for f in result.findings):
+        return 1
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Typer command
 # --------------------------------------------------------------------------- #
 
@@ -473,11 +597,17 @@ def inspect_cmd(
         ...,
         help="Target name (from `hostlens target list`).",
     ),
-    inspector: str = typer.Option(
-        ...,
+    inspector: str | None = typer.Option(
+        None,
         "--inspector",
         "-i",
-        help="Inspector name (from `hostlens inspectors list`).",
+        help="Inspector name (from `hostlens inspectors list`). Mutually exclusive with --intent.",
+    ),
+    intent: str | None = typer.Option(
+        None,
+        "--intent",
+        help="Natural-language inspection intent (drives the Planner Agent). "
+        "Mutually exclusive with --inspector.",
     ),
     output: str | None = typer.Option(
         None,
@@ -535,6 +665,34 @@ def inspect_cmd(
 
     saved_structlog_config = structlog.get_config()
     try:
+        # ---- 0a. --inspector / --intent mutual exclusion (design D-4) --- #
+        # Exactly one must be provided. Both-missing / both-set are usage
+        # errors (exit 3) raised explicitly here — not via Click usage
+        # rewriting — with a single stderr line and no traceback.
+        if inspector is None and intent is None:
+            typer.echo(
+                "hostlens inspect: must provide exactly one of --inspector or --intent",
+                err=True,
+            )
+            raise typer.Exit(code=3)
+        if inspector is not None and intent is not None:
+            typer.echo(
+                "hostlens inspect: --inspector and --intent are mutually exclusive", err=True
+            )
+            raise typer.Exit(code=3)
+
+        if intent is not None:
+            # --timeout only applies to the --inspector path (it overrides the
+            # manifest collect timeout); the Agent's tool timeouts are fixed by
+            # ToolSpec, so we ignore it here and warn (design D-6) — not error.
+            if timeout is not None:
+                typer.echo(
+                    "hostlens inspect: --timeout has no effect with --intent; ignored",
+                    err=True,
+                )
+            _run_intent(target, intent, fmt, output)
+            return
+
         # ---- 0. Validate / parse parameters at the CLI boundary --------- #
         # ``--format`` Choice rejection lands as a Typer UsageError handled
         # by the click-UsageError wrapper in __init__.py; we still defend
@@ -547,6 +705,9 @@ def inspect_cmd(
         parsed_parameters = _parse_parameters_option(parameters)
 
         # ---- 1. Resolve target + inspector ------------------------------ #
+        # The 0a mutual-exclusion gate guarantees inspector is set on this path
+        # (the intent branch returned above).
+        assert inspector is not None
         target_registry = _load_target_registry()
         target_obj = _resolve_target(target_registry, target)
         manifest = _resolve_inspector(inspector)
