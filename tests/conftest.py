@@ -245,5 +245,14 @@ def llm_cassette(request: pytest.FixtureRequest) -> Iterator[Callable[..., LLMBa
     # idempotent and also no-ops on poisoned/empty recordings.
     call_rep = getattr(request.node, "_hostlens_rep_call", None)
     test_passed = call_rep is not None and call_rep.passed
+    # Flush EVERY recorder even if one raises (e.g. an os.replace failure):
+    # a bare loop would stop at the first exception and leak the remaining
+    # recorders' active paths (Copilot: teardown loop stops on first raise).
+    errors: list[BaseException] = []
     for recorder in recorders:
-        recorder.flush(persist=test_passed)  # type: ignore[attr-defined]
+        try:
+            recorder.flush(persist=test_passed)  # type: ignore[attr-defined]
+        except BaseException as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]

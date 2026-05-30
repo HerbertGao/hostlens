@@ -357,6 +357,24 @@ async def test_flush_persist_false_does_not_write(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_error_poisons_recorder(tmp_path: Path) -> None:
+    """Review ("snapshot errors skip poison"): a request-snapshot serialization
+    failure (non-JSON-serializable messages) must poison the recorder so a later
+    flush writes nothing — not silently leave it persistable."""
+    cassette = tmp_path / "scenario.jsonl"
+    backend = _recorder(cassette, [_response("inner ok")])
+
+    # The inner call succeeds; ``json.dumps(messages)`` for the snapshot then
+    # raises because ``object()`` is not serializable.
+    with pytest.raises(TypeError):
+        await _call(backend, messages=[{"role": "user", "content": object()}])
+
+    backend.flush()
+    assert not cassette.exists()
+    assert cassette not in _ACTIVE_CASSETTE_PATHS
+
+
+@pytest.mark.asyncio
 async def test_write_failure_keeps_records_retryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

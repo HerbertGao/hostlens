@@ -133,27 +133,30 @@ class RecordingBackend:
             self._poisoned = True
             raise
 
-        # Project the request to the same canonical subset the keying helper
-        # hashes; this is exactly what gets written to the cassette and what
-        # ``PlaybackBackend`` reads back, so it is the surface to gate.
-        #
-        # ``messages`` is snapshot via a JSON round-trip: the Agent loop reuses
-        # and mutates a single ``messages`` list in place across turns (and
-        # injects rolling ``cache_control`` into per-turn copies), so storing
-        # the live reference would leave every record pointing at the final
-        # mutated list — replay would then ``CassetteMiss`` even though each
-        # turn was recorded. The deep copy also makes the stored shape identical
-        # to what ``PlaybackBackend`` re-deserializes from the file.
-        messages_snapshot: list[dict[str, Any]] = json.loads(
-            json.dumps(messages, ensure_ascii=False)
-        )
-        canonical_request: dict[str, Any] = {
-            "model": model,
-            "messages": messages_snapshot,
-            "tools_count": len(tools),
-        }
-
+        # Everything from snapshotting the request through the sensitive-content
+        # gate runs inside one try that poisons on ANY failure — a snapshot
+        # serialization error must poison too, otherwise teardown could later
+        # persist an inconsistent scenario (review: "snapshot errors skip poison").
         try:
+            # Project the request to the same canonical subset the keying helper
+            # hashes; this is exactly what gets written to the cassette and what
+            # ``PlaybackBackend`` reads back, so it is the surface to gate.
+            #
+            # ``messages`` is snapshot via a JSON round-trip: the Agent loop
+            # reuses and mutates a single ``messages`` list in place across turns
+            # (and injects rolling ``cache_control`` into per-turn copies), so
+            # storing the live reference would leave every record pointing at the
+            # final mutated list — replay would then ``CassetteMiss`` even though
+            # each turn was recorded. The deep copy also makes the stored shape
+            # identical to what ``PlaybackBackend`` re-deserializes from the file.
+            messages_snapshot: list[dict[str, Any]] = json.loads(
+                json.dumps(messages, ensure_ascii=False)
+            )
+            canonical_request: dict[str, Any] = {
+                "model": model,
+                "messages": messages_snapshot,
+                "tools_count": len(tools),
+            }
             request_text = json.dumps(canonical_request, sort_keys=True, ensure_ascii=False)
             response_text = response.model_dump_json()
             # Detect-and-reject gate over BOTH sides: a synthetic ``tool_result``
@@ -168,8 +171,8 @@ class RecordingBackend:
             if response_hit is not None:
                 raise SensitiveCassetteContentError(rule_name=response_hit, side="response")
         except BaseException:
-            # A gate hit (or any serialization failure) poisons the recorder
-            # and the offending record is NOT accumulated and NOT written.
+            # A gate hit (or any snapshot/serialization failure) poisons the
+            # recorder; the offending record is NOT accumulated and NOT written.
             self._poisoned = True
             raise
 

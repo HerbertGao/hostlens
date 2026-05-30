@@ -258,31 +258,46 @@ async def regenerate_committed_cassette(*, cassette_path: Path | None = None) ->
     scenarios that need genuine Claude behaviour (M2.8+).
     """
 
-    from support.cassette_recording import _ACTIVE_CASSETTE_PATHS, RecordingBackend
+    from support.cassette_recording import RecordingBackend
 
     out_path = cassette_path or COMMITTED_CASSETTE_PATH
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # The duplicate-active-path guard is process-wide; clear so a leaked entry
-    # from a prior in-process run does not trip construction here.
-    _ACTIVE_CASSETTE_PATHS.discard(out_path)
-
+    # No pre-emptive ``_ACTIVE_CASSETTE_PATHS.discard``: clearing the registry
+    # would mask a genuine concurrent recorder on the same path (review:
+    # "discard breaks path guard"). The try/finally below always releases the
+    # path, so this function never leaves a stale entry of its own.
     recorder = RecordingBackend(
         cassette_path=out_path,
         inner=cast("Any", scenario_fake_backend()),
     )
-    target_registry = scenario_target_registry()
-    planner = PlannerAgent(
-        cast("LLMBackend", recorder),
-        scenario_tool_registry(),
-        scenario_settings(),
-        scenario_context_factory(target_registry),
-    )
-    await planner.run(SCENARIO_INTENT)
+    try:
+        planner = PlannerAgent(
+            cast("LLMBackend", recorder),
+            scenario_tool_registry(),
+            scenario_settings(),
+            scenario_context_factory(scenario_target_registry()),
+        )
+        await planner.run(SCENARIO_INTENT)
+    except BaseException:
+        # On failure, do NOT persist a partial/broken committed cassette; just
+        # release the active path (flush no-ops when persist=False) (review:
+        # "regenerate leaks active path").
+        recorder.flush(persist=False)
+        raise
     recorder.flush()
     return out_path
 
 
 if __name__ == "__main__":
+    import sys
+
+    # Run as ``python -m tests.agent._scenario`` (module mode is required — the
+    # module-level ``from ._helpers import`` needs package context). That puts
+    # the repo root on ``sys.path`` but NOT ``tests/``, so the deferred
+    # ``from support...`` import in ``regenerate_committed_cassette`` would fail;
+    # add ``tests/`` here. Under pytest the runner already places ``tests/`` on
+    # the path, so this block never runs.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     path = asyncio.run(regenerate_committed_cassette())
     print(f"wrote {path}")
