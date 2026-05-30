@@ -578,7 +578,18 @@ class InspectorRunner:
         window = manifest.collect.sampling_window
         if window is None:
             return {}
-        window_end = self._clock()
+        # The spec promises UTC window strings, but the injected ``clock()``
+        # may return an aware non-UTC datetime or a naive one. Normalize so
+        # the formatted strings are always the same UTC wall-clock regardless
+        # of the clock's tzinfo — otherwise an injected non-UTC clock would
+        # produce wrong windows and break replay fixture stability.
+        raw_end = self._clock()
+        if raw_end.tzinfo is None:
+            # Naive datetimes are interpreted as UTC (the documented contract
+            # for the default clock); attach UTC rather than guess local time.
+            window_end = raw_end.replace(tzinfo=UTC)
+        else:
+            window_end = raw_end.astimezone(UTC)
         window_start = window_end - timedelta(seconds=window.duration_seconds)
         fmt = "%Y-%m-%d %H:%M:%S"
         return {
