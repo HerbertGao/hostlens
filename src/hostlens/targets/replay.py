@@ -157,9 +157,24 @@ class ReplayTarget:
                 ) from exc
         self.capabilities: set[Capability] = caps
 
-        self._commands: dict[str, _RecordedCommand] = {
-            _command_key(entry.cmd): entry for entry in data.commands
-        }
+        # Build the command index one entry at a time so a duplicate match key
+        # (identical ``cmd`` strings, or commands differing only by trailing
+        # per-line whitespace) is a hard fixture-authoring error rather than a
+        # silent last-writer-wins overwrite. Silent overwrite would let
+        # ReplayTarget return the wrong recorded result and defeat the
+        # loud-failure contract this whole target exists to provide.
+        self._commands: dict[str, _RecordedCommand] = {}
+        for entry in data.commands:
+            key = _command_key(entry.cmd)
+            if key in self._commands:
+                raise ConfigError(
+                    "duplicate command in ReplayTarget fixture",
+                    kind="replay_fixture_duplicate_command",
+                    target=name,
+                    fixture=str(path),
+                    command=entry.cmd,
+                )
+            self._commands[key] = entry
         self._files: dict[str, str] = dict(data.files)
 
         # Every exec/read_file miss is appended here (even when the call also
