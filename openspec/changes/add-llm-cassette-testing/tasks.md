@@ -38,8 +38,8 @@
 - [x] 6.1 搭一个**字节稳定**的合成多轮 scenario fixture：`target_registry` 含一个 local target 且其 `TargetEntry.tags` 带 `"cassette-synthetic"`（使 record 模式 guard 放行）+ 合成 inspector_registry，让 Planner 走 ≥2 轮 tool-use；合成 tool_result 冻结时钟/UUID/用户名/路径（参考 `tests/integration/test_tool_registry_demo_path.py` 的 stub 装配）
 - [x] 6.2 写 `tests/agent/test_planner_replay.py`：用 `llm_cassette("planner_health_check", target_registry=<6.1 的合成 registry>)` 注入 backend 跑 Planner（**record 模式下 fixture 据此 registry 过 guard、replay 模式忽略 registry**），断言报告结构稳定；replay 消费 `tests/fixtures/cassettes/planner_health_check.jsonl`
 - [x] 6.3 写往返确定性测试（覆盖 spec §需求:合成 fixture 必须字节稳定，record→replay 往返不得 miss §场景）：用 monkeypatch 的 inner（FakeBackend 固定响应）走 record 写临时 cassette，再 replay 同 scenario，断言无 `CassetteMiss`；验收：测试 pass（不需真 API）
-- [ ] 6.4 用 record 模式录制正式 cassette（本地，需 API key）：`HOSTLENS_LLM_MODE=record ANTHROPIC_API_KEY=... pytest tests/agent/test_planner_replay.py`（该测试体已通过 6.2 传入带 `cassette-synthetic` 标记的合成 registry，故 record 模式 guard 放行、不缺 registry）；录后 `python scripts/cassette_lint.py` exit 0（证明录完即过 lint）；commit cassette 文件
-- [ ] 6.5 验收闭环：默认 `pytest tests/agent/test_planner_replay.py` 在无 API key 下 replay 通过；若 Planner 多轮 fixture 成本过高，按 design Open Question 降级单轮示范并在 PR 说明（M2.8 补多轮）
+- [x] 6.4 合成 scenario 用脚本化 backend 确定性生成 committed cassette（无需真 API）：`_scenario.regenerate_committed_cassette`（`python -m tests.agent._scenario`）经 `RecordingBackend` 包裹脚本化 `scenario_fake_backend` 跑 Planner，flush 到 `tests/fixtures/cassettes/planner_health_check.jsonl`（合成 scenario 按 D-1 只能用合成 target，真 Claude 非确定会破坏结构断言）；生成后 `python scripts/cassette_lint.py` exit 0；commit cassette 文件。真 API 录制路径（`HOSTLENS_LLM_MODE=record`）保留给 M2.8 等需真实 Claude 行为的场景
+- [x] 6.5 验收闭环：默认 `pytest tests/agent/test_planner_replay.py` 在无 API key 下 replay RUN + PASS（不再 skip）；多轮（2 tool-use + end_turn = 3 record）已落地，无需降级单轮
 
 ## 7. 文档
 

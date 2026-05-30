@@ -1,28 +1,23 @@
 """Replay-mode Planner test over the committed ``planner_health_check`` cassette.
 
-Task 6.2: drive ``PlannerAgent`` with a backend obtained from the
-``llm_cassette`` fixture and assert the condensed ``PlannerResult`` is stable.
+Task 6.2 / 6.5: drive ``PlannerAgent`` with a backend obtained from the
+``llm_cassette`` fixture (replay mode) over the committed cassette and assert
+the condensed ``PlannerResult`` is stable.
 
-The formal cassette must be recorded against the real Anthropic API (task 6.4,
-a manual / paid step done outside this change). Until that file exists this
-test **cleanly skips** rather than fails — so CI is green now and the test
-auto-activates the moment the cassette lands. To record it:
-
-    HOSTLENS_LLM_MODE=record ANTHROPIC_API_KEY=... \
-        pytest tests/agent/test_planner_replay.py
-
-(in record mode the byte-stable synthetic ``target_registry`` from
-``_scenario`` passes ``guard_record_targets``, so recording is allowed.)
+The committed cassette ``tests/fixtures/cassettes/planner_health_check.jsonl``
+is **not** a real-Claude recording — it is generated deterministically from the
+scripted synthetic ``scenario_fake_backend`` via
+``_scenario.regenerate_committed_cassette`` (run
+``python -m tests.agent._scenario`` to rebuild it after the scenario changes).
+Because the scenario is byte-stable, replay always hits — this test RUNS and
+PASSES in the CI default (replay) mode with no ``ANTHROPIC_API_KEY``.
 
 ``asyncio_mode = "auto"`` (pyproject) — no ``@pytest.mark.asyncio`` needed.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
-
-import pytest
 
 from hostlens.agent.planner import PlannerAgent, PlannerResult
 
@@ -40,22 +35,10 @@ if TYPE_CHECKING:
 
     from hostlens.agent.backend import LLMBackend
 
-# Path of the committed cassette this test replays (recorded by task 6.4).
-_CASSETTE_PATH = Path(__file__).parent.parent / "fixtures" / "cassettes" / f"{CASSETTE_NAME}.jsonl"
-
 
 async def test_planner_replay_structure_stable(
     llm_cassette: Callable[..., LLMBackend],
 ) -> None:
-    # The formal cassette needs a real-API recording (task 6.4, manual). When
-    # absent, skip cleanly so CI stays green; once committed the test replays.
-    if not _CASSETTE_PATH.exists():
-        pytest.skip(
-            f"cassette {_CASSETTE_PATH.name} not yet recorded; record it with "
-            "HOSTLENS_LLM_MODE=record ANTHROPIC_API_KEY=... "
-            "pytest tests/agent/test_planner_replay.py"
-        )
-
     registry = scenario_tool_registry()
     target_registry = scenario_target_registry()
 

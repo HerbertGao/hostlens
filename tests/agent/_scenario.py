@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -33,6 +34,7 @@ from hostlens.agent.backend import (
     Usage,
 )
 from hostlens.agent.backends.fake import FakeBackend
+from hostlens.agent.planner import PlannerAgent
 from hostlens.core.config import AgentSettings, Settings
 from hostlens.reporting.models import Finding
 from hostlens.targets.config import LocalEntry, TargetsConfig
@@ -44,9 +46,14 @@ from hostlens.tools.schemas.run_inspector import RunInspectorInput, RunInspector
 
 from ._helpers import StubInspectorRegistry
 
+if TYPE_CHECKING:
+    from hostlens.agent.backend import LLMBackend
+
 __all__ = [
     "CASSETTE_NAME",
+    "COMMITTED_CASSETTE_PATH",
     "SCENARIO_INTENT",
+    "regenerate_committed_cassette",
     "scenario_context_factory",
     "scenario_fake_backend",
     "scenario_settings",
@@ -58,6 +65,12 @@ __all__ = [
 # ``llm_cassette(CASSETTE_NAME, ...)`` maps this to
 # ``tests/fixtures/cassettes/planner_health_check.jsonl``.
 CASSETTE_NAME = "planner_health_check"
+
+# Absolute path of the committed cassette ``regenerate_committed_cassette``
+# writes and ``test_planner_replay.py`` replays.
+COMMITTED_CASSETTE_PATH = (
+    Path(__file__).parent.parent / "fixtures" / "cassettes" / f"{CASSETTE_NAME}.jsonl"
+)
 
 # Frozen intent string — part of the turn-1 ``messages`` and therefore part of
 # the request key, so it MUST be a fixed literal.
@@ -225,3 +238,51 @@ def scenario_fake_backend() -> FakeBackend:
             ),
         ]
     )
+
+
+async def regenerate_committed_cassette(*, cassette_path: Path | None = None) -> Path:
+    """Deterministically (re)generate the committed ``planner_health_check`` cassette.
+
+    Drives ``PlannerAgent`` over the *scripted* ``scenario_fake_backend`` (not the
+    real Anthropic API) through a ``RecordingBackend``, then flushes the captured
+    ``(request, response)`` pairs to ``cassette_path`` (default
+    ``COMMITTED_CASSETTE_PATH``). The synthetic scenario is byte-stable, so the
+    written request-keys match exactly what ``test_planner_replay.py`` re-sends at
+    replay time — every replay turn hits, never a ``CassetteMiss``.
+
+    The resulting cassette is therefore **not** a real-Claude recording: it is a
+    confined synthetic fixture generated from a fixed ``FakeBackend`` script.
+    Re-run this whenever the scenario script changes (e.g.
+    ``python -m tests.agent._scenario``) and re-commit the file. The real-API
+    record path (``HOSTLENS_LLM_MODE=record``) stays reserved for future
+    scenarios that need genuine Claude behaviour (M2.8+).
+    """
+
+    from tests.support.cassette_recording import _ACTIVE_CASSETTE_PATHS, RecordingBackend
+
+    out_path = cassette_path or COMMITTED_CASSETTE_PATH
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # The duplicate-active-path guard is process-wide; clear so a leaked entry
+    # from a prior in-process run does not trip construction here.
+    _ACTIVE_CASSETTE_PATHS.discard(out_path)
+
+    recorder = RecordingBackend(
+        cassette_path=out_path,
+        inner=cast("Any", scenario_fake_backend()),
+    )
+    target_registry = scenario_target_registry()
+    planner = PlannerAgent(
+        cast("LLMBackend", recorder),
+        scenario_tool_registry(),
+        scenario_settings(),
+        scenario_context_factory(target_registry),
+    )
+    await planner.run(SCENARIO_INTENT)
+    recorder.flush()
+    return out_path
+
+
+if __name__ == "__main__":
+    path = asyncio.run(regenerate_committed_cassette())
+    print(f"wrote {path}")
