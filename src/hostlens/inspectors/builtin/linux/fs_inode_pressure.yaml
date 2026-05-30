@@ -1,0 +1,46 @@
+name: linux.fs.inode_pressure
+version: 1.0.0
+description: Report per-mount inode usage percentage to detect inode exhaustion.
+tags: [disk, filesystem, inode, linux]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [df, tr]
+privilege: none
+
+collect:
+  # `df -i` reports inode counts; --output=source,ipcent,target locks the
+  # column order. Strip the '%' so iuse_pct is a bare number for float().
+  command: |
+    df -P -i -x tmpfs -x devtmpfs --output=source,ipcent,target 2>/dev/null \
+      | tail -n +2 | tr -d '%'
+  timeout_seconds: 10
+
+parse:
+  format: table
+  columns: [source, iuse_pct, mount]
+  skip_header_rows: 0
+
+output_schema:
+  type: object
+  properties:
+    rows:
+      type: array
+      items:
+        type: object
+        properties:
+          source:   { type: string }
+          iuse_pct: { type: string }
+          mount:    { type: string }
+  additionalProperties: false
+
+findings:
+  # `when` uses attribute access (resolves dict keys via simpleeval); the
+  # message uses subscript form so str.format reads dict keys correctly.
+  - for_each: "rows as fs"
+    when: "fs.iuse_pct != '-' and float(fs.iuse_pct) >= 95.0"
+    severity: critical
+    message: "Filesystem {fs[mount]} ({fs[source]}) inode usage {fs[iuse_pct]}%"
+  - for_each: "rows as fs"
+    when: "fs.iuse_pct != '-' and float(fs.iuse_pct) >= 85.0 and float(fs.iuse_pct) < 95.0"
+    severity: warning
+    message: "Filesystem {fs[mount]} ({fs[source]}) inode usage high at {fs[iuse_pct]}%"

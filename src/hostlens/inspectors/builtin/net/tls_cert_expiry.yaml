@@ -1,0 +1,68 @@
+name: net.tls.cert_expiry
+version: 1.0.0
+description: Check TLS certificate expiry for configured endpoints.
+tags: [network, security, tls]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [openssl]
+
+parameters:
+  type: object
+  required: [endpoints]
+  properties:
+    endpoints:
+      type: array
+      items: { type: string, pattern: "^[a-zA-Z0-9.-]+:[0-9]+$" }   # pattern blocks shell injection
+    warn_days:     { type: integer, default: 30 }
+    critical_days: { type: integer, default: 7 }
+
+collect:
+  # days_until_expiry is computed in shell (GNU `date -d`, Linux-only) and
+  # emitted as JSON so the DSL only compares an integer. The output array
+  # key is `results` (NOT `endpoints`) so it never collides with the
+  # `endpoints` parameter in the merged Finding DSL context — a same-named
+  # output key would be shadowed by the parameter (a list of host:port
+  # strings) and the `for_each` would iterate strings, not result dicts.
+  # Each endpoint flows through `| map('sh')` (shlex.quote). The empty case
+  # prints {"results":[]} (trap b).
+  command: |
+    printf '{"results":['
+    sep=""
+    for ep in {{ endpoints | map('sh') | join(' ') }}; do
+      host=${ep%%:*}
+      end=$(echo | openssl s_client -servername "$host" -connect "$ep" 2>/dev/null \
+            | openssl x509 -noout -enddate | cut -d= -f2)
+      days=$(( ( $(date -u -d "$end" +%s) - $(date -u +%s) ) / 86400 ))
+      printf '%s{"endpoint":"%s","days_until_expiry":%d}' "$sep" "$ep" "$days"
+      sep=","
+    done
+    printf ']}'
+  timeout_seconds: 30
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          endpoint:          { type: string }
+          days_until_expiry: { type: integer }
+  required: [results]
+  additionalProperties: false
+
+findings:
+  # `when` uses attribute access (resolves dict keys via simpleeval); the
+  # message uses subscript form so str.format reads dict keys correctly.
+  - for_each: "results as e"
+    when: "e.days_until_expiry <= critical_days"
+    severity: critical
+    message: "TLS cert for {e[endpoint]} expires in {e[days_until_expiry]} days"
+  - for_each: "results as e"
+    when: "e.days_until_expiry <= warn_days and e.days_until_expiry > critical_days"
+    severity: warning
+    message: "TLS cert for {e[endpoint]} expires soon ({e[days_until_expiry]} days)"

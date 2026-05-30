@@ -1,0 +1,37 @@
+name: linux.system.load_avg
+version: 1.0.0
+description: Compare 1-minute load average against CPU count to detect CPU saturation.
+tags: [cpu, linux, performance]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [awk, nproc]
+privilege: none
+
+collect:
+  # Emit kv lines so parse_kv yields {load1, load5, load15, ncpu}; nproc
+  # gives the core count so the DSL can compute load-per-core. All values
+  # land as strings (parse_kv returns str) — DSL casts with float()/int().
+  command: |
+    read -r l1 l5 l15 _ < /proc/loadavg
+    printf 'load1=%s\nload5=%s\nload15=%s\nncpu=%s\n' "$l1" "$l5" "$l15" "$(nproc)"
+  timeout_seconds: 10
+
+parse:
+  format: kv
+
+output_schema:
+  type: object
+  properties:
+    load1: { type: string }
+    load5: { type: string }
+    load15: { type: string }
+    ncpu:  { type: string }
+  additionalProperties: false
+
+findings:
+  - when: "load1 and ncpu and int(ncpu) > 0 and float(load1) / int(ncpu) >= 2.0"
+    severity: critical
+    message: "1-min load {load1} is >= 2x the {ncpu} available cores"
+  - when: "load1 and ncpu and int(ncpu) > 0 and float(load1) / int(ncpu) >= 1.0 and float(load1) / int(ncpu) < 2.0"
+    severity: warning
+    message: "1-min load {load1} exceeds the {ncpu} available cores"

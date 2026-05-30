@@ -37,6 +37,7 @@ from hostlens.core.exceptions import ConfigError
 
 __all__ = [
     "LocalEntry",
+    "ReplayEntry",
     "SSHEntry",
     "TargetEntry",
     "TargetsConfig",
@@ -154,10 +155,26 @@ class SSHEntry(_CommonEntryFields):
         return self.__repr__()
 
 
-# Discriminator on ``type`` so Pydantic routes ``type: local`` → LocalEntry
-# and ``type: ssh`` → SSHEntry without us writing manual ``model_validate``
-# branches. Unknown ``type`` values raise ``ValidationError`` automatically.
-TargetEntry = Annotated[LocalEntry | SSHEntry, Field(discriminator="type")]
+class ReplayEntry(_CommonEntryFields):
+    """``type: replay`` target entry — drives a ``ReplayTarget`` (incident-pack).
+
+    The discriminator value ``replay`` selects ``ReplayTarget`` during
+    registry assembly. ``fixture`` points at the pre-recorded JSON fixture
+    (see ``ReplayTarget`` / design D1). This config-layer ``type: replay`` is
+    independent of the target's **runtime** ``.type`` (which impersonates the
+    fixture's ``local`` / ``ssh``). ReplayTarget is read-only, so this entry
+    has no secret fields and is not subject to the write-path EUID==0 guard.
+    """
+
+    type: Literal["replay"]
+    fixture: str
+
+
+# Discriminator on ``type`` so Pydantic routes ``type: local`` → LocalEntry,
+# ``type: ssh`` → SSHEntry, ``type: replay`` → ReplayEntry without manual
+# ``model_validate`` branches. Unknown ``type`` values raise ``ValidationError``
+# automatically.
+TargetEntry = Annotated[LocalEntry | SSHEntry | ReplayEntry, Field(discriminator="type")]
 
 
 class TargetsConfig(BaseModel):

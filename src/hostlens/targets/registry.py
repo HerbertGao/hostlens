@@ -164,6 +164,7 @@ def build_registry_from_config(
     # caller only needs ``TargetRegistry`` (the class itself is
     # platform-agnostic).
     from hostlens.targets.local import LocalTarget
+    from hostlens.targets.replay import ReplayTarget
     from hostlens.targets.ssh import SSHTarget
 
     # ``settings`` is threaded into SSHTarget via the private
@@ -186,6 +187,10 @@ def build_registry_from_config(
             target = cast("ExecutionTarget", LocalTarget(name=entry.name))
         elif entry.type == "ssh":
             target = cast("ExecutionTarget", SSHTarget(name=entry.name, _settings=settings))
+        elif entry.type == "replay":
+            # Read-only replay target (incident-pack). No secrets, no write
+            # path → not subject to the EUID==0 write guard.
+            target = cast("ExecutionTarget", ReplayTarget(name=entry.name, fixture=entry.fixture))
         else:  # pragma: no cover - Pydantic discriminator excludes other values
             raise ConfigError(
                 kind="unknown_target_type",

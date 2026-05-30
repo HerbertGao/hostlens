@@ -44,6 +44,7 @@ __all__ = [
     "ConfigError",
     "HostlensError",
     "InspectorError",
+    "ReplayMiss",
     "TargetError",
     "ToolError",
     "ToolPolicyViolation",
@@ -167,6 +168,37 @@ class ConfigError(HostlensError):
         return " ".join(parts)
 
 
+class ReplayMiss(HostlensError):  # noqa: N818 - spec mandates this exact name (no "Error" suffix)
+    """Raised when a ``ReplayTarget`` exec/read_file misses its fixture.
+
+    Spec: ``add-incident-pack/specs/replay-execution-target/spec.md``
+    §需求:回放命令匹配与未命中语义.
+
+    Inherits ``HostlensError`` and **deliberately NOT** ``TargetError``: a
+    fixture miss is an infra / programming error (the recorded fixture has
+    drifted from the Inspector commands), not a transport failure of a real
+    target. If it subclassed ``TargetError`` the runner's
+    ``except TargetError`` would map it to ``status="target_unreachable"`` —
+    silently swallowing command drift as a benign "target down" result and
+    destroying the loud-failure contract.
+
+    ``kind`` is one of ``"exec"`` / ``"read_file"`` (which call missed);
+    ``cmd`` carries the missed command / path. Both are recorded so callers
+    (and the ``__str__`` surface) can identify the drift. The fields come
+    from rendered Inspector commands (already sh-quoted by the manifest
+    renderer) — no secret values, since secrets travel via ``env`` which is
+    never part of the match key.
+    """
+
+    def __init__(self, *, kind: Literal["exec", "read_file"], cmd: str) -> None:
+        super().__init__(kind)
+        self.kind: Literal["exec", "read_file"] = kind
+        self.cmd: str = cmd
+
+    def __str__(self) -> str:
+        return f"ReplayMiss(kind={self.kind}, cmd={self.cmd!r})"
+
+
 class TargetError(HostlensError):
     """Raised on ExecutionTarget errors (used from M1+).
 
@@ -227,6 +259,7 @@ InspectorErrorKind = Literal[
     "command_template_invalid",
     "finding_when_invalid",
     "finding_message_invalid_aggregate_ref",
+    "parameter_reserved_window_name",
     "duplicate_inspector",
     "inspector_not_found",
     "parse_json_not_object",

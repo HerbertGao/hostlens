@@ -78,7 +78,9 @@ async def test_dispatch_list_inspectors_walks_full_handler_path(
     assert isinstance(result, dict)
     assert "inspectors" in result
     assert isinstance(result["inspectors"], list)
-    # The default real `InspectorRegistry` ships two M1 builtins —
-    # confirming the handler surfaces them as a non-empty list.
+    # The default real `InspectorRegistry` ships the two M1 builtins plus
+    # the M2.8 incident-pack — confirming the handler surfaces them as a
+    # non-empty, name-sorted list.
     names = [entry["name"] for entry in result["inspectors"]]
-    assert names == ["hello.echo", "system.uptime"]
+    assert {"hello.echo", "system.uptime"} <= set(names)
+    assert names == sorted(names)

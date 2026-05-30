@@ -96,7 +96,7 @@ class TargetHealth(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    type: Literal["local", "ssh"]
+    type: Literal["local", "ssh", "replay"]
     enabled: bool
     connectivity: TargetConnectivity
     credential_source: TargetCredentialSource

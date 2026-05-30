@@ -35,6 +35,8 @@ import json
 import os
 import shlex
 import time
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import jinja2
@@ -106,10 +108,17 @@ class InspectorRunner:
         *,
         settings: Settings,
         logger: structlog.stdlib.BoundLogger,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._target_registry = target_registry
         self._settings = settings
         self._logger = logger
+        # Injectable clock — defaults to real UTC. Tests / replay inject a
+        # frozen clock so that `sampling_window` rendered commands are
+        # byte-stable across runs (ReplayTarget matches the exact rendered
+        # string; a drifting `now` would never hit). Existing callers that
+        # do not pass `clock` keep the previous behaviour unchanged.
+        self._clock = clock
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -271,8 +280,18 @@ class InspectorRunner:
                     ),
                 )
 
+        # ---- sampling_window injection (when declared) ---------------- #
+        #
+        # Computed once here so the same window variables flow into BOTH the
+        # Jinja2 command-render context and the Finding DSL eval context.
+        # When `sampling_window` is omitted the dict is empty and neither
+        # context changes — byte-identical to the pre-delta behaviour.
+        window_context = self._build_window_context(manifest)
+
         try:
-            cmd, secrets_env = await self._render_command(manifest, effective_parameters)
+            cmd, secrets_env = await self._render_command(
+                manifest, effective_parameters, window_context
+            )
         except (jinja2.UndefinedError, jinja2.TemplateError) as exc:
             return self._finish(
                 manifest=manifest,
@@ -414,7 +433,9 @@ class InspectorRunner:
 
         # ---- Step 11: evaluate findings ------------------------------ #
         _check_cancel(cancel)
-        findings = await self._evaluate_findings(manifest.findings, output, effective_parameters)
+        findings = await self._evaluate_findings(
+            manifest.findings, output, effective_parameters, window_context
+        )
 
         return self._finish(
             manifest=manifest,
@@ -542,10 +563,35 @@ class InspectorRunner:
 
         return "ok", [], None
 
+    def _build_window_context(self, manifest: InspectorManifest) -> dict[str, Any]:
+        """Return the `sampling_window` variables, or an empty dict.
+
+        When `collect.sampling_window` is declared, computes
+        ``window_end = clock()`` and ``window_start = window_end -
+        duration_seconds`` and returns the three reserved injection
+        variables. ``window_start`` / ``window_end`` are formatted as
+        ``YYYY-MM-DD HH:MM:SS`` UTC strings (journalctl ``--since/--until``
+        friendly, NOT the ``T``/offset-bearing ISO form). When the field is
+        omitted the dict is empty so neither downstream context is touched.
+        """
+
+        window = manifest.collect.sampling_window
+        if window is None:
+            return {}
+        window_end = self._clock()
+        window_start = window_end - timedelta(seconds=window.duration_seconds)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        return {
+            "window_start": window_start.strftime(fmt),
+            "window_end": window_end.strftime(fmt),
+            "window_seconds": window.duration_seconds,
+        }
+
     async def _render_command(
         self,
         manifest: InspectorManifest,
         parameters: dict[str, Any] | None,
+        window_context: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, str]]:
         """Render ``manifest.collect.command`` via Jinja2 and collect secrets env.
 
@@ -564,7 +610,7 @@ class InspectorRunner:
         )
         env.filters["sh"] = _sh_filter
         template = env.from_string(manifest.collect.command)
-        rendered = template.render(**(parameters or {}))
+        rendered = template.render(**(parameters or {}), **(window_context or {}))
 
         secrets_env: dict[str, str] = {name: os.environ[name] for name in manifest.secrets}
         return rendered, secrets_env
@@ -606,6 +652,7 @@ class InspectorRunner:
         findings: list[FindingRule],
         output: dict[str, Any],
         parameters: dict[str, Any] | None,
+        window_context: dict[str, Any] | None = None,
     ) -> list[Finding]:
         """Evaluate each FindingRule in manifest order.
 
@@ -616,7 +663,7 @@ class InspectorRunner:
         a runner bug.
         """
 
-        context: dict[str, Any] = {**output, **(parameters or {})}
+        context: dict[str, Any] = {**output, **(parameters or {}), **(window_context or {})}
         out: list[Finding] = []
 
         for index, rule in enumerate(findings):

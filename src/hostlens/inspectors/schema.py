@@ -36,6 +36,7 @@ __all__ = [
     "FindingRule",
     "InspectorManifest",
     "ParseSpec",
+    "SamplingWindow",
 ]
 
 
@@ -283,6 +284,24 @@ def _detect_redos_pattern(regex: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
+class SamplingWindow(BaseModel):
+    """Optional `collect.sampling_window` block.
+
+    Declaring it makes the runner compute a `[now-duration_seconds, now]`
+    UTC window and inject `window_start` / `window_end` (journalctl-friendly
+    `YYYY-MM-DD HH:MM:SS` strings) plus `window_seconds` (int) into both the
+    Jinja2 command-render context and the Finding DSL evaluation context.
+
+    `duration_seconds` is constrained `> 0` (not via prose) so a `0`/negative
+    value is rejected at load time — otherwise `window_start == window_end`,
+    which makes the rendered command meaningless for time-windowed probes.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    duration_seconds: int = Field(gt=0)
+
+
 class CollectSpec(BaseModel):
     """Command + timeout configuration block of an Inspector manifest."""
 
@@ -290,6 +309,10 @@ class CollectSpec(BaseModel):
 
     command: Annotated[str, Field(min_length=1)]
     timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 60
+    # Omitting `sampling_window` (None) keeps the pre-delta behaviour exactly:
+    # the runner injects no window variables and the render / DSL contexts are
+    # byte-identical to before this field existed.
+    sampling_window: SamplingWindow | None = None
 
 
 class ParseSpec(BaseModel):

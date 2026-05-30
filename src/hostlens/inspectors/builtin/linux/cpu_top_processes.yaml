@@ -1,0 +1,48 @@
+name: linux.cpu.top_processes
+version: 1.0.0
+description: List the top CPU-consuming processes to diagnose CPU saturation.
+tags: [cpu, linux, performance]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [ps]
+privilege: none
+
+collect:
+  # Fixed -o field list locks column order across locale / kernel versions
+  # (Risks: table parse column drift). `--sort=-pcpu` puts the hottest
+  # processes first; `head` caps the row count so the table stays small.
+  command: "ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -n 10"
+  timeout_seconds: 10
+
+parse:
+  format: table
+  columns: [pid, cpu_pct, mem_pct, comm]
+  skip_header_rows: 0
+
+output_schema:
+  type: object
+  properties:
+    rows:
+      type: array
+      items:
+        type: object
+        properties:
+          pid:     { type: string }
+          cpu_pct: { type: string }
+          mem_pct: { type: string }
+          comm:    { type: string }
+  additionalProperties: false
+
+findings:
+  # `when` uses simpleeval attribute access (`p.cpu_pct`), which resolves
+  # dict keys. The message uses subscript form (`{p[comm]}`) because
+  # Python str.format does getattr — not getitem — for the `.attr` form,
+  # which would fail on a parsed dict row.
+  - for_each: "rows as p"
+    when: "float(p.cpu_pct) >= 90.0"
+    severity: critical
+    message: "Process {p[comm]} (pid {p[pid]}) is using {p[cpu_pct]}% CPU"
+  - for_each: "rows as p"
+    when: "float(p.cpu_pct) >= 70.0 and float(p.cpu_pct) < 90.0"
+    severity: warning
+    message: "Process {p[comm]} (pid {p[pid]}) CPU usage elevated at {p[cpu_pct]}%"

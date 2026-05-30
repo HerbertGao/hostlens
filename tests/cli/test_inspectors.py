@@ -168,7 +168,10 @@ def test_list_json_schema_is_stable(
     assert result.exit_code == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert isinstance(payload, list)
-    assert [row["name"] for row in payload] == ["hello.echo", "system.uptime"]
+    # The two M1 builtins always ship; the M2.8 incident-pack adds more.
+    # Pin presence of the M1 pair rather than the exact list so this
+    # schema-stability test does not drift on every new builtin.
+    assert {"hello.echo", "system.uptime"} <= {row["name"] for row in payload}
     # Validate each row conforms to the locked Pydantic schema.
     for row in payload:
         InspectorSummary.model_validate(row)

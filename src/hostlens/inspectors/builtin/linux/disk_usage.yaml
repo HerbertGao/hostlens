@@ -1,0 +1,47 @@
+name: linux.disk.usage
+version: 1.0.0
+description: Report per-mount disk usage percentage to detect full filesystems.
+tags: [disk, filesystem, linux]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [df, tr]
+privilege: none
+
+collect:
+  # Fixed --output field list locks column order. `-P` (POSIX) + stripping
+  # the trailing '%' keeps use_pct a bare number for float() in the DSL.
+  # `-x tmpfs -x devtmpfs` drops virtual filesystems that always read 0%.
+  command: |
+    df -P -x tmpfs -x devtmpfs --output=source,pcent,target 2>/dev/null \
+      | tail -n +2 | tr -d '%'
+  timeout_seconds: 10
+
+parse:
+  format: table
+  columns: [source, use_pct, mount]
+  skip_header_rows: 0
+
+output_schema:
+  type: object
+  properties:
+    rows:
+      type: array
+      items:
+        type: object
+        properties:
+          source:  { type: string }
+          use_pct: { type: string }
+          mount:   { type: string }
+  additionalProperties: false
+
+findings:
+  # `when` uses attribute access (resolves dict keys via simpleeval); the
+  # message uses subscript form so str.format reads dict keys correctly.
+  - for_each: "rows as fs"
+    when: "float(fs.use_pct) >= 95.0"
+    severity: critical
+    message: "Filesystem {fs[mount]} ({fs[source]}) is {fs[use_pct]}% full"
+  - for_each: "rows as fs"
+    when: "float(fs.use_pct) >= 85.0 and float(fs.use_pct) < 95.0"
+    severity: warning
+    message: "Filesystem {fs[mount]} ({fs[source]}) usage high at {fs[use_pct]}%"

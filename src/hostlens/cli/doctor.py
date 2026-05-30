@@ -321,6 +321,24 @@ def _check_targets(settings: Settings) -> list[TargetHealth]:
                 )
             )
             continue
+        if entry.type == "replay":
+            # ReplayTarget is an offline fixture replayer — it has no live
+            # endpoint. The generic ``echo`` probe would miss the fixture and
+            # raise ``ReplayMiss``, falsely reporting the target as failed.
+            # Report it healthy without a probe (capabilities come straight
+            # from the fixture, no lazy probing needed).
+            rows.append(
+                TargetHealth(
+                    name=entry.name,
+                    type=entry.type,
+                    enabled=entry.enabled,
+                    connectivity="ok",
+                    credential_source=credential_source,
+                    capabilities=sorted(c.value for c in target.capabilities),
+                    error_kind=None,
+                )
+            )
+            continue
         enabled_entries.append((entry, target, credential_source))
 
     if enabled_entries:
