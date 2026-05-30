@@ -227,35 +227,35 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [x] 最大 turn 数兜底（默认 20）
   - [x] 在调 backend 前根据 `backend.capabilities.prompt_caching` 决定是否注入 `cache_control`
   - [x] **重要**：代码必须可读、注释 WHY，让面试官能快速读懂
-- [ ] **2.3 Tool Registry（双层 capability 模型；详见 CLAUDE.md §4.10）**
-  - [ ] `tools/base.py`：`ToolSpec`（含 surfaces / side_effects / requires_approval / permissions / sensitive_output / target_constraints / tags 等 policy 字段）+ `ToolContext`（依赖注入容器）
-  - [ ] `tools/registry.py`：`register` / `list_for(surface)` / `dispatch`；dispatch 前强制校验 surfaces 与 policy gate（surface 不匹配 → `ToolPolicyViolation`）
-  - [ ] `@tool` 装饰器：声明式注册；Anthropic / MCP JSON Schema **不**进 ToolSpec，由 adapter 在投影时从 Pydantic 生成
-  - [ ] `agent/tools_adapter.py`：把 `surfaces ∋ "agent"` 的 ToolSpec 投成 Anthropic `tool_use` schema（M2 仅此一个 adapter；MCP adapter 留到 M7）
-  - [ ] 首批注册的能力：`run_inspector` / `list_inspectors` / `list_targets`（**不含 `read_finding_detail`** —— 已归档 `add-tool-registry-capability-layer` design §选择 明确否决：M2 由 `run_inspector` 一次返回完整 finding 列表，跨 turn 引用 finding 推到 M3 报告持久化后再加）
-  - [ ] 验收：
-    - [ ] `surfaces={"mcp"}` only 的 ToolSpec 在 agent 上下文 dispatch 必须报 `ToolPolicyViolation`
-    - [ ] CLAUDE.md §4.10 的 6 条硬规则每条对应至少 1 个单测
-    - [ ] handler 必须从 `ctx` 拿 registry —— 用 mypy + 静态检查防止 module-level singleton
-- [ ] **2.4 Planner Agent（消费 ToolRegistry）**
-  - [ ] `agent/planner.py`：系统 prompt（含 ToolRegistry 概览）+ 通过 `agent/tools_adapter.py` 拿到工具列表
-  - [ ] **不**直接 import Inspector registry —— 所有能力通过 ToolRegistry dispatch
-  - [ ] **不暴露** `exec_arbitrary_command` —— 通过 `surfaces` + Inspector 限制能力面
-  - [ ] 提示词文件在 `agent/prompts/planner.md`（模板加载，不内联）
-- [ ] **2.5 Prompt caching 策略**
-  - [ ] 系统 prompt + Inspector registry 概览：`cache_control: ephemeral`
-  - [ ] 单测验证：第二次调用的 `cache_read_input_tokens > 0`
-  - [ ] 文档：`docs/agent-cache-strategy.md`（简短即可）
+- [x] **2.3 Tool Registry（双层 capability 模型；详见 CLAUDE.md §4.10）**（已交付，archived `add-tool-registry-capability-layer`）
+  - [x] `tools/base.py`：`ToolSpec`（含 surfaces / side_effects / requires_approval / permissions / sensitive_output / target_constraints / tags 等 policy 字段）+ `ToolContext`（依赖注入容器）
+  - [x] `tools/registry.py`：`register` / `list_for(surface)` / `dispatch`；dispatch 前强制校验 surfaces 与 policy gate（surface 不匹配 → `ToolPolicyViolation`）
+  - [x] `@tool` 装饰器：声明式注册；Anthropic / MCP JSON Schema **不**进 ToolSpec，由 adapter 在投影时从 Pydantic 生成
+  - [x] `agent/tools_adapter.py`：把 `surfaces ∋ "agent"` 的 ToolSpec 投成 Anthropic `tool_use` schema（M2 仅此一个 adapter；MCP adapter 留到 M7）
+  - [x] 首批注册的能力：`run_inspector` / `list_inspectors` / `list_targets`（**不含 `read_finding_detail`** —— 已归档 `add-tool-registry-capability-layer` design §选择 明确否决：M2 由 `run_inspector` 一次返回完整 finding 列表，跨 turn 引用 finding 推到 M3 报告持久化后再加）
+  - [x] 验收：
+    - [x] `surfaces={"mcp"}` only 的 ToolSpec 在 agent 上下文 dispatch 必须报 `ToolPolicyViolation`
+    - [x] CLAUDE.md §4.10 的 6 条硬规则每条对应至少 1 个单测
+    - [x] handler 必须从 `ctx` 拿 registry —— 用 mypy + 静态检查防止 module-level singleton
+- [x] **2.4 Planner Agent（消费 ToolRegistry）**（已交付，archived `add-planner-agent`）
+  - [x] `agent/planner.py`：系统 prompt（含 ToolRegistry 概览）+ 通过 `agent/tools_adapter.py` 拿到工具列表
+  - [x] **不**直接 import Inspector registry —— 所有能力通过 ToolRegistry dispatch
+  - [x] **不暴露** `exec_arbitrary_command` —— 通过 `surfaces` + Inspector 限制能力面
+  - [x] 提示词文件在 `agent/prompts/planner.md`（模板加载，不内联）
+- [x] **2.5 Prompt caching 策略**（已交付，archived `add-prompt-cache-strategy`）
+  - [x] 系统 prompt + Inspector registry 概览：`cache_control: ephemeral`
+  - [x] 单测验证：第二次调用的 `cache_read_input_tokens > 0`
+  - [x] 文档：`docs/agent-cache-strategy.md`（简短即可）
 - [ ] **2.6 LLM cassette 测试基础设施（与 2.1 的 PlaybackBackend 配套；构建 cassette 工具链与示例）**
   - [ ] cassette 格式定义（请求 hash 算法 + 响应序列化 schema）
   - [ ] `tests/cassettes/` 目录约定（按测试名分组）
   - [ ] env 切换：`HOSTLENS_LLM_MODE=record|replay|live`（record 走 AnthropicAPIBackend + 写盘；replay 走 PlaybackBackend；live 走 AnthropicAPIBackend）
   - [ ] pytest fixture：`llm_cassette()` 自动选 backend + cassette 文件
   - [ ] 验收：CI 默认 replay 模式，不消耗 API 额度；新增测试 case 时跑一次 record 即可
-- [ ] **2.7 CLI: --intent 模式**
-  - [ ] `hostlens inspect <target> --intent "<自然语言>"`
-  - [ ] 实时流式输出 Agent 思考与工具调用（Rich live display）
-  - [ ] 输出最终报告
+- [x] **2.7 CLI: --intent 模式**（已交付，archived `add-intent-cli`）
+  - [x] `hostlens inspect <target> --intent "<自然语言>"`
+  - [x] 实时流式输出 Agent 思考与工具调用（Rich live display）
+  - [x] 输出最终报告
 - [ ] **2.8 最小可用 Incident Pack（M2 收尾前必须能诊断这 8 个真实场景）**
 
   > **目标**：M2 结束时不仅能跑通"Agent 能调 Inspector"的管线，还能针对真实运维场景输出有用诊断。架构再漂亮，"你能诊断的第一个真实故障"才是用户和面试官判断这个项目的标尺。
