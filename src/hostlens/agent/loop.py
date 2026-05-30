@@ -28,6 +28,13 @@ from hostlens.agent.backend import (
     TextBlock,
     ToolUseBlock,
 )
+from hostlens.agent.events import (
+    ModelResponded,
+    RunFinalized,
+    ToolCompleted,
+    ToolStarted,
+    TurnStarted,
+)
 from hostlens.agent.tools_adapter import ToolsAdapter, scrub_exception_message
 from hostlens.core.exceptions import (
     BackendRateLimited,
@@ -38,6 +45,7 @@ from hostlens.core.exceptions import (
 
 if TYPE_CHECKING:
     from hostlens.agent.backend import LLMBackend
+    from hostlens.agent.events import LoopObserver
     from hostlens.core.config import Settings
 
 __all__ = ["AgentLoop", "LoopResult", "LoopUsage", "ToolInvocation"]
@@ -177,8 +185,15 @@ class AgentLoop:
         # (design D-2).
         self._system: list[dict[str, Any]] | str = system if system is not None else []
 
-    async def run(self, intent: str) -> LoopResult:
-        """Drive the tool-use loop from a natural-language ``intent``."""
+    async def run(self, intent: str, *, observer: LoopObserver | None = None) -> LoopResult:
+        """Drive the tool-use loop from a natural-language ``intent``.
+
+        ``observer`` (default None = no-op) receives typed ``LoopEvent`` values
+        at turn / model-response / tool / finalize boundaries. Emits are
+        direct calls with no try/except: the loop stays fail-loud and the
+        observer owns its own error isolation (design D-2). ``observer`` is a
+        per-run local — never stored on self — so ``run`` stays re-entrant.
+        """
         messages: list[dict[str, Any]] = [{"role": "user", "content": intent}]
         tools = self._tool_adapter.list_for_agent()
         advertised_names = {tool["name"] for tool in tools}
@@ -200,6 +215,7 @@ class AgentLoop:
                     turns,
                     usage,
                     last_stop_reason,
+                    observer=observer,
                 )
             if turns >= self._agent.max_turns:
                 return self._finalize(
@@ -208,6 +224,7 @@ class AgentLoop:
                     turns,
                     usage,
                     last_stop_reason,
+                    observer=observer,
                 )
 
             # Per-run output budget shrinks max_tokens each turn so total output
@@ -215,6 +232,8 @@ class AgentLoop:
             # ~2x. The guard above ensures usage.output_tokens < budget, so
             # remaining >= 1 (max(1, ...) is belt-and-suspenders).
             remaining_output = max(1, self._agent.token_budget_output - usage.output_tokens)
+            if observer is not None:
+                observer.on_event(TurnStarted(turn=turns + 1))
             outcome = await self._call_with_retry(
                 system=self._inject_cache_control(self._system, self._backend.capabilities),
                 messages=messages,
@@ -229,16 +248,31 @@ class AgentLoop:
                     terminal: _TerminalStatus = "degraded_no_planner"
                 else:
                     terminal = outcome
-                return self._finalize(terminal, tool_invocations, turns, usage, last_stop_reason)
+                return self._finalize(
+                    terminal,
+                    tool_invocations,
+                    turns,
+                    usage,
+                    last_stop_reason,
+                    observer=observer,
+                )
 
             response = outcome
             turns += 1
             usage = self._accumulate_usage(usage, response)
             last_stop_reason = response.stop_reason
+            if observer is not None:
+                observer.on_event(
+                    ModelResponded(
+                        turn=turns,
+                        stop_reason=response.stop_reason,
+                        text=self._join_text(response),
+                    )
+                )
 
             if response.stop_reason == "tool_use":
                 assistant_content, tool_results, new_invocations = await self._run_tool_turn(
-                    response, advertised_names
+                    response, advertised_names, observer, turns
                 )
                 tool_invocations.extend(new_invocations)
                 messages.append({"role": "assistant", "content": assistant_content})
@@ -249,12 +283,23 @@ class AgentLoop:
                 final_text = self._join_text(response)
                 status: _TerminalStatus = "ok" if response.content else "empty_response"
                 return self._finalize(
-                    status, tool_invocations, turns, usage, last_stop_reason, final_text
+                    status,
+                    tool_invocations,
+                    turns,
+                    usage,
+                    last_stop_reason,
+                    final_text,
+                    observer=observer,
                 )
 
             if response.stop_reason == "refusal":
                 return self._finalize(
-                    "empty_response", tool_invocations, turns, usage, last_stop_reason
+                    "empty_response",
+                    tool_invocations,
+                    turns,
+                    usage,
+                    last_stop_reason,
+                    observer=observer,
                 )
 
             if response.stop_reason == "max_tokens":
@@ -265,6 +310,7 @@ class AgentLoop:
                     usage,
                     last_stop_reason,
                     self._join_text(response),
+                    observer=observer,
                 )
 
             # stop_sequence / pause_turn — Hostlens solicits neither (D-8).
@@ -324,6 +370,8 @@ class AgentLoop:
         self,
         response: MessageResponse,
         advertised_names: set[str],
+        observer: LoopObserver | None,
+        turn: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[ToolInvocation]]:
         """Dispatch every ``tool_use`` block in ``response`` in parallel.
 
@@ -337,7 +385,7 @@ class AgentLoop:
         """
         tool_use_blocks = [b for b in response.content if isinstance(b, ToolUseBlock)]
         tasks = [
-            asyncio.create_task(self._dispatch_one(block, advertised_names))
+            asyncio.create_task(self._dispatch_one(block, advertised_names, observer, turn))
             for block in tool_use_blocks
         ]
         try:
@@ -365,13 +413,29 @@ class AgentLoop:
         self,
         block: ToolUseBlock,
         advertised_names: set[str],
+        observer: LoopObserver | None,
+        turn: int,
     ) -> tuple[dict[str, Any], ToolInvocation]:
         """Dispatch a single ``tool_use`` block per the §4 error-routing table.
 
         Returns the Anthropic ``tool_result`` block paired with its
         ``ToolInvocation`` record. Fail-loud exceptions are not caught here —
-        they propagate out of ``gather`` (design.md D-5 paths 4-6).
+        they propagate out of ``gather`` (design.md D-5 paths 4-6), so their
+        ``ToolStarted`` has no paired ``ToolCompleted`` (design D-3).
         """
+        # ToolStarted is emitted at the entry — before any branch check (incl.
+        # the hallucinated-name interception) — so every block, even fail-loud
+        # ones, appears in the event stream (design D-3).
+        if observer is not None:
+            observer.on_event(
+                ToolStarted(
+                    turn=turn,
+                    tool_name=block.name,
+                    tool_use_id=block.id,
+                    tool_input=block.input,
+                )
+            )
+
         # Path: hallucinated tool name. Intercepted by membership check BEFORE
         # dispatch so the dispatch ``KeyError`` (which is ambiguous between a
         # missing-name lookup and a handler-internal KeyError) cannot mask a
@@ -383,15 +447,15 @@ class AgentLoop:
                 "tool_name": block.name,
                 "message": f"no such tool: {block.name}",
             }
-            return (
-                self._tool_result_block(block.id, envelope, is_error=True),
-                ToolInvocation(
-                    tool_name=block.name,
-                    tool_use_id=block.id,
-                    input=block.input,
-                    error=envelope,
-                ),
+            invocation = ToolInvocation(
+                tool_name=block.name,
+                tool_use_id=block.id,
+                input=block.input,
+                error=envelope,
             )
+            if observer is not None:
+                observer.on_event(ToolCompleted(turn=turn, invocation=invocation))
+            return self._tool_result_block(block.id, envelope, is_error=True), invocation
 
         try:
             result = await self._tool_adapter.dispatch(block.name, block.input)
@@ -406,40 +470,40 @@ class AgentLoop:
                 "tool_name": block.name,
                 "message": scrub_exception_message(str(exc)),
             }
-            return (
-                self._tool_result_block(block.id, envelope, is_error=True),
-                ToolInvocation(
-                    tool_name=block.name,
-                    tool_use_id=block.id,
-                    input=block.input,
-                    error=envelope,
-                ),
+            invocation = ToolInvocation(
+                tool_name=block.name,
+                tool_use_id=block.id,
+                input=block.input,
+                error=envelope,
             )
+            if observer is not None:
+                observer.on_event(ToolCompleted(turn=turn, invocation=invocation))
+            return self._tool_result_block(block.id, envelope, is_error=True), invocation
 
         # dispatch returned a dict. Distinguish a scrubbed error envelope from
         # a normal model_dump() by the full envelope signature, NOT a bare
         # ``is_error`` truthiness — a business output_schema could legitimately
         # carry an ``is_error`` field (design.md D-5 路径 2).
         if self._is_error_envelope(result):
-            return (
-                self._tool_result_block(block.id, result, is_error=True),
-                ToolInvocation(
-                    tool_name=block.name,
-                    tool_use_id=block.id,
-                    input=block.input,
-                    error=result,
-                ),
-            )
-
-        return (
-            self._tool_result_block(block.id, result, is_error=False),
-            ToolInvocation(
+            invocation = ToolInvocation(
                 tool_name=block.name,
                 tool_use_id=block.id,
                 input=block.input,
-                output=result,
-            ),
+                error=result,
+            )
+            if observer is not None:
+                observer.on_event(ToolCompleted(turn=turn, invocation=invocation))
+            return self._tool_result_block(block.id, result, is_error=True), invocation
+
+        invocation = ToolInvocation(
+            tool_name=block.name,
+            tool_use_id=block.id,
+            input=block.input,
+            output=result,
         )
+        if observer is not None:
+            observer.on_event(ToolCompleted(turn=turn, invocation=invocation))
+        return self._tool_result_block(block.id, result, is_error=False), invocation
 
     # -- helpers -----------------------------------------------------------
 
@@ -514,7 +578,11 @@ class AgentLoop:
         usage: LoopUsage,
         stop_reason: str | None,
         final_text: str = "",
+        *,
+        observer: LoopObserver | None = None,
     ) -> LoopResult:
+        if observer is not None:
+            observer.on_event(RunFinalized(terminal_status=terminal_status, turns=turns))
         return LoopResult(
             final_text=final_text,
             tool_invocations=tool_invocations,

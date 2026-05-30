@@ -42,6 +42,14 @@ from hostlens.agent.backend import (
 )
 from hostlens.agent.backends.fake import FakeBackend
 from hostlens.agent.backends.playback import PlaybackBackend
+from hostlens.agent.events import (
+    LoopEvent,
+    ModelResponded,
+    RunFinalized,
+    ToolCompleted,
+    ToolStarted,
+    TurnStarted,
+)
 from hostlens.agent.planner import PlannerAgent, PlannerResult
 from hostlens.core.config import AgentSettings, Settings
 from hostlens.core.exceptions import BackendRateLimited, BackendUnavailable
@@ -544,3 +552,80 @@ async def test_persistent_rate_limit_degraded_passthrough_no_amplified_retry() -
     # Same ceiling: initial + 3 retries = 4. Planner neither swallows nor adds
     # retries on top of the loop.
     assert backend.calls == 4
+
+
+# ---------------------------------------------------------------------------
+# 5.2 — observer pass-through to the internal AgentLoop
+# ---------------------------------------------------------------------------
+
+
+class _RecordingObserver:
+    """Appends every event; never raises. Structurally a ``LoopObserver``."""
+
+    def __init__(self) -> None:
+        self.events: list[LoopEvent] = []
+
+    def on_event(self, event: LoopEvent) -> None:
+        self.events.append(event)
+
+
+async def test_planner_passes_observer_through_to_loop() -> None:
+    async def handler(args: RunInspectorInput, ctx: ToolContext) -> RunInspectorOutput:
+        return _two_finding_output()
+
+    registry = _registry_with(_stub_spec(handler))
+    backend = FakeBackend(
+        responses=[
+            _tool_use_turn(block_id="tu_1"),
+            _end_turn("done"),
+        ]
+    )
+    rec = _RecordingObserver()
+
+    result = await _planner(cast(LLMBackend, backend), registry, _settings()).run("x", observer=rec)
+
+    # The Planner is a direct channel: rec must receive the FULL event sequence
+    # the internal loop emits (single tool_use turn → end_turn turn).
+    assert [type(e) for e in rec.events] == [
+        TurnStarted,
+        ModelResponded,
+        ToolStarted,
+        ToolCompleted,
+        TurnStarted,
+        ModelResponded,
+        RunFinalized,
+    ]
+    final = rec.events[-1]
+    assert isinstance(final, RunFinalized)
+    assert final.terminal_status == result.loop_result.terminal_status
+    # observer must not alter the condensed PlannerResult.
+    assert [f.message for f in result.findings] == ["f1", "f2"]
+    assert result.narrative == "done"
+
+
+async def test_planner_without_observer_behaviour_unchanged() -> None:
+    async def handler(args: RunInspectorInput, ctx: ToolContext) -> RunInspectorOutput:
+        return _two_finding_output()
+
+    registry = _registry_with(_stub_spec(handler))
+
+    def _make_backend() -> FakeBackend:
+        return FakeBackend(
+            responses=[
+                _tool_use_turn(block_id="tu_1"),
+                _end_turn("done"),
+            ]
+        )
+
+    # Omitting observer entirely must yield the same PlannerResult as passing a
+    # no-op observer — the default is a true no-op.
+    rec = _RecordingObserver()
+    with_obs = await _planner(cast(LLMBackend, _make_backend()), registry, _settings()).run(
+        "x", observer=rec
+    )
+    without_obs = await _planner(cast(LLMBackend, _make_backend()), registry, _settings()).run("x")
+
+    assert with_obs.model_dump() == without_obs.model_dump()
+    assert without_obs.loop_result.terminal_status == "ok"
+    assert [f.message for f in without_obs.findings] == ["f1", "f2"]
+    assert without_obs.narrative == "done"
