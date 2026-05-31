@@ -118,7 +118,10 @@ def _emit_output(rendered: str, output: str | None) -> None:
 
     out_path = Path(output)
     try:
-        out_path.write_text(rendered if rendered.endswith("\n") else rendered + "\n")
+        out_path.write_text(
+            rendered if rendered.endswith("\n") else rendered + "\n",
+            encoding="utf-8",
+        )
     except OSError as exc:
         typer.echo(f"failed to write output: {exc}", err=True)
         raise typer.Exit(code=3) from exc
