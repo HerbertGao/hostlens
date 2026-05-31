@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from hostlens.agent.backend import MessageResponse
+from hostlens.agent.backend import ContentBlock, MessageResponse
 from hostlens.agent.backends.anthropic_api import AnthropicAPIBackend
 
 pytestmark = pytest.mark.live
@@ -32,8 +32,8 @@ def _deepseek_models() -> list[str]:
     return ["deepseek-chat", "deepseek-reasoner"]
 
 
-def _assert_no_thinking(resp: MessageResponse) -> list[dict]:
-    types = [block.get("type") for block in resp.content]
+def _assert_no_thinking(resp: MessageResponse) -> list[ContentBlock]:
+    types = [block.type for block in resp.content]
     assert types, "response had no content blocks"
     assert "thinking" not in types, f"unexpected thinking block: {types}"
     for btype in types:
@@ -66,20 +66,20 @@ async def test_deepseek_multiturn_tool_loop_thinking_free(model: str) -> None:
     )
     content = _assert_no_thinking(resp)
 
-    tool_use = next((b for b in content if b.get("type") == "tool_use"), None)
+    tool_use = next((b for b in content if b.type == "tool_use"), None)
     if tool_use is None:
         # Endpoint chose not to call the tool; first turn already proved
         # thinking-free, nothing more to verify.
         return
 
-    messages.append({"role": "assistant", "content": content})
+    messages.append({"role": "assistant", "content": [block.model_dump() for block in content]})
     messages.append(
         {
             "role": "user",
             "content": [
                 {
                     "type": "tool_result",
-                    "tool_use_id": tool_use["id"],
+                    "tool_use_id": tool_use.id,
                     "content": "Sunny, 22C",
                 }
             ],
