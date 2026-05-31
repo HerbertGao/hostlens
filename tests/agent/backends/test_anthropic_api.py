@@ -353,3 +353,129 @@ async def test_messages_create_round_trip_parses_sdk_dump(
     )
     assert isinstance(result, MessageResponse)
     assert result.id == "msg_round_trip"
+
+
+# ---------------------------------------------------------------------------
+# add-backend-disable-thinking: thinking:disabled injection + error normalization
+# ---------------------------------------------------------------------------
+
+_DISABLED_EXTRA_BODY = {"thinking": {"type": "disabled"}}
+
+
+async def _call_simple(backend: AnthropicAPIBackend) -> Any:
+    return await backend.messages_create(
+        model="m",
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        max_tokens=10,
+        timeout=10.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_disable_thinking_true_injects_extra_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.1: ``disable_thinking=True`` → SDK call carries the disabled extra_body."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    mock = _patch_messages_create(
+        monkeypatch, backend, return_value=_FakeSDKMessage(_ok_message_dict())
+    )
+    await _call_simple(backend)
+    assert mock.call_args.kwargs["extra_body"] == _DISABLED_EXTRA_BODY
+
+
+@pytest.mark.asyncio
+async def test_disable_thinking_false_passes_no_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.2: default → NO thinking field at all (real Anthropic shape unchanged)."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    mock = _patch_messages_create(
+        monkeypatch, backend, return_value=_FakeSDKMessage(_ok_message_dict())
+    )
+    await _call_simple(backend)
+    kwargs = mock.call_args.kwargs
+    assert "extra_body" not in kwargs
+    assert "thinking" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_disable_thinking_injection_no_cache_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.4: the injected ``extra_body`` carries no ``cache_control`` and the
+    capability gate (which scans system/messages/tools, not extra_body) is not
+    tripped — the call completes without ``BackendCapabilityViolation``."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    mock = _patch_messages_create(
+        monkeypatch, backend, return_value=_FakeSDKMessage(_ok_message_dict())
+    )
+    result = await _call_simple(backend)
+    assert isinstance(result, MessageResponse)
+    assert "cache_control" not in mock.call_args.kwargs["extra_body"]["thinking"]
+
+
+@pytest.mark.asyncio
+async def test_disable_thinking_injected_on_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.5: two consecutive calls on the same backend both inject (proves OUR
+    side always injects; does NOT prove provider multi-turn behavior)."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    mock = _patch_messages_create(
+        monkeypatch, backend, return_value=_FakeSDKMessage(_ok_message_dict())
+    )
+    await _call_simple(backend)
+    await _call_simple(backend)
+    assert mock.call_count == 2
+    for call in mock.call_args_list:
+        assert call.kwargs["extra_body"] == _DISABLED_EXTRA_BODY
+
+
+def test_disable_thinking_does_not_flip_extended_thinking_capability() -> None:
+    """4.7③: capability stays False even with the suppression switch on."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    assert backend.capabilities.extended_thinking is False
+
+
+@pytest.mark.asyncio
+async def test_unmodeled_content_block_normalizes_to_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.7①: a ``type="thinking"`` block (unmodeled) → ``BackendError(
+    kind="unsupported_content_block")``, never a bare ``ValidationError``."""
+
+    payload = _ok_message_dict()
+    payload["content"] = [{"type": "thinking", "thinking": "secret reasoning"}]
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    _patch_messages_create(monkeypatch, backend, return_value=_FakeSDKMessage(payload))
+
+    with pytest.raises(BackendError) as exc_info:
+        await _call_simple(backend)
+    assert exc_info.value.kind == "unsupported_content_block"
+    assert exc_info.value.cause is not None
+
+
+@pytest.mark.asyncio
+async def test_generic_validation_drift_normalizes_to_invalid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.7②: a non-content-block format failure (unknown ``stop_reason`` enum)
+    → ``BackendError(kind="invalid_response")``, NOT mislabeled as a thinking
+    block problem."""
+
+    payload = _ok_message_dict()
+    payload["stop_reason"] = "totally_unknown_reason"
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    _patch_messages_create(monkeypatch, backend, return_value=_FakeSDKMessage(payload))
+
+    with pytest.raises(BackendError) as exc_info:
+        await _call_simple(backend)
+    assert exc_info.value.kind == "invalid_response"

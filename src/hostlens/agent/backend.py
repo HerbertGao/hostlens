@@ -475,6 +475,7 @@ def create_backend(settings: Settings) -> LLMBackend:
             api_key=backend_settings.api_key.get_secret_value(),
             base_url=base_url_str,
             health_check_model=health_check_model,
+            disable_thinking=backend_settings.disable_thinking,
         )
     elif backend_type == "fake":
         from hostlens.agent.backends.fake import FakeBackend

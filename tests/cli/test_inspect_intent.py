@@ -541,6 +541,94 @@ def test_intent_degraded_max_tokens_exit_2_partial_output(
 
 
 # --------------------------------------------------------------------------- #
+# add-backend-disable-thinking 4.7④ — end-to-end: a normalized thinking-block
+# BackendError fails loud through the loop to the CLI boundary as ONE clean line.
+# --------------------------------------------------------------------------- #
+
+
+class _ThinkingBlockBackend:
+    """Structural ``LLMBackend`` raising the already-normalized thinking-block error
+    ``AnthropicAPIBackend`` produces when a provider ignores ``thinking:disabled``
+    and returns a ``type="thinking"`` content block.
+
+    A ``MessageResponse`` carrying a ``thinking`` block cannot be constructed (the
+    discriminated union rejects it), so the realistic seam is the post-normalization
+    ``BackendError(kind="unsupported_content_block")`` the production backend raises
+    out of ``messages_create``. This drives the genuine AgentLoop → CLI-boundary
+    chain: the error is non-retryable, so the loop fail-louds it (does NOT finalize a
+    degraded LoopResult) and the CLI's ``except Exception`` wraps it into one
+    ``internal: BackendError: ...`` line.
+    """
+
+    name = "thinking-block"
+
+    def __init__(self) -> None:
+        self.capabilities = _DEFAULT_CAPS
+
+    async def messages_create(
+        self,
+        *,
+        model: str,
+        system: list[dict[str, Any]] | str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        timeout: float,
+    ) -> MessageResponse:
+        from hostlens.core.exceptions import BackendError
+
+        raise BackendError(
+            "response contains an unmodeled content block "
+            "(provider may have ignored thinking:disabled)",
+            backend_name="anthropic_api",
+            kind="unsupported_content_block",
+        )
+
+
+def test_intent_thinking_block_fails_loud_one_line_no_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    targets_yaml: Path,
+    user_inspectors_dir: Path,
+    agent_backend_env: None,
+) -> None:
+    """A provider thinking block (normalized to BackendError) -> exit≠0 + one line.
+
+    add-backend-disable-thinking tasks 4.7④ / design D-5: the normalized
+    ``BackendError(kind="unsupported_content_block")`` is NOT a degradation — the
+    loop re-raises it (non-retryable) and the CLI wraps it into a single
+    ``internal: BackendError: ...`` stderr line, never a degraded note and never a
+    pydantic traceback. Locks the fail-loud chain so a future ``except BackendError``
+    in the loop can't silently downgrade it.
+    """
+
+    _patch_backend(monkeypatch, cast(LLMBackend, _ThinkingBlockBackend()))
+
+    exit_code, stdout, stderr = _run_main(
+        ["inspect", "local-host", "--intent", "检查健康"],
+        capsys,
+        monkeypatch,
+    )
+    assert exit_code != 0
+    assert exit_code == 2
+    # Exactly one ``internal:`` error line carrying the normalized kind; NOT a
+    # degradation. (stderr also carries the RichLiveObserver progress tree —
+    # ``agent run`` / ``turn N`` — but the error itself is a single line.)
+    internal_lines = [ln for ln in stderr.splitlines() if "internal:" in ln]
+    assert len(internal_lines) == 1
+    error_line = internal_lines[0]
+    assert "internal: BackendError:" in error_line
+    assert "unsupported_content_block" in error_line
+    assert "degraded run" not in stderr
+    # No leaked stack frames / pydantic internals on either stream.
+    assert "Traceback" not in stderr
+    assert "ValidationError" not in stderr
+    assert "pydantic" not in stderr.lower()
+    # No PlannerResult was produced, so nothing rendered to stdout.
+    assert stdout == ""
+
+
+# --------------------------------------------------------------------------- #
 # 5.4 — degradation (BackendUnavailable) vs fixture-failure (CassetteMiss)
 # --------------------------------------------------------------------------- #
 

@@ -103,6 +103,12 @@ class BackendSettings(BaseModel):
     aws_profile: str | None = None
     oauth_token: SecretStr | None = None
     accept_subscription_risks: bool = False
+    # Suppress provider-default extended-thinking output for thinking-default-on
+    # Anthropic-compatible endpoints (e.g. DeepSeek-over-anthropic). Only the
+    # ``anthropic_api`` path consumes this in ``create_backend``; it is
+    # intentionally decoupled from ``type`` (no cross-field validation) so any
+    # type may set it and it is a silent no-op on non-anthropic_api paths.
+    disable_thinking: bool = False
 
     @model_validator(mode="after")
     def _validate_type_specific_required_fields(self) -> BackendSettings:

@@ -19,9 +19,11 @@ other consumer talks through the ``LLMBackend`` Protocol. The adapter:
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import anthropic
+from pydantic import ValidationError
 
 from hostlens.agent.backend import (
     BackendCapabilities,
@@ -93,6 +95,9 @@ class AnthropicAPIBackend:
         tool_use=True,
         structured_output=True,
         parallel_tool_use=True,
+        # ``disable_thinking`` suppresses the provider's default thinking output;
+        # it does NOT enable Hostlens consumption of thinking blocks, so
+        # ``extended_thinking`` stays False regardless of the instance setting.
         extended_thinking=False,
         vision=True,
         streaming=False,
@@ -104,6 +109,7 @@ class AnthropicAPIBackend:
         api_key: str,
         base_url: str | None = None,
         health_check_model: str = "claude-haiku-4-5",
+        disable_thinking: bool = False,
     ) -> None:
         # Keep ``api_key`` / ``base_url`` only as instance state for repr
         # rendering; the live secret lives inside ``self._client`` and never
@@ -111,6 +117,7 @@ class AnthropicAPIBackend:
         self._api_key: str = api_key
         self._base_url: str | None = base_url
         self._health_check_model: str = health_check_model
+        self._disable_thinking: bool = disable_thinking
         # ``max_retries=0`` is the explicit Anthropic SDK API to disable its
         # internal retry layer — D-5 mandates single-source retry control by
         # the Agent loop.
@@ -152,6 +159,16 @@ class AnthropicAPIBackend:
             tools=tools,
         )
 
+        # ``disable_thinking`` rides on the SDK's ``extra_body`` passthrough so
+        # no new dependency / Protocol-shape change is needed (design.md D-2).
+        # The single injection path is ``extra_body`` (never the native
+        # ``thinking=`` kwarg) to avoid ambiguous deep-merge with the SDK's own
+        # thinking parameter; when False, NO thinking field is added at all so
+        # the real Anthropic request shape stays byte-for-byte unchanged.
+        extra_kwargs: dict[str, Any] = {}
+        if self._disable_thinking:
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
         try:
             # ``system`` / ``messages`` / ``tools`` are passed through
             # verbatim (Anthropic-schema-first; CLAUDE.md §4.11 rule).
@@ -166,6 +183,7 @@ class AnthropicAPIBackend:
                 tools=tools,  # type: ignore[arg-type]
                 max_tokens=max_tokens,
                 timeout=timeout,
+                **extra_kwargs,
             )
         except anthropic.RateLimitError as exc:
             retry_after = _parse_retry_after(getattr(exc.response, "headers", None))
@@ -211,8 +229,52 @@ class AnthropicAPIBackend:
 
         # ``Message.model_dump()`` produces a dict matching ``MessageResponse``'s
         # field set; ``extra="ignore"`` (set on the Pydantic model) tolerates
-        # any SDK additions without failing parse.
-        return MessageResponse.model_validate(sdk_message.model_dump())
+        # any SDK additions without failing parse. A ``ValidationError`` here is
+        # normalized to ``BackendError`` (D-5): a bare pydantic error is not a
+        # ``Backend*`` type and would escape the loop's retry classification and
+        # leak SDK internals. ``kind`` distinguishes an unmodeled content block
+        # (provider ignored thinking:disabled) from generic format drift.
+        try:
+            return MessageResponse.model_validate(sdk_message.model_dump())
+        except ValidationError as exc:
+            raise self._classify_validation_error(exc) from exc
+
+    @staticmethod
+    def _is_content_discriminator_error(error: Mapping[str, Any]) -> bool:
+        """True if ``error`` is a ``content[*]`` union-discriminator failure.
+
+        Per design.md D-5 an unmodeled content block (e.g. ``type="thinking"``
+        when the provider ignored ``thinking:disabled``) surfaces as a
+        discriminator error whose ``loc`` lands on ``content``. The check keys
+        on "loc contains ``content`` + discriminator-class error type" rather
+        than a single fixed tag name so SDK / Pydantic wording drift does not
+        silently re-route it to the generic bucket.
+        """
+
+        loc = error.get("loc", ())
+        on_content = isinstance(loc, tuple) and "content" in loc
+        discriminator = error.get("type") in {
+            "union_tag_invalid",
+            "union_tag_not_found",
+        }
+        return on_content and discriminator
+
+    def _classify_validation_error(self, exc: ValidationError) -> BackendError:
+        if any(self._is_content_discriminator_error(e) for e in exc.errors()):
+            return BackendError(
+                "response contains an unmodeled content block "
+                "(provider may have ignored thinking:disabled)",
+                backend_name=self.name,
+                kind="unsupported_content_block",
+                cause=exc,
+            )
+        return BackendError(
+            "backend response failed MessageResponse validation "
+            "(possible SDK/endpoint format drift)",
+            backend_name=self.name,
+            kind="invalid_response",
+            cause=exc,
+        )
 
     async def health_check(self) -> BackendHealth:
         """Ping the API with a minimal prompt.

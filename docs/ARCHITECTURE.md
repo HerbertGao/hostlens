@@ -1096,6 +1096,7 @@ backend:
   type: anthropic_api                    # anthropic_api | bedrock | vertex | claude_subscription
   api_key: ${ANTHROPIC_API_KEY}          # type=anthropic_api 必填
   base_url: null                         # 可选 (走自建代理 / Bedrock-compatible endpoint)
+  disable_thinking: false                # 默认 false; 接 thinking-默认-开的 anthropic 兼容端点 (如 DeepSeek) 时设 true
   # type=bedrock:
   # aws_region: us-east-1
   # aws_profile: default
@@ -1111,6 +1112,23 @@ agent:
   token_budget_input: 100000
   token_budget_output: 30000
 ```
+
+#### `backend.disable_thinking` — 接 thinking-默认-开的 anthropic 兼容端点
+
+`disable_thinking`（默认 `false`）控制 backend（`AnthropicAPIBackend.messages_create`）是否向 SDK 调用注入 `extra_body={"thinking":{"type":"disabled"}}` 抑制信号。官方 Anthropic API 保持默认 `false`。
+
+**何时设 `true`**：接「thinking 默认强制开」的 anthropic 兼容端点（如 DeepSeek）。这类端点即使请求未要求 thinking 也会返回 thinking 块，撞上当前 no-thinking 解析路径会报错；置 `true` 后 backend 注入上述抑制信号并归一化此类响应（`false` 则不注入）。只有 `type=anthropic_api` 路径消费此开关，其余 backend 类型上是 no-op。
+
+环境变量（`api_key` 走 secret，不要写进 yaml / commit）：
+
+```bash
+export HOSTLENS_BACKEND__DISABLE_THINKING=true
+export HOSTLENS_BACKEND__BASE_URL=https://api.deepseek.com/anthropic
+export HOSTLENS_BACKEND__API_KEY=sk-...           # 端点自己的 key
+export HOSTLENS_AGENT__PRIMARY_MODEL=deepseek-chat
+```
+
+> **提醒（与 `disable_thinking` 正交）**：`agent.health_check_model` 默认 `claude-haiku-4-5`，第三方端点（如 DeepSeek）不认这个 model id，`hostlens doctor` 会因此报该 backend 不健康。这与 `disable_thinking` 无关 —— 把 `health_check_model` 也配成该端点支持的模型（例如 `export HOSTLENS_AGENT__HEALTH_CHECK_MODEL=deepseek-chat`）即可。
 
 #### 注入方式（不进 ToolContext）
 
