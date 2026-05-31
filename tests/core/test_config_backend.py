@@ -217,6 +217,48 @@ def test_api_key_redacted_in_config_error_on_unrelated_field_failure(
     assert leak_value not in msg, f"api_key leaked into ConfigError message: {msg!r}"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), ("false", False), ("1", True), ("0", False)],
+)
+def test_disable_thinking_env_bool_parsing(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    """Spec §场景:backend.disable_thinking 经 env 加载为 True / 缺省 False.
+
+    pydantic-settings parses the nested ``HOSTLENS_BACKEND__DISABLE_THINKING``
+    env var as a bool across the common truthy/falsy spellings.
+    """
+
+    monkeypatch.setenv("HOSTLENS_BACKEND__TYPE", "fake")
+    monkeypatch.setenv("HOSTLENS_BACKEND__DISABLE_THINKING", raw)
+    settings = load_settings()
+    assert settings.backend is not None
+    assert settings.backend.disable_thinking is expected
+
+
+def test_disable_thinking_defaults_false() -> None:
+    """Spec §场景:backend.disable_thinking 缺省为 False."""
+
+    b = BackendSettings(type="fake")
+    assert b.disable_thinking is False
+
+
+def test_disable_thinking_decoupled_from_type() -> None:
+    """Spec §场景:非 anthropic_api type 设置 disable_thinking 被静默忽略.
+
+    Any type accepts the flag at load time (no cross-field validation); only
+    the ``anthropic_api`` path consumes it in ``create_backend``.
+    """
+
+    b = BackendSettings(
+        type="playback",
+        cassette_path=Path("/tmp/x.jsonl"),
+        disable_thinking=True,
+    )
+    assert b.disable_thinking is True
+
+
 def test_extra_fields_in_backend_settings_rejected() -> None:
     """Spec contract: ``model_config = ConfigDict(extra="forbid")``.
 

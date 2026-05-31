@@ -132,6 +132,37 @@ def test_anthropic_api_falls_back_to_default_health_check_model_when_no_agent() 
     assert backend._health_check_model == "claude-haiku-4-5"
 
 
+def test_anthropic_api_passes_disable_thinking_true() -> None:
+    """Spec §需求:`create_backend` 必须透传 `disable_thinking`.
+
+    The factory reads ``backend.disable_thinking`` and threads it into the
+    constructed ``AnthropicAPIBackend`` so injection is observable downstream.
+    """
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+            disable_thinking=True,
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend._disable_thinking is True
+
+
+def test_anthropic_api_disable_thinking_defaults_false() -> None:
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend._disable_thinking is False
+
+
 # (d) anthropic_api + api_key is None → ConfigError
 def test_anthropic_api_without_api_key_raises_config_error() -> None:
     """Defensive guard for programmatic construction that bypassed schema
