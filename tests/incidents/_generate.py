@@ -151,7 +151,9 @@ async def _build_fixture(scenario: IncidentScenario) -> None:
     }
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
     fixture_path = FIXTURES_DIR / f"{scenario.key}.json"
-    fixture_path.write_text(json.dumps(fixture, ensure_ascii=False, indent=2) + "\n")
+    fixture_path.write_text(
+        json.dumps(fixture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 async def _record_cassette_and_snapshot(scenario: IncidentScenario) -> None:
