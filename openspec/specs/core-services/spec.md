@@ -120,6 +120,7 @@
 - `aws_profile: str | None = None`（type=bedrock 预留位）
 - `oauth_token: SecretStr | None = None`（type=claude_subscription 预留位）
 - `accept_subscription_risks: bool = False`（type=claude_subscription 预留位）
+- `disable_thinking: bool = False`（抑制「thinking 默认开」的 anthropic 兼容端点输出；为 True 时由 `create_backend` 接入 `AnthropicAPIBackend`、令其 `messages_create` 注入 `extra_body={"thinking":{"type":"disabled"}}`，行为见 llm-backend-protocol spec。与 `backend.type` **无耦合校验**：任意 type 都允许设置，仅 `anthropic_api` 路径在 `create_backend` 中真正消费它；默认 `False` 使既有配置与真 Anthropic 请求路径不变）
 
 `AgentSettings` Pydantic 模型字段：
 
@@ -176,3 +177,18 @@
 
 - **当** 调用 `hostlens doctor --json` 时 `settings.backend.api_key = SecretStr("sk-ant-<real>")`
 - **那么** 输出 JSON 中**禁止**含 `api_key` 完整原值；可含 `api_key_set: true` 与 `api_key_fingerprint: "sk-a...real"` 形式指纹
+
+#### 场景:`backend.disable_thinking` 缺省为 False
+
+- **当** 配置 `backend:` 节**不**含 `disable_thinking`，调 `load_settings()`
+- **那么** 必须 exit 0；`settings.backend.disable_thinking is False`
+
+#### 场景:`backend.disable_thinking` 经 env 加载为 True
+
+- **当** 设置 `HOSTLENS_BACKEND__DISABLE_THINKING=true`（且其余 backend 必填字段满足），调 `load_settings()`
+- **那么** 加载出的 `settings.backend.disable_thinking is True`
+
+#### 场景:非 anthropic_api type 设置 disable_thinking 被静默忽略
+
+- **当** 配置含 `backend: {type: playback, cassette_path: "...", disable_thinking: true}`，调 `load_settings()`
+- **那么** 必须 exit 0；`settings.backend.disable_thinking is True`，但 playback 路径不消费该字段（不报错、不影响回放）
