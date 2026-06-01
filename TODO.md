@@ -290,10 +290,10 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 **目标**：Planner 拿到一堆原始 finding 后，由 Diagnostician 做跨信号关联，产出**带根因假设的报告**，并支持与历史 run 做 regression diff。
 
 **对应 OpenSpec proposal**：
-- `add-diagnostician-agent`
-- `add-report-persistence-and-diff`
+- `add-diagnostician-agent`（3.1，后续 —— 消费已落地的 `Report.hypotheses` 字段 + `ReportStatus` degraded_* 值）
+- [`add-report-persistence-and-diff`](openspec/changes/archive/2026-06-01-add-report-persistence-and-diff/) ✓ archived（3.2 schema + 3.3 持久化 + 3.5 diff 引擎 + `reports` CLI + `inspect --persist`；PR #46。提案 7 轮 + 代码 3 轮对抗 review APPROVE）
 
-**退出条件**：报告中能看到 "📌 根因假设" 章节，包含证据链接；对同一 target 跑两次能输出 "本次相对上次新增了 X、消失了 Y" 的 diff。
+**退出条件**：报告中能看到 "📌 根因假设" 章节（占位已就位，内容待 3.1 Diagnostician 填充），包含证据链接；对同一 target 跑两次能输出 "本次相对上次新增了 X、消失了 Y" 的 diff（**已可**，见 `hostlens reports diff`）。
 
 ### 任务
 
@@ -301,23 +301,23 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [ ] `agent/diagnostician.py`：输入 = findings 列表 + intent，输出 = 带根因假设的报告
   - [ ] 暴露的工具：`correlate_findings(ids)` / `request_more_inspection(inspector_name)`（允许补查）
   - [ ] 提示词在 `agent/prompts/diagnostician.md`
-- [ ] **3.2 报告 schema 完善（与 docs/ARCHITECTURE.md §10 对齐 —— §9 failure semantics 与 §10 diff 基线选取依赖这些字段）**
-  - [ ] `RootCauseHypothesis`：description / confidence / supporting_findings / suggested_actions
-  - [ ] `ReportStatus` Enum：ok / partial / degraded_no_planner / degraded_rate_limited / degraded_token_budget / degraded_max_turns / empty_response / stored_as_orphan（注意：`failed_api_unavailable` 不在此 enum，归在 `RunStatus` 因为该场景无 Report，详见 ARCHITECTURE §7）
-  - [ ] `InspectorRun`：name / version / status (ok/timeout/target_unreachable/requires_unmet/exception) / duration_seconds / finding_count
-  - [ ] `BaselineRef`：run_id / timestamp / status / inspector_versions / report_schema_version
-  - [ ] `ReportMeta`：run_id / report_schema_version / timestamp(tz-aware) / target_id / target_name / target_type / intent / schedule_name / status / inspectors_used (list[InspectorRun]) / token_usage / duration_seconds / baseline_ref / diff_skipped_reason
-  - [ ] `Finding` 增加 `inspector_version` 字段（diff 指纹与基线对齐要用）
-  - [ ] 验收：M2 已生成的 fixture 报告升级到新 schema；旧字段读取兼容；schema 变更日志归档
-- [ ] **3.3 报告持久化**
-  - [ ] `reporting/store.py`：SQLite（per-target 一个文件 or 单库），存 run 记录与报告 JSON
-  - [ ] CLI: `hostlens reports list <target>` / `hostlens reports show <run_id>`
-- [ ] **3.4 报告渲染扩展**
+- [x] **3.2 报告 schema 完善（与 docs/ARCHITECTURE.md §10 对齐 —— §9 failure semantics 与 §10 diff 基线选取依赖这些字段）** —— archived `add-report-persistence-and-diff`（add-only **路线 A**：保留 M1 扁平字段 + 叠加 `meta`/`hypotheses`）
+  - [x] `RootCauseHypothesis`：description / confidence / supporting_findings / suggested_actions（**本提案只定义形状、不产内容**，内容由 3.1 Diagnostician 填）
+  - [x] `ReportStatus` Enum：ok / partial / degraded_no_planner / degraded_rate_limited / degraded_token_budget / degraded_max_turns / empty_response / stored_as_orphan（`failed_api_unavailable` 归 `RunStatus`；本提案只产出 ok/partial/stored_as_orphan，degraded_* 由 3.1 产出）
+  - [x] `InspectorRun`：name / version / status (ok/timeout/target_unreachable/requires_unmet/exception) / duration_seconds / finding_count
+  - [x] `BaselineRef`：run_id / timestamp / status / inspector_versions / report_schema_version
+  - [x] `ReportMeta`：run_id / report_schema_version / timestamp(tz-aware) / target_id / target_name / target_type / intent / schedule_name / status / inspectors_used (list[InspectorRun]) / token_usage / duration_seconds / baseline_ref / diff_skipped_reason
+  - [x] `Finding` 增加 `inspector_version` 字段（实际加 `id`(severity-agnostic 指纹) / `inspector_name` / `inspector_version`，全 add-only 默认 None）
+  - [x] 验收：M1/M2 fixture 经 render 的 sink 升级到 schema 1.1（旧 1.0 JSON 仍可加载）；run_inspector @field_serializer 保 agent 可见面与 cassette 不变
+- [x] **3.3 报告持久化** —— archived `add-report-persistence-and-diff`
+  - [x] `reporting/store.py`：SQLite 单库（WAL，rowid 总序 tie-break，索引从内存 meta 投影，存脱敏 JSON，orphan 降级改写 meta.status + UUID 防穿越），存 run 记录与报告 JSON
+  - [x] CLI: `hostlens reports list <target>` / `hostlens reports show <run_id>`
+- [ ] **3.4 报告渲染扩展**（render_html 未做）
   - [ ] `reporting/render_html.py`：基于 Jinja2 模板，含交互式 finding 展开
-  - [ ] markdown 渲染增加根因章节
-- [ ] **3.5 Regression diff 引擎**
-  - [ ] `reporting/diff.py`：两份报告对比，输出 `added` / `resolved` / `changed_severity`
-  - [ ] CLI: `hostlens reports diff <run_id_a> <run_id_b>`
+  - [x] markdown 渲染增加根因章节（`add-report-persistence-and-diff` 已加 `## 根因假设` 章节占位，空时显示 `_暂无根因假设_`）
+- [x] **3.5 Regression diff 引擎** —— archived `add-report-persistence-and-diff`
+  - [x] `reporting/diff.py`：两份报告对比，输出 `added` / `resolved` / `changed_severity`（+ `inspector_upgraded`；compute_diff 规则 0-7：meta=None 前置 / None-id 跳过 / 版本对齐排除 / 指纹集合差，防自基线）
+  - [x] CLI: `hostlens reports diff <run_id_a> <run_id_b>`（+ `diff --target <t>` 自动基线模式，rowid tie-break 排除 current）
   - [ ] 也作为定时巡检报告里的一个 section（M5 用到）
 - [ ] **3.6 extended-thinking 支持（独立提案 `support-extended-thinking`；M2 显式不支持，见 backend.py 注释「M3+ Diagnostician」）**
 
