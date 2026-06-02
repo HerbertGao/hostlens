@@ -454,6 +454,7 @@ def test_request_more_inspection_unknown_target_raises_tool_error() -> None:
     assert "missing-host" in str(exc_info.value)
 
 
+@_POSIX_ONLY
 def test_request_more_inspection_parameters_passed_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

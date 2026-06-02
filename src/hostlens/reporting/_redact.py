@@ -247,20 +247,23 @@ def redact_diagnostician_result_for_render(
     standard as the `Report` render path. Non-string scalars survive unchanged
     via the `model_dump()` → `_redact_structured` → `model_validate()` round-trip.
 
-    Known difference vs. the `Report` path: this generic round-trip walks the
-    dumped dict, so `Finding.tags` (a `list[str]` in the dump) DOES pass through
-    `redact_text` — whereas `_redact_finding` deliberately skips `tags` at the
-    typed level (a tag is constrained to `^[a-z][a-z0-9_-]*$`, and a masking
-    insertion like `.` would break that pattern → `model_validate` would raise).
-    This relies on the invariant that every finding tag reaching the
-    Diagnostician is an inspector-author-controlled legal identifier with no
-    secret-shaped pattern (currently always true: findings arrive with empty tags
-    and `request_more_inspection` injects none). If a future path ever feeds a
-    secret-shaped tag into the Diagnostician's findings, switch to preserving
-    `tags` here (mirroring the `Report` path's typed skip) to avoid a
-    `ValidationError` on the masked round-trip.
+    `Finding.tags` are preserved verbatim (parity with `_redact_finding`): a tag
+    is constrained to `^[a-z][a-z0-9_-]*$`, so a `redact_text` rewrite of a
+    secret-shaped tag (e.g. `sk-…` → `sk-d...CDEF`) would violate that pattern
+    and make `model_validate` raise `ValidationError`, breaking the renderer.
+    Tags carry no secrets, so skipping them loses nothing. The restore only
+    targets the two typed `Finding` lists (top-level `findings` and
+    `planner_result.findings`); tag strings inside `tool_invocations` dicts stay
+    redacted but are harmless there (those are `dict[str, Any]`, not re-validated
+    against the `Tag` constraint).
     """
     from hostlens.agent.diagnostician import DiagnosticianResult
 
     redacted = _redact_structured(result.model_dump())
+    # Restore original tags on the typed Finding lists (model_dump preserves
+    # list order, so index alignment with the source is guaranteed).
+    for i, finding in enumerate(result.findings):
+        redacted["findings"][i]["tags"] = list(finding.tags)
+    for i, finding in enumerate(result.planner_result.findings):
+        redacted["planner_result"]["findings"][i]["tags"] = list(finding.tags)
     return DiagnosticianResult.model_validate(redacted)

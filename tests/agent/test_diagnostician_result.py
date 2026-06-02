@@ -131,3 +131,44 @@ def test_model_dump_json_serialisable() -> None:
     # Round-trip back to confirm the JSON is a faithful, re-parseable encoding.
     reparsed = DiagnosticianResult.model_validate_json(json_text)
     assert reparsed.findings[0].id == stamped.id
+
+
+def test_redact_preserves_secret_shaped_tag_without_validation_error() -> None:
+    """`redact_diagnostician_result_for_render` must NOT mangle `Finding.tags`.
+
+    A tag is constrained to `^[a-z][a-z0-9_-]*$`. A secret-shaped tag like
+    `sk-aaaaaaaaaaaaaaaaaaaaaa` is a *legal* tag that ALSO matches the `sk-…`
+    redact pattern — if the redactor ran `redact_text` over it, the masked value
+    (`sk-a...aaaa`, with a `.`) would violate the Tag pattern and make
+    `model_validate` raise. Tags must be preserved verbatim (parity with the
+    Report path's `_redact_finding`), while the finding message is still redacted.
+    """
+    from hostlens.reporting._redact import redact_diagnostician_result_for_render
+
+    secret_tag = "sk-aaaaaaaaaaaaaaaaaaaaaa"  # legal Tag AND matches sk- pattern
+    secret_msg = "leak sk-deadbeefcafef00d1234567890ABCDEF here"
+    finding = Finding(
+        severity="critical",
+        message=secret_msg,
+        tags=[secret_tag],
+        id=compute_finding_id("linux.load", "1.0.0", secret_msg),
+        inspector_name="linux.load",
+        inspector_version="1.0.0",
+    )
+    result = DiagnosticianResult(
+        narrative="n",
+        findings=[finding],
+        hypotheses=[],
+        status=ReportStatus.OK,
+        planner_result=_planner_result(),
+        diagnostician_loop=_loop_result(),
+    )
+
+    # Must not raise ValidationError (regression: tags were being redacted).
+    redacted = redact_diagnostician_result_for_render(result)
+
+    # Tag preserved verbatim; message secret masked.
+    assert redacted.findings[0].tags == [secret_tag]
+    assert "sk-deadbeefcafef00d1234567890ABCDEF" not in redacted.findings[0].message
+    # Source untouched.
+    assert result.findings[0].message == secret_msg
