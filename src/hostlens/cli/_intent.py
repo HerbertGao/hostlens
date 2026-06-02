@@ -19,7 +19,16 @@ Three concerns, three helpers:
 - ``build_planner`` — wires ``create_backend`` + a default-tools ``ToolRegistry``
   + a ``ToolContext`` factory into a ``PlannerAgent``. The backend reaches only
   the ``PlannerAgent`` (→ ``AgentLoop``), never the ``ToolContext`` (ADR-008).
-- ``render_planner_result`` — projects a ``PlannerResult`` to md / json.
+  Retained for ``demo run`` / cassette recording (Planner-only flows).
+- ``run_intent_diagnosis`` — the ``--intent`` orchestration seam: calls
+  ``create_backend`` ONCE, runs the Planner, id-stamps + seeds its findings,
+  then runs the Diagnostician (reusing the same backend + a restricted
+  diagnostician ``ToolRegistry``). Returns ``None`` on the Planner
+  ``failed_api_unavailable`` no-result path.
+- ``render_planner_result`` — projects a ``PlannerResult`` to md / json (still
+  used by ``demo run``).
+- ``render_diagnostician_result`` — projects a ``DiagnosticianResult`` to
+  md / json for the ``--intent`` path.
 """
 
 from __future__ import annotations
@@ -33,6 +42,12 @@ from rich.live import Live
 from rich.tree import Tree
 
 from hostlens.agent.backend import create_backend
+from hostlens.agent.diagnostician import (
+    DiagnosticianAgent,
+    DiagnosticianResult,
+    SeededFinding,
+    run_diagnosis,
+)
 from hostlens.agent.events import (
     ModelResponded,
     RunFinalized,
@@ -41,19 +56,35 @@ from hostlens.agent.events import (
     TurnStarted,
 )
 from hostlens.agent.planner import PlannerAgent, PlannerResult
+from hostlens.core.redact import redact_text
+from hostlens.reporting._redact import redact_diagnostician_result_for_render
 from hostlens.tools.base import NoopApprovalService, ToolContext
 from hostlens.tools.default_tools import register_default_tools
+from hostlens.tools.diagnostician_tools import (
+    register_diagnostician_tools,
+    stamp_planner_findings,
+)
+from hostlens.tools.finding_store import FindingStore
 from hostlens.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import structlog
 
-    from hostlens.agent.events import LoopEvent
+    from hostlens.agent.backend import LLMBackend
+    from hostlens.agent.events import LoopEvent, LoopObserver
     from hostlens.core.config import Settings
     from hostlens.inspectors.registry import InspectorRegistry
     from hostlens.targets.registry import TargetRegistry
 
-__all__ = ["RichLiveObserver", "build_planner", "render_planner_result"]
+__all__ = [
+    "RichLiveObserver",
+    "build_planner",
+    "render_diagnostician_result",
+    "render_planner_result",
+    "run_intent_diagnosis",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -82,7 +113,7 @@ class RichLiveObserver:
         self._live: Live | None = None
         # Per-turn Tree nodes, keyed by 1-based turn, so a tool node can attach
         # under the turn that dispatched it even with out-of-order parallel
-        # ToolStarted events (loop guarantees turn-level order, not全序).
+        # ToolStarted events (loop guarantees turn-level order, not a total order).
         self._turn_nodes: dict[int, Tree] = {}
         self._tool_nodes: dict[str, Tree] = {}
 
@@ -104,18 +135,24 @@ class RichLiveObserver:
                 parent = self._turn_nodes.get(turn, self._tree)
                 summary = f"model: stop_reason={stop_reason}"
                 if text:
-                    summary = f"{summary} — {_one_line(text)}"
+                    # Redact before previewing: the model narrative may restate a
+                    # secret-bearing finding, and this is the only stderr surface
+                    # that echoes free model text (tool output is never printed).
+                    summary = f"{summary} — {_one_line(redact_text(text))}"
                 parent.add(summary)
                 self._refresh()
             case ToolStarted(turn=turn, tool_name=tool_name, tool_use_id=tool_use_id):
                 parent = self._turn_nodes.get(turn, self._tree)
-                node = parent.add(f"tool {tool_name} … running")
+                # Redact the tool name: the loop emits ToolStarted *before* the
+                # white-list check, so a model-hallucinated name (model-controlled
+                # free text) reaches stderr. No-op for legitimate identifiers.
+                node = parent.add(f"tool {redact_text(tool_name)} … running")
                 self._tool_nodes[tool_use_id] = node
                 self._refresh()
             case ToolCompleted(invocation=invocation):
                 started_node = self._tool_nodes.get(invocation.tool_use_id)
                 outcome = "err" if invocation.error is not None else "ok"
-                label = f"tool {invocation.tool_name} … {outcome}"
+                label = f"tool {redact_text(invocation.tool_name)} … {outcome}"
                 if started_node is not None:
                     started_node.label = label
                 else:
@@ -184,6 +221,27 @@ def build_planner(
     registry = ToolRegistry()
     register_default_tools(registry)
 
+    context_factory = _make_context_factory(settings, target_registry, inspector_registry, logger)
+
+    return PlannerAgent(backend, registry, settings, context_factory)
+
+
+def _make_context_factory(
+    settings: Settings,
+    target_registry: TargetRegistry,
+    inspector_registry: InspectorRegistry,
+    logger: structlog.stdlib.BoundLogger,
+) -> Callable[[], ToolContext]:
+    """Build a ``ToolContext`` factory closure (shared by Planner + Diagnostician).
+
+    Each call produces a fresh ``ToolContext`` with its own ``asyncio.Event``
+    cancel token. The backend is deliberately NOT a parameter here — it is never
+    threaded into a ``ToolContext`` (ADR-008), so a tool handler can never reach
+    the LLM. The Planner and Diagnostician share the SAME ``inspector_registry``
+    instance so id stamping reads the same versions the Planner ran against
+    (design D-3, no TOCTOU skew).
+    """
+
     def context_factory() -> ToolContext:
         return ToolContext(
             target_registry=target_registry,
@@ -194,7 +252,83 @@ def build_planner(
             cancel=asyncio.Event(),
         )
 
-    return PlannerAgent(backend, registry, settings, context_factory)
+    return context_factory
+
+
+# --------------------------------------------------------------------------- #
+# Planner → Diagnostician orchestration
+# --------------------------------------------------------------------------- #
+
+
+async def run_intent_diagnosis(
+    settings: Settings,
+    target: str,
+    intent: str,
+    target_registry: TargetRegistry,
+    inspector_registry: InspectorRegistry,
+    logger: structlog.stdlib.BoundLogger,
+    *,
+    observer: LoopObserver | None = None,
+) -> DiagnosticianResult | None:
+    """Assemble + run Planner → id-stamp → Diagnostician (design D-5, spec §需求).
+
+    ``create_backend(settings)`` is called **exactly once** here; the SAME
+    backend instance reaches both the ``PlannerAgent`` and the
+    ``DiagnosticianAgent`` (the only configuration failure point is before the
+    Planner runs — backend not configured raises ``ConfigError`` at assembly).
+    The backend is handed only to the two agents' loops, never into any
+    ``ToolContext`` (ADR-008).
+
+    Both stages share the SAME ``inspector_registry`` instance — the Planner
+    runs against it, and ``stamp_planner_findings`` re-looks-up versions against
+    it (design D-3).
+
+    Returns ``None`` for the **no-result** path: when the Planner finalizes
+    ``failed_api_unavailable`` there is no ``DiagnosticianResult`` to produce
+    (``reconcile_status`` would raise), and the CLI maps ``None`` to the
+    no-result degradation (stderr note + empty stdout + exit 2). Every other
+    path returns a ``DiagnosticianResult`` (diagnosis ran, or was skipped on a
+    Planner degrade — ``diagnostician_loop=None`` in the latter case).
+
+    ``observer`` is passed straight through to BOTH agent runs, so the Planner
+    and Diagnostician progress trees both stream to the CLI's stderr sink.
+    """
+    backend: LLMBackend = create_backend(settings)
+    context_factory = _make_context_factory(settings, target_registry, inspector_registry, logger)
+
+    planner_registry = ToolRegistry()
+    register_default_tools(planner_registry)
+    planner = PlannerAgent(backend, planner_registry, settings, context_factory)
+
+    planner_result = await planner.run(intent, observer=observer)
+
+    if planner_result.loop_result.terminal_status == "failed_api_unavailable":
+        # No-result path: the Planner never reached the API. There is nothing to
+        # diagnose and reconcile_status would raise on this status — return None
+        # so the CLI emits a one-line degrade note with empty stdout (exit 2).
+        return None
+
+    # id-stamp the Planner's findings (fail-loud if an inspector was unloaded —
+    # the CLI boundary wraps the bubbled InspectorError as ``internal: ...``).
+    stamped = stamp_planner_findings(planner_result.loop_result, inspector_registry)
+
+    store = FindingStore()
+    labels = store.seed(stamped)
+    seeded = [
+        SeededFinding(label=label, finding=finding)
+        for label, finding in zip(labels, stamped, strict=True)
+    ]
+
+    def _make_diag_agent() -> DiagnosticianAgent:
+        # Built lazily by run_diagnosis only on the Planner-ok path, so a Planner
+        # degrade constructs no registry / agent at all (zero factory calls).
+        diag_registry = ToolRegistry()
+        register_diagnostician_tools(
+            diag_registry, finding_store=store, target_name=target, clock=None
+        )
+        return DiagnosticianAgent(backend, diag_registry, settings, context_factory)
+
+    return await run_diagnosis(planner_result, seeded, store, _make_diag_agent, observer=observer)
 
 
 # --------------------------------------------------------------------------- #
@@ -230,4 +364,98 @@ def render_planner_result(result: PlannerResult, fmt: str) -> str:
         f"turns={loop.turns} status={loop.terminal_status} "
         f"tokens_in={usage.input_tokens} tokens_out={usage.output_tokens}"
     )
+    return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# DiagnosticianResult rendering
+# --------------------------------------------------------------------------- #
+
+
+def render_diagnostician_result(result: DiagnosticianResult, fmt: str) -> str:
+    """Render a ``DiagnosticianResult`` to ``md`` or ``json`` (design D-7, spec §需求).
+
+    json: the verbatim ``DiagnosticianResult`` serialization (narrative /
+    findings(top-level, authoritative, id-bearing) / hypotheses / status /
+    planner_result(nested findings are the unstamped debug originals) /
+    diagnostician_loop(may be null)) so downstream can ``model_validate_json``
+    round-trip it; downstream MUST read the **top-level** ``findings``.
+
+    Before rendering, the whole ``DiagnosticianResult`` graph is passed through
+    the ``core/redact`` boundary via ``redact_diagnostician_result_for_render``
+    (parity with the ``Report`` render path): every string field — top-level
+    findings / hypotheses / narrative AND the nested ``planner_result`` /
+    ``diagnostician_loop`` loop telemetry (whose ``tool_invocations`` carry raw
+    inspector output) — is masked, so neither md nor json leaks a secret
+    pattern. md and json both render from this redacted copy.
+
+    md: the diagnosis narrative + a ``## Findings`` summary (from the top-level
+    canonical set) + a ``## 根因假设`` section + one telemetry line. Three
+    tolerances the spec mandates:
+
+    - **Empty narrative** (degraded paths carry ``final_text=""``): render no
+      narrative heading at all — never an empty title (spec §场景:降级致 narrative
+      为空时渲染容忍).
+    - **No hypotheses**: emit the ``_暂无根因假设_`` placeholder, reusing the
+      exact wording/style from ``reporting.render_markdown`` (spec §场景:无根因
+      假设时显示占位).
+    - **No findings**: skip the ``## Findings`` heading; narrative + 根因假设
+      placeholder + telemetry still render.
+    """
+    result = redact_diagnostician_result_for_render(result)
+
+    if fmt == "json":
+        return result.model_dump_json(indent=2)
+
+    parts: list[str] = []
+
+    narrative = result.narrative.rstrip("\n")
+    if narrative:
+        parts.append(narrative)
+
+    if result.findings:
+        if parts:
+            parts.append("")
+        parts.append("## Findings")
+        for finding in result.findings:
+            tags = f" [{', '.join(finding.tags)}]" if finding.tags else ""
+            parts.append(f"- {finding.severity}: {finding.message}{tags}")
+
+    if parts:
+        parts.append("")
+    parts.append("## 根因假设")
+    if not result.hypotheses:
+        parts.append("_暂无根因假设_")
+    else:
+        for h in result.hypotheses:
+            parts.append("")
+            parts.append(f"### {h.description}")
+            parts.append(f"- **Confidence:** {h.confidence}")
+            if h.supporting_findings:
+                parts.append(f"- **Supporting findings:** {', '.join(h.supporting_findings)}")
+            if h.suggested_actions:
+                parts.append("- **Suggested actions:**")
+                for action in h.suggested_actions:
+                    parts.append(f"  - {action}")
+
+    # Telemetry: prefer the diagnosis loop's counters. When the diagnosis stage
+    # was skipped (Planner degraded → diagnostician_loop is None), there is no
+    # diagnosis loop to count, so report the Planner loop's telemetry and note
+    # the skip. ``status`` is always the reconciled DiagnosticianResult.status.
+    parts.append("")
+    diag_loop = result.diagnostician_loop
+    if diag_loop is not None:
+        usage = diag_loop.usage_totals
+        parts.append(
+            f"turns={diag_loop.turns} status={result.status} "
+            f"tokens_in={usage.input_tokens} tokens_out={usage.output_tokens}"
+        )
+    else:
+        planner_loop = result.planner_result.loop_result
+        usage = planner_loop.usage_totals
+        parts.append(
+            f"turns={planner_loop.turns} status={result.status} "
+            f"tokens_in={usage.input_tokens} tokens_out={usage.output_tokens} "
+            "(diagnosis skipped: planner degraded)"
+        )
     return "\n".join(parts)

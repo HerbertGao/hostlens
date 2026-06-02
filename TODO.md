@@ -297,10 +297,10 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 ### 任务
 
-- [ ] **3.1 Diagnostician Agent**
-  - [ ] `agent/diagnostician.py`：输入 = findings 列表 + intent，输出 = 带根因假设的报告
-  - [ ] 暴露的工具：`correlate_findings(ids)` / `request_more_inspection(inspector_name)`（允许补查）
-  - [ ] 提示词在 `agent/prompts/diagnostician.md`
+- [x] **3.1 Diagnostician Agent** —— `add-diagnostician-agent`（消费 `Report.hypotheses` 形状 + `ReportStatus` degraded_* 值；`--intent` stdout 渲染「## 根因假设」章节含证据链接。**注**：hypotheses 仅活在 `--intent` 的 stdout `DiagnosticianResult`，**不入库** —— `Report.hypotheses` 持久化 + `reports diff` 覆盖 hypotheses 由后续提案交付，见该提案非目标「明确缺口」）
+  - [x] `agent/diagnostician.py`：输入 = findings 列表 + intent，输出 = 带根因假设的 `DiagnosticianResult`（含 narrative / findings(canonical, 带 id) / hypotheses / reconcile 后的 status）
+  - [x] 暴露的工具：`correlate_findings`（序号标签引用，纯结构化输出通道）/ `request_more_inspection(inspector_name)`（复用 `InspectorRunner` 补查，target 闭包固定）
+  - [x] 提示词在 `agent/prompts/diagnostician.md`
 - [x] **3.2 报告 schema 完善（与 docs/ARCHITECTURE.md §10 对齐 —— §9 failure semantics 与 §10 diff 基线选取依赖这些字段）** —— archived `add-report-persistence-and-diff`（add-only **路线 A**：保留 M1 扁平字段 + 叠加 `meta`/`hypotheses`）
   - [x] `RootCauseHypothesis`：description / confidence / supporting_findings / suggested_actions（**本提案只定义形状、不产内容**，内容由 3.1 Diagnostician 填）
   - [x] `ReportStatus` Enum：ok / partial / degraded_no_planner / degraded_rate_limited / degraded_token_budget / degraded_max_turns / empty_response / stored_as_orphan（`failed_api_unavailable` 归 `RunStatus`；本提案只产出 ok/partial/stored_as_orphan，degraded_* 由 3.1 产出）
