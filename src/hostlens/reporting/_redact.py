@@ -20,7 +20,7 @@ Fields that are NOT redacted (per spec):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hostlens.core.redact import is_sensitive_key, redact_text
 from hostlens.reporting.models import (
@@ -31,7 +31,10 @@ from hostlens.reporting.models import (
     RootCauseHypothesis,
 )
 
-__all__ = ["redact_report_for_render"]
+if TYPE_CHECKING:
+    from hostlens.agent.diagnostician import DiagnosticianResult
+
+__all__ = ["redact_diagnostician_result_for_render", "redact_report_for_render"]
 
 
 def _mask_subtree(value: Any) -> Any:
@@ -50,12 +53,18 @@ def _mask_subtree(value: Any) -> Any:
 
 def _redact_structured(value: Any) -> Any:
     """Recursively redact strings inside arbitrary JSON-like structures
-    (dict / list / str / primitive). Used for `Evidence.data` and for
-    `InspectorResult.output`.
+    (dict / list / str / primitive). Used for `Evidence.data`, for
+    `InspectorResult.output`, and for the whole
+    `DiagnosticianResult.model_dump()` graph (including nested loop telemetry —
+    `planner_result` / `diagnostician_loop` and their
+    `tool_invocations[*].input` / `.output` dicts, which carry raw
+    `run_inspector` output = unredacted findings + evidence).
 
-    When walking a dict, keys matching `is_sensitive_key` mask the
-    associated value subtree wholesale (handles JSON-like
-    ``{"password": "<the-value>"}`` shapes that bare-keyword regex
+    Strings pass through `redact_text`; non-str scalars (int / bool / None /
+    StrEnum value / Literal) are returned unchanged so a `model_validate`
+    round-trip preserves their types. When walking a dict, keys matching
+    `is_sensitive_key` mask the associated value subtree wholesale (handles
+    JSON-like ``{"password": "<the-value>"}`` shapes that bare-keyword regex
     matching cannot reach).
     """
     if isinstance(value, str):
@@ -223,3 +232,35 @@ def redact_report_for_render(report: Report) -> Report:
         meta=_redact_meta(report.meta) if report.meta is not None else None,
         hypotheses=[_redact_hypothesis(h) for h in report.hypotheses],
     )
+
+
+def redact_diagnostician_result_for_render(
+    result: DiagnosticianResult,
+) -> DiagnosticianResult:
+    """Return a redacted deep-copy of `result` suitable for rendering.
+
+    The source `result` is not mutated. Every string field anywhere in the
+    `DiagnosticianResult` graph (top-level findings / hypotheses + the nested
+    `planner_result` / `diagnostician_loop` loop telemetry, whose
+    `tool_invocations` carry raw inspector output) passes through the
+    `core/redact` boundary — bringing the `--intent` path to the same redaction
+    standard as the `Report` render path. Non-string scalars survive unchanged
+    via the `model_dump()` → `_redact_structured` → `model_validate()` round-trip.
+
+    Known difference vs. the `Report` path: this generic round-trip walks the
+    dumped dict, so `Finding.tags` (a `list[str]` in the dump) DOES pass through
+    `redact_text` — whereas `_redact_finding` deliberately skips `tags` at the
+    typed level (a tag is constrained to `^[a-z][a-z0-9_-]*$`, and a masking
+    insertion like `.` would break that pattern → `model_validate` would raise).
+    This relies on the invariant that every finding tag reaching the
+    Diagnostician is an inspector-author-controlled legal identifier with no
+    secret-shaped pattern (currently always true: findings arrive with empty tags
+    and `request_more_inspection` injects none). If a future path ever feeds a
+    secret-shaped tag into the Diagnostician's findings, switch to preserving
+    `tags` here (mirroring the `Report` path's typed skip) to avoid a
+    `ValidationError` on the masked round-trip.
+    """
+    from hostlens.agent.diagnostician import DiagnosticianResult
+
+    redacted = _redact_structured(result.model_dump())
+    return DiagnosticianResult.model_validate(redacted)

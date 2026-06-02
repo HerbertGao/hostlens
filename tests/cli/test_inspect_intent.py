@@ -175,6 +175,32 @@ def _tool_use_turn(*, block_id: str) -> MessageResponse:
     )
 
 
+def _correlate_turn(*, block_id: str) -> MessageResponse:
+    """A Diagnostician ``correlate_findings`` tool_use turn citing label ``F1``.
+
+    ``F1`` is the label the FindingStore assigns to the single hello.echo finding
+    the Planner stamps + seeds, so the hit-check passes and the harvest resolves
+    it to a real id.
+    """
+
+    return _msg(
+        content=[
+            ToolUseBlock(
+                type="tool_use",
+                id=block_id,
+                name="correlate_findings",
+                input={
+                    "description": "hello.echo 正常",
+                    "confidence": "low",
+                    "supporting_findings": ["F1"],
+                    "suggested_actions": [],
+                },
+            )
+        ],
+        stop_reason="tool_use",
+    )
+
+
 def _patch_backend(monkeypatch: pytest.MonkeyPatch, backend: LLMBackend) -> None:
     """Replace ``create_backend`` in the CLI intent module with a constant factory.
 
@@ -184,128 +210,6 @@ def _patch_backend(monkeypatch: pytest.MonkeyPatch, backend: LLMBackend) -> None
     """
 
     monkeypatch.setattr("hostlens.cli._intent.create_backend", lambda _settings: backend)
-
-
-# --------------------------------------------------------------------------- #
-# Record-then-replay cassette (5.3⑤/⑥): drive the loop once with a scripted
-# FakeBackend to capture exact multi-turn request keys, then replay via a real
-# PlaybackBackend. Hand-writing the messages would be miss-prone.
-# --------------------------------------------------------------------------- #
-
-
-class _RecordingBackend:
-    """Wrap a ``FakeBackend`` and record each request/response as a cassette line.
-
-    Mirrors ``tests/agent/test_planner.py::_RecordingBackend`` so the recorded
-    request keys match what the loop sends on replay.
-    """
-
-    name = "recording"
-
-    def __init__(self, inner: FakeBackend) -> None:
-        self._inner = inner
-        self.capabilities = inner.capabilities
-        self.records: list[dict[str, Any]] = []
-
-    async def messages_create(
-        self,
-        *,
-        model: str,
-        system: list[dict[str, Any]] | str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        max_tokens: int,
-        timeout: float,
-    ) -> MessageResponse:
-        resp = await self._inner.messages_create(
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
-        # Deep-copy messages: the loop mutates one list in place across turns,
-        # so a by-reference capture would leave records pointing at the final
-        # mutated list (key mismatch on replay).
-        self.records.append(
-            {
-                "request": {
-                    "model": model,
-                    "messages": json.loads(json.dumps(messages, ensure_ascii=False)),
-                    "tools_count": len(tools),
-                },
-                "response": resp.model_dump(mode="json"),
-            }
-        )
-        return resp
-
-
-def _record_cassette(
-    tmp_path: Path,
-    responses: list[MessageResponse],
-) -> Path:
-    """Record a cassette by running the full Planner over a scripted FakeBackend.
-
-    Uses the SAME default tool registry + a fresh local TargetRegistry /
-    InspectorRegistry that the CLI will assemble, so ``tools_count`` (part of
-    the cassette request key) matches on replay. We re-import the CLI helper
-    ``build_planner`` so the recorded loop is byte-for-byte the loop the CLI
-    runs — only the backend differs (recording vs playback).
-    """
-
-    import asyncio
-    import logging
-
-    import structlog
-
-    from hostlens.cli._intent import build_planner
-    from hostlens.cli.inspect import _load_inspector_registry, _load_target_registry
-    from hostlens.core.config import load_settings
-
-    settings = load_settings()
-    target_registry = _load_target_registry()
-    inspector_registry = _load_inspector_registry(settings)
-    logger = cast(structlog.stdlib.BoundLogger, structlog.get_logger("record"))
-
-    recorder = _RecordingBackend(FakeBackend(responses=responses))
-
-    # Build a planner exactly as the CLI would, but with the recording backend.
-    # Reuse build_planner via a temporary create_backend swap so the wiring
-    # (tool registry / context factory) is identical to production — only the
-    # backend differs (recording vs playback).
-    import hostlens.cli._intent as intent_mod
-
-    original = intent_mod.create_backend
-    intent_mod.create_backend = lambda _s: cast(LLMBackend, recorder)  # type: ignore[assignment]
-    try:
-        planner = build_planner(settings, target_registry, inspector_registry, logger)
-    finally:
-        intent_mod.create_backend = original
-
-    # The recording dispatch runs the real InspectorRunner, which emits
-    # ``inspector_started`` at info to structlog's default (stdout) factory.
-    # Without this guard those lines would land on the capsys-captured stdout
-    # and corrupt the later json.loads assertion. Restore the snapshot after.
-    saved = structlog.get_config()
-    current = structlog.get_config()
-    structlog.configure(
-        processors=current["processors"],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
-        context_class=current["context_class"],
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        cache_logger_on_first_use=False,
-    )
-    try:
-        asyncio.run(planner.run("检查这台机器的健康状况"))
-    finally:
-        structlog.configure(**saved)
-
-    cassette_path = tmp_path / "intent_health_check.jsonl"
-    with cassette_path.open("w", encoding="utf-8") as fp:
-        for record in recorder.records:
-            fp.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return cassette_path
 
 
 # --------------------------------------------------------------------------- #
@@ -419,25 +323,27 @@ def test_intent_playback_end_to_end_md_exit_0(
     targets_yaml: Path,
     user_inspectors_dir: Path,
     agent_backend_env: None,
-    tmp_path: Path,
 ) -> None:
-    """End-to-end ``--intent`` over a record-then-replay PlaybackBackend.
+    """End-to-end ``--intent`` over the full Planner → Diagnostician pipeline.
 
     Spec §场景:实时进度与报告分流 + §场景:md 模式输出综述与 findings 摘要 +
-    §场景:健康巡检退出 0. The agent calls run_inspector (hello.echo on
-    local-host → one info finding), then narrates; terminal_status=ok → exit 0.
-    stdout carries the narrative + findings summary + telemetry; stderr carries
-    the live progress tree (and nothing on stdout from progress).
+    §场景:健康巡检退出 0. The Planner calls run_inspector (hello.echo on
+    local-host → one info finding) then narrates; the Diagnostician records one
+    hypothesis (citing F1) then narrates; reconciled status=ok → exit 0. A single
+    shared FakeBackend serves all four turns in order across both agents (the
+    "create_backend only once" contract). stdout carries the diagnosis narrative
+    + findings summary + 根因假设 + telemetry; stderr carries both progress trees.
     """
 
-    cassette = _record_cassette(
-        tmp_path,
+    backend = FakeBackend(
         responses=[
             _tool_use_turn(block_id="tu_1"),
-            _end_turn("机器健康，未发现严重问题。"),  # noqa: RUF001
-        ],
+            _end_turn("机器健康，未发现严重问题。"),  # noqa: RUF001 (planner)
+            _correlate_turn(block_id="tu_2"),
+            _end_turn("综合诊断：无根因风险。"),  # noqa: RUF001 (diagnostician)
+        ]
     )
-    _patch_backend(monkeypatch, PlaybackBackend(cassette_path=cassette))
+    _patch_backend(monkeypatch, cast(LLMBackend, backend))
 
     exit_code, stdout, stderr = _run_main(
         ["inspect", "local-host", "--intent", "检查这台机器的健康状况"],
@@ -445,19 +351,22 @@ def test_intent_playback_end_to_end_md_exit_0(
         monkeypatch,
     )
     assert exit_code == 0, stderr
-    # Narrative + findings summary land on stdout.
-    assert "机器健康，未发现严重问题。" in stdout  # noqa: RUF001
+    # Diagnosis narrative + findings summary + root-cause section land on stdout.
+    assert "综合诊断：无根因风险。" in stdout  # noqa: RUF001
     assert "## Findings" in stdout
     assert "hello received" in stdout  # hello.echo emits an info finding
-    # Telemetry line on stdout.
+    assert "## 根因假设" in stdout
+    # Telemetry line on stdout (reconciled status).
     assert "status=ok" in stdout
-    # Live progress lands on stderr, not stdout.
+    # Both progress trees land on stderr, not stdout.
     assert "run_inspector" in stderr
+    assert "correlate_findings" in stderr
     assert "run_inspector" not in stdout
+    assert "correlate_findings" not in stdout
 
 
 # --------------------------------------------------------------------------- #
-# 5.3⑥ — json mode emits a parseable PlannerResult
+# 5.3⑥ — json mode emits a parseable DiagnosticianResult
 # --------------------------------------------------------------------------- #
 
 
@@ -467,22 +376,23 @@ def test_intent_playback_json_mode_parseable(
     targets_yaml: Path,
     user_inspectors_dir: Path,
     agent_backend_env: None,
-    tmp_path: Path,
 ) -> None:
-    """``--intent --format json`` -> stdout is a valid PlannerResult JSON.
+    """``--intent --format json`` -> stdout is a valid DiagnosticianResult JSON.
 
-    Spec §场景:json 模式输出可解析的 PlannerResult — contains narrative /
-    findings / loop_result / intent.
+    Spec §场景:json 模式输出可解析的 DiagnosticianResult — contains narrative /
+    findings (top-level, authoritative) / hypotheses / status / planner_result /
+    diagnostician_loop.
     """
 
-    cassette = _record_cassette(
-        tmp_path,
+    backend = FakeBackend(
         responses=[
             _tool_use_turn(block_id="tu_1"),
-            _end_turn("综述完成"),
-        ],
+            _end_turn("综述完成"),  # planner
+            _correlate_turn(block_id="tu_2"),
+            _end_turn("诊断完成"),  # diagnostician
+        ]
     )
-    _patch_backend(monkeypatch, PlaybackBackend(cassette_path=cassette))
+    _patch_backend(monkeypatch, cast(LLMBackend, backend))
 
     exit_code, stdout, stderr = _run_main(
         ["inspect", "local-host", "--intent", "检查这台机器的健康状况", "--format", "json"],
@@ -491,12 +401,14 @@ def test_intent_playback_json_mode_parseable(
     )
     assert exit_code == 0, stderr
     payload = json.loads(stdout)
-    assert payload["intent"] == "检查这台机器的健康状况"
-    assert payload["narrative"] == "综述完成"
-    assert "loop_result" in payload
-    assert payload["loop_result"]["terminal_status"] == "ok"
+    assert payload["narrative"] == "诊断完成"
+    assert payload["status"] == "ok"
     assert isinstance(payload["findings"], list)
     assert payload["findings"]  # hello.echo produced one finding
+    assert "hypotheses" in payload
+    assert "planner_result" in payload
+    assert payload["planner_result"]["intent"] == "检查这台机器的健康状况"
+    assert "diagnostician_loop" in payload
 
 
 # --------------------------------------------------------------------------- #
@@ -511,12 +423,14 @@ def test_intent_degraded_max_tokens_exit_2_partial_output(
     user_inspectors_dir: Path,
     agent_backend_env: None,
 ) -> None:
-    """``max_tokens`` degradation -> exit 2, partial narrative still on stdout.
+    """Planner ``max_tokens`` degradation -> exit 2, diagnosis skipped, partial output.
 
-    Spec §场景:降级退出 2 且仍输出部分结果 — stop_reason=max_tokens with a text
-    block makes the loop finalize degraded_token_budget while keeping the
-    partial text as the narrative. The CLI emits a degraded note to stderr and
-    still writes the partial result to stdout; it must NOT retry.
+    Spec §场景:降级退出 2 且仍输出部分结果 — a Planner stop_reason=max_tokens with a
+    text block makes the Planner loop finalize degraded_token_budget. Per design
+    D-5 the Diagnostician is then NEVER launched (status passes through), so the
+    single FakeBackend response is enough (no diagnostician turns consumed). The
+    CLI emits a degraded note to stderr and still writes the partial result to
+    stdout; it must NOT retry.
     """
 
     backend = FakeBackend(
@@ -532,9 +446,11 @@ def test_intent_degraded_max_tokens_exit_2_partial_output(
         monkeypatch,
     )
     assert exit_code == 2
-    # Partial narrative still emitted to stdout (CLI did not blank it).
-    assert "部分输出" in stdout
-    # Degraded note on stderr names the terminal_status.
+    # Reconciled status passes the Planner degrade through; the telemetry line on
+    # stdout notes the skipped diagnosis (diagnostician_loop is None).
+    assert "status=degraded_token_budget" in stdout
+    assert "diagnosis skipped" in stdout
+    # Degraded note on stderr names the reconciled status.
     assert "degraded run" in stderr
     assert "degraded_token_budget" in stderr
     assert "Traceback" not in stderr
@@ -664,20 +580,20 @@ class _PersistentUnavailableBackend:
         raise BackendUnavailable("down", backend_name="persistent-unavailable")
 
 
-def test_intent_persistent_unavailable_degrades_exit_2(
+def test_intent_persistent_unavailable_no_result_exit_2(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     targets_yaml: Path,
     user_inspectors_dir: Path,
     agent_backend_env: None,
 ) -> None:
-    """Persistent BackendUnavailable -> loop finalizes failed_api_unavailable.
+    """Persistent BackendUnavailable -> Planner failed_api_unavailable -> no-result.
 
-    Spec §场景:降级退出 2 且仍输出部分结果 (the degradation/failure branch). This
-    is the **degraded** path (terminal_status), NOT the internal-wrap path: the
-    loop owns the retry and finalizes a LoopResult, so the CLI sees a
-    PlannerResult and maps it to exit 2 with a degraded note (not an
-    ``internal:`` line).
+    Spec §场景:Planner API 不可达无结果退出 2. The Planner loop owns retry and
+    finalizes failed_api_unavailable; per design D-5 there is NO DiagnosticianResult
+    (reconcile_status would raise), so the CLI takes the no-result path: a one-line
+    degrade note on stderr, EMPTY stdout (no faked skeleton), exit 2, and the CLI
+    never retries on top of the loop.
     """
 
     backend = _PersistentUnavailableBackend()
@@ -689,15 +605,17 @@ def test_intent_persistent_unavailable_degrades_exit_2(
         monkeypatch,
     )
     assert exit_code == 2
-    # Degraded terminal_status note, not an internal-wrap line.
+    # No-result degrade note, not an internal-wrap line.
     assert "degraded run" in stderr
     assert "failed_api_unavailable" in stderr
+    assert "no report produced" in stderr
     assert "internal:" not in stderr
     assert "Traceback" not in stderr
-    # The loop owns retry (initial + 3 = 4); the CLI must not multiply it.
+    # The loop owns retry (initial + 3 = 4); the CLI must not multiply it, and the
+    # Diagnostician (reusing the same backend) is never launched (no 5th call).
     assert backend.calls == 4
-    # Narrative is empty (no model output captured) but stdout still rendered.
-    assert "status=failed_api_unavailable" in stdout
+    # No DiagnosticianResult was produced, so stdout stays empty (no skeleton).
+    assert stdout == ""
 
 
 def test_intent_cassette_miss_wrapped_internal_exit_2(
@@ -803,7 +721,8 @@ def test_intent_secret_in_tool_failure_not_leaked(
     backend = FakeBackend(
         responses=[
             _tool_use_turn(block_id="tu_1"),
-            _end_turn("巡检遇到工具错误。"),
+            _end_turn("巡检遇到工具错误。"),  # planner
+            _end_turn("诊断结束。"),
         ]
     )
     _patch_backend(monkeypatch, cast(LLMBackend, backend))
@@ -813,7 +732,7 @@ def test_intent_secret_in_tool_failure_not_leaked(
         capsys,
         monkeypatch,
     )
-    # Run completes (end_turn) — exit 0 (no critical finding, terminal ok).
+    # Both loops complete (end_turn) — exit 0 (no critical finding, status ok).
     assert exit_code == 0, stderr
     # The sensitive username / full path must not appear on EITHER stream.
     assert secret_user not in stdout

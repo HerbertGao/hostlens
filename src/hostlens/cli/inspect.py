@@ -50,8 +50,13 @@ import structlog
 import typer
 from pydantic import ValidationError
 
+from hostlens.agent.diagnostician import DiagnosticianResult
 from hostlens.agent.planner import PlannerResult
-from hostlens.cli._intent import RichLiveObserver, build_planner, render_planner_result
+from hostlens.cli._intent import (
+    RichLiveObserver,
+    render_diagnostician_result,
+    run_intent_diagnosis,
+)
 from hostlens.core.config import Settings, load_settings
 from hostlens.core.exceptions import ConfigError, InspectorError, TargetError
 from hostlens.core.logging import configure_logging
@@ -517,23 +522,31 @@ def _load_inspector_registry(settings: Settings) -> InspectorRegistry:
 
 
 def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
-    """Assemble + run the Planner Agent for ``--intent`` (design D-5/D-6).
+    """Assemble + run the Planner → Diagnostician pipeline for ``--intent``.
 
-    Live progress (the ``RichLiveObserver``) streams to stderr; the rendered
-    report goes to stdout (or ``--output``). The structlog reconfiguration is
-    done inside the same restored-config guard as the ``--inspector`` path (the
-    caller's ``try/finally`` in ``inspect_cmd``).
+    Live progress (the ``RichLiveObserver``) streams to stderr for BOTH the
+    Planner and Diagnostician stages; the rendered ``DiagnosticianResult`` goes
+    to stdout (or ``--output``). The structlog reconfiguration is done inside the
+    same restored-config guard as the ``--inspector`` path (the caller's
+    ``try/finally`` in ``inspect_cmd``).
 
-    Exit code (design D-6, priority 3>2>1>0):
-      0 ok + no critical finding / 1 ok + ≥1 critical finding /
-      2 terminal_status != ok (degraded / failed / empty) /
+    ``run_intent_diagnosis`` returns ``None`` on the Planner
+    ``failed_api_unavailable`` no-result path: there is no ``DiagnosticianResult``
+    to render (fabricating an empty skeleton is forbidden), so the CLI emits a
+    one-line degrade note, writes nothing to stdout, and exits 2.
+
+    Exit code (spec §需求, priority 3>2>1>0), mapped by ``_compute_diag_exit_code``:
+      0 status=ok + no critical finding / 1 status=ok + ≥1 critical finding /
+      2 status ∈ degraded set / Planner failed_api_unavailable (no result) /
       3 backend not configured (ConfigError) / --output write failure.
     """
 
     # The whole body runs inside one boundary try so the assembly phase
-    # (load_settings / inspector registry load / build_planner) can never leak
-    # a Python traceback past the CLI surface — only build_planner's ConfigError
-    # has a more specific (doctor-pointing) message, kept as an inner handler.
+    # (load_settings / inspector registry load / backend assembly / id stamping)
+    # can never leak a Python traceback past the CLI surface — only the backend
+    # ConfigError has a more specific (doctor-pointing) message, kept as an inner
+    # handler. The fail-loud id-stamping InspectorError (an unloaded inspector)
+    # is caught by the blanket ``except Exception`` → ``internal: ...`` → exit 2.
     try:
         settings = load_settings()
         configure_logging(settings.log_mode)
@@ -546,57 +559,122 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
         _resolve_target(target_registry, target)
         inspector_registry = _load_inspector_registry(settings)
 
-        try:
-            planner = build_planner(settings, target_registry, inspector_registry, logger)
-        except ConfigError as exc:
-            # Backend not configured (e.g. missing ANTHROPIC_API_KEY). Point the
-            # operator at the doctor diagnostic; never leak a traceback.
-            typer.echo(
-                f"hostlens inspect: backend not configured ({exc}); run 'hostlens doctor'",
-                err=True,
-            )
-            raise typer.Exit(code=3) from exc
-
         observer = RichLiveObserver()
         try:
-            result = asyncio.run(planner.run(intent, observer=observer))
+            result = asyncio.run(
+                run_intent_diagnosis(
+                    settings,
+                    target,
+                    intent,
+                    target_registry,
+                    inspector_registry,
+                    logger,
+                    observer=observer,
+                )
+            )
+        except ConfigError as exc:
+            # Two assembly-time ConfigError sources reach here: create_backend
+            # (no/invalid backend block — raised with kind=None) and the lazy
+            # DiagnosticianAgent prompt loader (kind="diagnostician_prompt_missing").
+            # Only the former warrants the backend-specific "run doctor" hint; any
+            # other kind gets a generic configuration-error message (both exit 3).
+            if exc.kind is None:
+                typer.echo(
+                    f"hostlens inspect: backend not configured ({exc}); run 'hostlens doctor'",
+                    err=True,
+                )
+            else:
+                typer.echo(
+                    f"hostlens inspect: configuration error ({exc})",
+                    err=True,
+                )
+            raise typer.Exit(code=3) from exc
         finally:
             # fail-loud loop paths don't emit RunFinalized, so close the Live
             # region here regardless of success / degrade / raise.
             observer.close()
 
-        rendered = render_planner_result(result, fmt)
+        if result is None:
+            # No-result path: Planner finalized failed_api_unavailable. Emit a
+            # one-line degrade reason, leave stdout empty (no skeleton), exit 2.
+            typer.echo(
+                "hostlens inspect: degraded run (planner terminal_status="
+                "failed_api_unavailable); no report produced",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+        rendered = render_diagnostician_result(result, fmt)
         _emit_output(rendered, output)
 
-        exit_code = _compute_intent_exit_code(result)
+        exit_code = _compute_diag_exit_code(result)
         if exit_code != 0:
             if exit_code == 2:
                 typer.echo(
-                    f"hostlens inspect: degraded run (terminal_status="
-                    f"{result.loop_result.terminal_status})",
+                    f"hostlens inspect: degraded run (status={result.status})",
                     err=True,
                 )
             raise typer.Exit(code=exit_code)
     except typer.Exit:
         # Re-raise verbatim so the explicit exit codes set above and inside
-        # _resolve_target / _emit_output / build_planner drive the exit status.
+        # _resolve_target / _emit_output drive the exit status.
         raise
     except (KeyboardInterrupt, asyncio.CancelledError) as exc:
         typer.echo("internal: cancelled: intent run interrupted", err=True)
         raise typer.Exit(code=2) from exc
     except ConfigError as exc:
-        # Configuration errors from load_settings / inspector registry / planner
-        # prompt loading (build_planner's backend-config ConfigError is handled
-        # by the more specific inner branch above and re-raised as typer.Exit).
+        # Configuration errors from load_settings / inspector registry / agent
+        # prompt loading (the backend-config ConfigError is handled by the more
+        # specific inner branch above and re-raised as typer.Exit).
         typer.echo(f"hostlens inspect: configuration error ({exc})", err=True)
         raise typer.Exit(code=3) from exc
     except Exception as exc:
-        # CLI boundary: any unexpected error (incl. non-retriable backend
-        # errors passed through from the loop, e.g. CassetteMiss) becomes one
-        # ``internal: <kind>: <msg>`` line — never a Python traceback.
+        # CLI boundary: any unexpected error (incl. non-retriable backend errors
+        # passed through from a loop, e.g. CassetteMiss; incl. the fail-loud
+        # InspectorError bubbled by stamp_planner_findings when an inspector was
+        # unloaded after the Planner ran) becomes one ``internal: <kind>: <msg>``
+        # line — never a Python traceback.
         kind = type(exc).__name__
         typer.echo(f"internal: {kind}: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+
+# DiagnosticianResult.status values that map to the degraded exit code 2. Drawn
+# from ReportStatus: every degraded_* plus empty_response. (failed_api_unavailable
+# is NOT a ReportStatus value — the Planner no-result path handles it via a None
+# result in _run_intent.)
+_DEGRADED_STATUSES: frozenset[str] = frozenset(
+    {
+        "degraded_no_planner",
+        "degraded_rate_limited",
+        "degraded_token_budget",
+        "degraded_max_turns",
+        "empty_response",
+    }
+)
+
+
+def _compute_diag_exit_code(result: DiagnosticianResult) -> int:
+    """Map a ``DiagnosticianResult`` to the closed 4-value exit set (spec §需求).
+
+    ``status=ok`` + no critical finding → 0; ``status=ok`` + ≥1 critical finding
+    → 1; any degraded ``status`` (``degraded_*`` / ``empty_response``, regardless
+    of whether the value came from a Planner degrade or a reconcile) → 2. Exit 3
+    is owned by the caller paths (mutual-exclusion / backend config / --output
+    write / --persist-with-intent).
+
+    Critical detection is on the **top-level canonical** ``findings`` (the
+    FindingStore snapshot, all id-bearing), NOT ``planner_result.findings`` (the
+    unstamped debug originals). ``empty_response`` (diagnostician returned no
+    text) is degraded → 2, distinct from an ``ok`` end_turn that produced text
+    but no hypotheses (→ severity-based 0/1).
+    """
+
+    if result.status in _DEGRADED_STATUSES:
+        return 2
+    if any(f.severity == "critical" for f in result.findings):
+        return 1
+    return 0
 
 
 def _compute_intent_exit_code(result: PlannerResult) -> int:
