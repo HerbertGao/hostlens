@@ -28,10 +28,11 @@ from hostlens.agent.cassette_key import (
     request_key_for_payload,
 )
 
-# ``scripts/`` is not an importable package; load the duplicate-key helper the
-# lint uses so the three-source equality covers the real lint code path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from cassette_lint import request_key_for_record
+# ``scripts/`` is not an importable package; the duplicate-key helper the lint
+# uses is loaded inside the one test that needs it via a scoped, restored
+# ``sys.path`` insert (matching tests/test_cassette_lint.py) so module import
+# never leaves ``scripts/`` on ``sys.path`` and the suite stays order-independent.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 
 _MODEL = "deepseek-v4-pro"
 _TOOLS_COUNT = 2
@@ -122,6 +123,15 @@ def test_three_sources_agree_on_key() -> None:
     is an anti-drift guard (it fails if any source re-inlines a divergent key
     algorithm), not an independent re-derivation of the normalization.
     """
+
+    # Load the lint's record-key helper with a scoped, restored ``sys.path``
+    # insert (matches tests/test_cassette_lint.py) so ``scripts/`` never lingers
+    # on ``sys.path`` and the suite stays order-independent.
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+    try:
+        from cassette_lint import request_key_for_record
+    finally:
+        sys.path.pop(0)
 
     messages = _multiturn("reasoning A", "sig-1")
     helper_key = request_key_for_payload(_MODEL, messages, _TOOLS_COUNT)

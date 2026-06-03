@@ -35,14 +35,20 @@ _THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 def project_messages_drop_thinking(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return a copy of ``messages`` with every thinking/redacted block dropped.
+    """Return a new ``messages`` list with every thinking/redacted block dropped.
 
-    Side-effect free: the input list and its messages are never mutated. Only
-    ``content`` entries that are dicts whose ``type`` is ``"thinking"`` or
-    ``"redacted_thinking"`` are removed (the whole block, including any
-    ``extra="allow"`` provider fields); string ``content`` and all other block
-    types pass through unchanged. For thinking-free ``messages`` this is the
-    identity projection.
+    The input is never mutated: a fresh outer list is built, and any message
+    that actually loses a block is rebuilt with ``{**message, "content": kept}``.
+    For performance this is a **shallow** projection — messages with nothing to
+    drop (string ``content`` or no thinking blocks) are passed through **by
+    reference**, so the result is NOT a deep copy and may alias the caller's
+    message dicts. Both call sites (``request_key_for_payload`` and
+    ``RecordingBackend``) only serialize the result, never mutate it, so the
+    aliasing is safe; a future caller MUST treat the returned messages as
+    read-only. Only ``content`` entries that are dicts whose ``type`` is
+    ``"thinking"`` or ``"redacted_thinking"`` are removed (the whole block,
+    including any ``extra="allow"`` provider fields). For thinking-free
+    ``messages`` this is the identity projection (same dicts, new outer list).
 
     This is the **single source** of the thinking-drop rule. Both
     ``request_key_for_payload`` (keying) and ``RecordingBackend`` (canonical
