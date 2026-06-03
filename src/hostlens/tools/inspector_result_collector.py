@@ -15,9 +15,18 @@ locks its six fields). The orchestration layer holds the same instance across
 the Planner loop and the Diagnostician loop, then `snapshot()`s the full set
 after both loops finish.
 
-Like `FindingStore`, this container is intentionally synchronous: under the
-loop's single-threaded asyncio dispatch, handler appends never interleave across
-an `await`, so no lock is needed.
+Like `FindingStore`, this container is intentionally synchronous and lock-free:
+`append` does no `await`, so even when the loop dispatches several `tool_use`
+blocks in parallel (`asyncio.gather`, loop.py), two appends can never interleave
+under single-threaded asyncio — list mutation is atomic between await points.
+
+Ordering caveat: cross-phase order IS stable (the Planner loop fully finishes
+before the Diagnostician loop, so all Planner-phase results precede every
+`request_more_inspection` supplement). But WITHIN a single response that runs
+multiple inspectors in parallel, append order follows handler completion order
+and is therefore NOT guaranteed stable across runs. Consumers must not rely on
+intra-phase positional order — finding identity is content-derived
+(`compute_finding_id`), never positional.
 """
 
 from __future__ import annotations
@@ -28,17 +37,19 @@ __all__ = ["InspectorResultCollector"]
 
 
 class InspectorResultCollector:
-    """Per-run, insertion-ordered sink of complete `InspectorResult` objects.
+    """Per-run, append-ordered sink of complete `InspectorResult` objects.
 
     Construct one instance per `--intent` run, inject it into the
     `run_inspector` / `request_more_inspection` handlers via closure, then
     `snapshot()` the full set after the loops finish. Never a module-global
-    singleton (CLAUDE.md §6 / spec §需求).
+    singleton (CLAUDE.md §6 / spec §需求). See the module docstring for the
+    ordering caveat under parallel tool dispatch.
     """
 
     def __init__(self) -> None:
-        # Insertion order is append order (Planner-phase results first, then
-        # request_more_inspection supplements), so iteration is deterministic.
+        # Append order = handler completion order. Stable across phases (Planner
+        # before Diagnostician); within a phase, parallel inspectors may complete
+        # out of order. Identity is content-derived, so order is not load-bearing.
         self._results: list[InspectorResult] = []
 
     def append(self, result: InspectorResult) -> None:
