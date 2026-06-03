@@ -27,6 +27,7 @@ from hostlens.inspectors.runner import InspectorRunner
 from hostlens.targets.base import Capability
 from hostlens.tools.base import ToolContext, ToolSpec
 from hostlens.tools.decorators import tool
+from hostlens.tools.inspector_result_collector import InspectorResultCollector
 from hostlens.tools.registry import ToolRegistry
 from hostlens.tools.schemas.list_inspectors import (
     InspectorSummary,
@@ -63,6 +64,7 @@ async def run_inspector_handler(
     ctx: ToolContext,
     *,
     clock: Callable[[], datetime] | None = None,
+    collector: InspectorResultCollector | None = None,
 ) -> RunInspectorOutput:
     """Dispatch one Inspector run against one target via `InspectorRunner`.
 
@@ -88,6 +90,15 @@ async def run_inspector_handler(
     `allow_privileged` is forced to `False` on the agent surface — the
     Planner Agent cannot opt-in to sudo/root inspectors. Only the human
     CLI / approval flow may do so (and that flow lives downstream).
+
+    `collector` is normally `None` (production agent loop / `--inspector`
+    mechanical path → no collection, byte-identical behaviour). The `--intent`
+    orchestration threads a per-run `InspectorResultCollector` here via
+    `register_default_tools(collector=...)`; when present, the **complete**
+    `InspectorResult` the runner returns (real status/version/duration, ok and
+    non-ok alike) is appended so the orchestration layer can assemble a faithful
+    `Report`. The wire projection (`RunInspectorOutput`, which strips those
+    fields) is unchanged — the collector is the side channel, never the wire.
     """
 
     # ---- 1. Lookup target -------------------------------------------- #
@@ -140,7 +151,14 @@ async def run_inspector_handler(
         cancel=ctx.cancel,
     )
 
-    # ---- 4. Log status (status field is NOT exposed via RunInspectorOutput) ---- #
+    # ---- 4. Collect the complete InspectorResult (side channel, not wire) ---- #
+    # Append the runner's `InspectorResult` itself (real status/version/duration),
+    # NOT the wire-projected `RunInspectorOutput`. Done here so BOTH the ok and
+    # non-ok projection branches below are covered by this single append.
+    if collector is not None:
+        collector.append(result)
+
+    # ---- 5. Log status (status field is NOT exposed via RunInspectorOutput) ---- #
     if result.status != "ok":
         # status/error/missing belong to M3's RunInspectorOutput extension;
         # for M2 we surface them only via structlog so the Planner Agent
@@ -154,7 +172,7 @@ async def run_inspector_handler(
             missing=result.missing,
         )
 
-    # ---- 5. Project InspectorResult -> RunInspectorOutput ------------ #
+    # ---- 6. Project InspectorResult -> RunInspectorOutput ------------ #
     # When status != "ok" the runner already produces an empty findings list,
     # but we enforce findings=[] here at the handler boundary so the
     # ToolSpec contract stays stable even if runner behavior shifts later.
@@ -448,6 +466,7 @@ def register_default_tools(
     registry: ToolRegistry,
     *,
     clock: Callable[[], datetime] | None = None,
+    collector: InspectorResultCollector | None = None,
 ) -> None:
     """Register the M2 first-batch ToolSpecs into `registry`.
 
@@ -463,16 +482,26 @@ def register_default_tools(
     render byte-stable commands under a frozen clock. The clock rides on this
     assembly boundary, not on `ToolContext` — keeping the DI container at its
     locked six-field set (ADR-008).
+
+    `collector` is normally `None` (byte-identical default behaviour). The
+    `--intent` orchestration passes a per-run `InspectorResultCollector` so
+    `run_inspector_handler` appends the complete `InspectorResult` it gets back
+    from the runner. The collector rides this same assembly boundary as the
+    clock (closure injection), never `ToolContext`.
+
+    When neither `clock` nor `collector` is supplied, the default module-level
+    `run_inspector` spec is registered unchanged. When either is supplied, a
+    closure-bound `run_inspector` spec forwarding both is registered instead.
     """
-    if clock is None:
+    if clock is None and collector is None:
         registry.register(run_inspector)
     else:
 
-        async def _clock_bound_run_inspector(
+        async def _bound_run_inspector(
             args: RunInspectorInput, ctx: ToolContext
         ) -> RunInspectorOutput:
-            return await run_inspector_handler(args, ctx, clock=clock)
+            return await run_inspector_handler(args, ctx, clock=clock, collector=collector)
 
-        registry.register(build_run_inspector_spec(cast(_BroadHandler, _clock_bound_run_inspector)))
+        registry.register(build_run_inspector_spec(cast(_BroadHandler, _bound_run_inspector)))
     registry.register(list_inspectors)
     registry.register(list_targets)
