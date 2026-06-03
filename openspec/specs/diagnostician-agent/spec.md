@@ -92,41 +92,35 @@
 
 ### 需求:编排层必须给 Planner findings 盖稳定 id，零 wire / 零 ToolContext 改动
 
-编排层（intent 路径）必须在 Planner 与 Diagnostician 之间给 findings 盖稳定 `id`：从 `loop_result.tool_invocations` 按 `(inspector_name → findings)` 重新分组（`PlannerResult.findings` 已 flatten 丢分组，禁止用它做分组源），对每个 `inspector_name` 用 `InspectorRegistry.get(name)` 返回的 `InspectorManifest.version` 反查 version，调 `compute_finding_id(inspector_name, version, message)` 给每个 finding 盖 `id` 并填 `inspector_name` / `inspector_version`。盖章使用的 `InspectorRegistry` 必须与 Planner 跑时同一实例（编排层持有并共享给 context_factory，避免 TOCTOU）。若 `InspectorRegistry.get(name)` 对某 name 抛 `inspector_not_found`（inspector 在 Planner 跑后被卸载/改名），盖章必须 **fail-loud**（冒泡至 CLI 边界包成 `internal: ... → exit 2`），**禁止**静默跳过该组 findings。**禁止**为盖章加宽 `RunInspectorOutput` wire（保 cassette hash 不变）、**禁止**改 `ToolContext` 6 字段。盖章后的 findings 用于 seed finding-store，并连同序号标签作为诊断师首条 user message 的内容。
+`--intent` 编排层必须给 findings 盖稳定 `id`，且 id 必须统一到一个来源以保 `hypotheses[*].supporting_findings` 与 `Report.findings` 一致（见 `agent-report-assembly` 能力）：
 
-#### 场景:从 tool_invocations 分组盖章
+- **新机制（本提案）**：id 来自 per-run `InspectorResultCollector` 供给的**真 `InspectorResult.version`**，经 `compute_finding_id(name, version, message)` 盖（**不再**用 `InspectorRegistry.get(name)` 反查 version）。两个时点用同源 version、同函数、同输入，故 FindingStore seed 的 id 与最终 `Report.findings` 的 id 天然相等（**id 一致由内容确定性保证，非组装顺序**；详见 `agent-report-assembly` D-2/D-3）。`FindingStore` 在诊断 loop **前** seed（Planner-phase findings 经 `compute_finding_id` 盖 id），权威 `Report` 在诊断 loop **后**由 `from_inspector_results` 组装；二者 id 相等。`supporting_findings` 引用的真 id ∈ `Report.findings`。
+- **`stamp_planner_findings` 删除**：其唯一调用点是 `--intent` 路径，改用 collector 真 version 后变死代码，本提案**删除该函数 + 其测试**（见提案影响）。其原 fail-loud（inspector 跑后被卸载致 registry 反查 `inspector_not_found`）的保护对象随之消失——version 在 run 时随 `InspectorResult` 落定，不再有事后反查、该场景不再可能触发。
+- **不变项**：仍**零 wire 改动**（`RunInspectorOutput` 不变、cassette 全命中——collector 是 out-of-band）、**零 `ToolContext` 改动**（6 字段，ADR-008；collector 经 handler 闭包注入）。组装后必须做 id 一致性不变量校验（每个 `supporting_findings` id ∈ `Report.findings`），不满足 fail-loud（`internal: ... → exit 2`）。
 
-- **当** Planner 跑了两个 inspector 各产若干 finding
-- **那么** 编排层必须从 `tool_invocations` 按 inspector 分组、反查各自 version、给每个 finding 盖上由 `compute_finding_id` 算出的稳定 id
+#### 场景:id 同源于 from_inspector_results
+
+- **当** Planner 跑了两个 inspector，编排层用 collector 的 `InspectorResult` 经 `from_inspector_results` 组装 Report
+- **那么** finding id 必须由 `compute_finding_id`（用真 `InspectorResult.version`）盖出，`hypotheses[*].supporting_findings` 引用的 id 必须 ∈ `Report.findings`，无 registry 反查
 
 #### 场景:盖章不改 run_inspector wire
 
-- **当** 启用诊断路径后回放既有 incident/demo/planner cassette
-- **那么** `run_inspector` 的 tool_result 必须字节不变、cassette 全部命中（id 盖章只发生在编排层内存，不上 wire）
-
-#### 场景:盖章时 inspector 已卸载 fail-loud
-
-- **当** 盖章 helper 对某 `inspector_name` 调 `InspectorRegistry.get` 抛 `inspector_not_found`
-- **那么** 必须 fail-loud（CLI 边界 `internal: <kind>: <msg>` → exit 2），禁止静默跳过该组 findings
+- **当** 启用 collector 后回放既有 incident/demo/planner cassette
+- **那么** `run_inspector` 的 tool_result 必须字节不变、cassette 全部命中（collector 是 out-of-band 内存收集，不上 wire）
 
 ### 需求:`DiagnosticianResult` 必须聚合 findings(带 id) / hypotheses / reconcile 后的 status
 
-诊断路径必须产出 frozen 的 `DiagnosticianResult`，字段必须含：`narrative`（诊断 loop 的 `final_text`，**降级路径下可能为空字符串**）、`findings: list[Finding]`（**诊断 loop 结束后 `FindingStore` 的完整快照** —— 含 Planner 盖章 findings **加**所有成功 `request_more_inspection` 新增 findings，全部带稳定 id，**canonical 集合**；`hypotheses[*].supporting_findings` 引用的任一 id 必须能在此集合中找到）、`hypotheses: list[RootCauseHypothesis]`（harvest 自 `correlate_findings`，`supporting_findings` 已解析为真 id）、`status: ReportStatus`（按 reconcile 规则得出）、`planner_result: PlannerResult`（原样保留，其内嵌 `findings` 为**未盖章原件**、仅供调试保真、**非权威**）、`diagnostician_loop: LoopResult | None`（诊断 loop 遥测）。`diagnostician_loop` 为 `None` **当且仅当**诊断阶段被跳过（Planner 降级）；诊断 loop 实际运行的任何路径（含其自身 `failed_api_unavailable` 经 reconcile 映射为 `degraded_no_planner` 的情形）必须携带非 `None` 的 `LoopResult`。下游（含 `--format json` 消费方）必须以顶层 `findings` 为权威集合，`planner_result.findings` 不作权威。**禁止**组装 `reporting.models.Report`（本提案 Scope-Core，不产忠实 Report）。
+诊断 loop 必须产出 frozen 的 `DiagnosticianResult` 作为**编排层内部聚合**（不再是 `--intent` 的 CLI / 持久化表面契约——CLI 表面是 `Report`，见 `inspect-cli-command` 与 `agent-report-assembly`）。字段必须含：`narrative`（诊断 loop 的 `final_text`，降级路径下可能为空字符串）、`findings: list[Finding]`（带稳定 id 的 canonical 集合，id 同源于 `from_inspector_results`）、`hypotheses: list[RootCauseHypothesis]`（harvest 自 `correlate_findings`，`supporting_findings` 为 Report 的真 finding id）、`status: ReportStatus`（按 reconcile 规则得出）、`planner_result: PlannerResult`、`diagnostician_loop: LoopResult | None`（`None` 当且仅当诊断阶段被跳过）。编排层必须把 `DiagnosticianResult.hypotheses` 投影进持久化 `Report.hypotheses`，把 `narrative` 投影进 Report 渲染 / `metadata`（见 `agent-report-assembly`）。**不再禁止**组装 `reporting.models.Report` —— 本提案正是让 `--intent` 路径经 `from_inspector_results` 产出忠实 Report（取代 `add-diagnostician-agent` 的 Scope-Core「不产 Report」约束）。
 
 #### 场景:无根因假设时 hypotheses 为空
 
 - **当** 诊断师未调用任何 `correlate_findings` 且以 `end_turn` 带文本结束（`terminal_status=ok`）
-- **那么** `DiagnosticianResult.hypotheses` 必须为空列表，`status=ok`，其余字段正常填充，禁止报错
+- **那么** `DiagnosticianResult.hypotheses` 必须为空列表，投影出的 `Report.hypotheses` 也为空，其余字段正常
 
-#### 场景:Planner 降级跳过诊断时 diagnostician_loop 为 None
+#### 场景:DiagnosticianResult 不再是 CLI 表面契约
 
-- **当** Planner 降级、诊断阶段被跳过
-- **那么** `DiagnosticianResult.diagnostician_loop` 必须为 `None`，`findings` 为 Planner 已 harvest（可能非空）、`hypotheses=[]`
-
-#### 场景:补查 findings 进入 canonical 集合
-
-- **当** 诊断师调用 `request_more_inspection` 取到新 findings 并据其产出一条引用该新 finding 的假设
-- **那么** 顶层 `DiagnosticianResult.findings` 必须同时包含 Planner findings 与该新 finding（FindingStore 完整快照），使该假设的 `supporting_findings` id 能在 `findings` 中找到，证据链接不断
+- **当** `--intent --format json` 输出
+- **那么** stdout 必须是 `Report` 的序列化（非 `DiagnosticianResult`）；`DiagnosticianResult` 仅作编排层内部聚合存在，不对外暴露为 json 顶层结构（见 `inspect-cli-command` 的 BREAKING 映射）
 
 ### 需求:两个 loop 的 `terminal_status` 必须 reconcile 成单一 `ReportStatus`
 
