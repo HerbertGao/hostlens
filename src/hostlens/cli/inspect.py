@@ -50,11 +50,10 @@ import structlog
 import typer
 from pydantic import ValidationError
 
-from hostlens.agent.diagnostician import DiagnosticianResult
 from hostlens.agent.planner import PlannerResult
 from hostlens.cli._intent import (
     RichLiveObserver,
-    render_diagnostician_result,
+    render_intent_report,
     run_intent_diagnosis,
 )
 from hostlens.core.config import Settings, load_settings
@@ -65,7 +64,7 @@ from hostlens.inspectors.result import InspectorResult
 from hostlens.inspectors.runner import InspectorRunner
 from hostlens.inspectors.schema import CollectSpec, InspectorManifest
 from hostlens.reporting import ReportStore, render_json, render_markdown
-from hostlens.reporting.models import Report
+from hostlens.reporting.models import Report, ReportStatus
 from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import load_targets_config
 from hostlens.targets.registry import TargetRegistry, build_registry_from_config
@@ -521,23 +520,32 @@ def _load_inspector_registry(settings: Settings) -> InspectorRegistry:
     return result.registry
 
 
-def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
+def _run_intent(target: str, intent: str, fmt: str, output: str | None, persist: bool) -> None:
     """Assemble + run the Planner → Diagnostician pipeline for ``--intent``.
 
     Live progress (the ``RichLiveObserver``) streams to stderr for BOTH the
-    Planner and Diagnostician stages; the rendered ``DiagnosticianResult`` goes
-    to stdout (or ``--output``). The structlog reconfiguration is done inside the
-    same restored-config guard as the ``--inspector`` path (the caller's
+    Planner and Diagnostician stages; the rendered ``Report`` goes to stdout (or
+    ``--output``). The structlog reconfiguration is done inside the same
+    restored-config guard as the ``--inspector`` path (the caller's
     ``try/finally`` in ``inspect_cmd``).
 
-    ``run_intent_diagnosis`` returns ``None`` on the Planner
-    ``failed_api_unavailable`` no-result path: there is no ``DiagnosticianResult``
-    to render (fabricating an empty skeleton is forbidden), so the CLI emits a
-    one-line degrade note, writes nothing to stdout, and exits 2.
+    ``run_intent_diagnosis`` returns a first-class ``Report`` (assembled from the
+    per-run collector's full ``InspectorResult`` snapshot, with the
+    Diagnostician's hypotheses / narrative projected in) or ``None`` on the
+    **no-result** path (the collector is empty — zero ``InspectorResult``). On
+    no-result there is no ``Report`` to render or persist (fabricating an empty
+    skeleton is forbidden), so the CLI emits a one-line degrade note, writes
+    nothing to stdout, skips persistence, and exits 2.
 
-    Exit code (spec §需求, priority 3>2>1>0), mapped by ``_compute_diag_exit_code``:
+    When ``persist`` is set and a ``Report`` was produced, it is saved to the
+    local ``ReportStore`` before rendering (so it is on disk even if a later
+    render/emit step fails); an orphan degradation escalates the exit code to 2.
+
+    Exit code (spec §需求, priority 3>2>1>0), mapped by
+    ``_compute_intent_report_exit_code``:
       0 status=ok + no critical finding / 1 status=ok + ≥1 critical finding /
-      2 status ∈ degraded set / Planner failed_api_unavailable (no result) /
+      2 status ∈ degraded set (``degraded_*`` / ``empty_response`` / ``partial``)
+      / collector empty (no result) / persist orphan-degraded /
       3 backend not configured (ConfigError) / --output write failure.
     """
 
@@ -545,8 +553,9 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
     # (load_settings / inspector registry load / backend assembly / id stamping)
     # can never leak a Python traceback past the CLI surface — only the backend
     # ConfigError has a more specific (doctor-pointing) message, kept as an inner
-    # handler. The fail-loud id-stamping InspectorError (an unloaded inspector)
-    # is caught by the blanket ``except Exception`` → ``internal: ...`` → exit 2.
+    # handler. A fail-loud assembly error (e.g. the id-consistency invariant in
+    # ``_assemble_report``) is caught by the blanket ``except Exception`` →
+    # ``internal: ...`` → exit 2.
     try:
         settings = load_settings()
         configure_logging(settings.log_mode)
@@ -556,7 +565,7 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
         target_registry = _load_target_registry()
         # Resolve target up front so an unknown target fails fast (exit 3) before
         # any backend / Agent assembly.
-        _resolve_target(target_registry, target)
+        target_obj = _resolve_target(target_registry, target)
         inspector_registry = _load_inspector_registry(settings)
 
         observer = RichLiveObserver()
@@ -569,6 +578,7 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
                     target_registry,
                     inspector_registry,
                     logger,
+                    target_type=target_obj.type,
                     observer=observer,
                 )
             )
@@ -595,23 +605,43 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
             observer.close()
 
         if result is None:
-            # No-result path: Planner finalized failed_api_unavailable. Emit a
-            # one-line degrade reason, leave stdout empty (no skeleton), exit 2.
+            # No-result path: the collector was empty (zero InspectorResult — the
+            # Planner never successfully ran an inspector, e.g. failed_api_unavailable
+            # before any tool call, or the model never called run_inspector). No
+            # Report → nothing to render or persist. Emit a one-line degrade reason,
+            # leave stdout empty (no skeleton), skip persist, exit 2.
             typer.echo(
-                "hostlens inspect: degraded run (planner terminal_status="
-                "failed_api_unavailable); no report produced",
+                "hostlens inspect: degraded run (no inspector results collected); "
+                "no report produced",
                 err=True,
             )
             raise typer.Exit(code=2)
 
-        rendered = render_diagnostician_result(result, fmt)
+        # Persist before rendering so the report is on disk even if a later
+        # render/emit step fails (mirrors the --inspector path). A no-result run
+        # (result is None) never reaches here, so persistence is never silently
+        # skipped as a fake success.
+        persist_failed = False
+        orphaned = False
+        if persist:
+            try:
+                orphaned = _persist_report(result)
+            except Exception as exc:
+                kind = type(exc).__name__
+                typer.echo(f"internal: failed to persist report: {kind}: {exc}", err=True)
+                persist_failed = True
+
+        rendered = render_intent_report(result, fmt)
         _emit_output(rendered, output)
 
-        exit_code = _compute_diag_exit_code(result)
+        exit_code = _compute_intent_report_exit_code(result)
+        if (orphaned or persist_failed) and exit_code in (0, 1):
+            exit_code = 2
         if exit_code != 0:
-            if exit_code == 2:
+            status = result.meta.status if result.meta is not None else "unknown"
+            if exit_code == 2 and status in _REPORT_DEGRADED_STATUSES:
                 typer.echo(
-                    f"hostlens inspect: degraded run (status={result.status})",
+                    f"hostlens inspect: degraded run (status={status})",
                     err=True,
                 )
             raise typer.Exit(code=exit_code)
@@ -631,20 +661,26 @@ def _run_intent(target: str, intent: str, fmt: str, output: str | None) -> None:
     except Exception as exc:
         # CLI boundary: any unexpected error (incl. non-retriable backend errors
         # passed through from a loop, e.g. CassetteMiss; incl. the fail-loud
-        # InspectorError bubbled by stamp_planner_findings when an inspector was
-        # unloaded after the Planner ran) becomes one ``internal: <kind>: <msg>``
-        # line — never a Python traceback.
+        # id-consistency invariant raised by ``_assemble_report`` on a dangling
+        # hypothesis reference) becomes one ``internal: <kind>: <msg>`` line —
+        # never a Python traceback.
         kind = type(exc).__name__
         typer.echo(f"internal: {kind}: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
 
-# DiagnosticianResult.status values that map to the degraded exit code 2. Drawn
-# from ReportStatus: every degraded_* plus empty_response. (failed_api_unavailable
-# is NOT a ReportStatus value — the Planner no-result path handles it via a None
-# result in _run_intent.)
-_DEGRADED_STATUSES: frozenset[str] = frozenset(
+# ``Report.meta.status`` values that map to the degraded exit code 2. Drawn from
+# ReportStatus: every degraded_* plus empty_response PLUS ``partial`` — the
+# latter is the new behavior vs the old DiagnosticianResult mapping
+# (DiagnosticianResult.status is never ``partial``, but ``Report.meta.status``
+# can be: ``_derive_report_status`` produces it when an inspector ran non-ok,
+# e.g. target_unreachable). ``stored_as_orphan`` is not in this set — an orphan
+# degradation escalates the exit code in _run_intent, not here.
+# (``failed_api_unavailable`` is not a ReportStatus value — the no-result path
+# handles it via a None Report in _run_intent.)
+_REPORT_DEGRADED_STATUSES: frozenset[str] = frozenset(
     {
+        "partial",
         "degraded_no_planner",
         "degraded_rate_limited",
         "degraded_token_budget",
@@ -654,25 +690,31 @@ _DEGRADED_STATUSES: frozenset[str] = frozenset(
 )
 
 
-def _compute_diag_exit_code(result: DiagnosticianResult) -> int:
-    """Map a ``DiagnosticianResult`` to the closed 4-value exit set (spec §需求).
+def _compute_intent_report_exit_code(report: Report) -> int:
+    """Map the assembled ``--intent`` ``Report`` to the closed 4-value exit set.
 
-    ``status=ok`` + no critical finding → 0; ``status=ok`` + ≥1 critical finding
-    → 1; any degraded ``status`` (``degraded_*`` / ``empty_response``, regardless
-    of whether the value came from a Planner degrade or a reconcile) → 2. Exit 3
-    is owned by the caller paths (mutual-exclusion / backend config / --output
-    write / --persist-with-intent).
+    ``meta.status == ok`` + no critical finding → 0; ``meta.status == ok`` + ≥1
+    critical finding → 1; any degraded ``meta.status`` (``degraded_*`` /
+    ``empty_response`` / ``partial``) → 2. Exit 3 is owned by the caller paths
+    (mutual-exclusion / backend config / --output write). Persist-orphan
+    escalation to 2 is applied by the caller (_run_intent).
 
-    Critical detection is on the **top-level canonical** ``findings`` (the
-    FindingStore snapshot, all id-bearing), NOT ``planner_result.findings`` (the
-    unstamped debug originals). ``empty_response`` (diagnostician returned no
-    text) is degraded → 2, distinct from an ``ok`` end_turn that produced text
-    but no hypotheses (→ severity-based 0/1).
+    The ``partial`` inclusion is the deliberate new behavior relative to the old
+    ``_compute_diag_exit_code`` (which mapped a ``DiagnosticianResult.status``
+    that is never ``partial``): a loop that finalized ok can still yield a
+    ``partial`` Report when an inspector ran non-ok (``_derive_report_status``),
+    and that degradation must surface as exit 2.
+
+    Critical detection is on ``Report.findings`` (all id-bearing, flattened by
+    the factory). ``meta`` is always present on the assembled --intent Report
+    (the factory writes it); a None meta would be a legacy schema-1.0 load, not
+    reachable here, so it is treated as a non-degraded ok for safety.
     """
 
-    if result.status in _DEGRADED_STATUSES:
+    status = report.meta.status if report.meta is not None else ReportStatus.OK
+    if status in _REPORT_DEGRADED_STATUSES:
         return 2
-    if any(f.severity == "critical" for f in result.findings):
+    if any(f.severity == "critical" for f in report.findings):
         return 1
     return 0
 
@@ -753,19 +795,31 @@ def inspect_cmd(
         False,
         "--persist",
         help=(
-            "Persist the rendered Report to the local SQLite store so "
-            "`hostlens reports list/show/diff` can consume it. Only valid "
-            "with --inspector (the --intent Agent path produces no Report)."
+            "Persist the Report to the local SQLite store so "
+            "`hostlens reports list/show/diff` can consume it. Supported on both "
+            "--inspector (mechanical Report) and --intent (the Agent path now "
+            "assembles a faithful Report from the run's inspector results, with "
+            "root-cause hypotheses). A --intent no-result run (no inspectors "
+            "collected) produces no Report and is not persisted."
         ),
     ),
 ) -> None:
-    """Run one Inspector against one target and render a Report.
+    """Run one Inspector (or an --intent inspection) against one target and render a Report.
+
+    Both --inspector and --intent now produce a first-class Report; the --intent
+    Agent path assembles it from the run's collected inspector results and
+    projects the Diagnostician's root-cause hypotheses into it.
 
     Exit codes:
-      0: healthy (all findings <= warning)
-      1: critical finding present
-      2: runner failure (timeout / target_unreachable / requires_unmet / exception)
-      3: usage error (unknown target/inspector, bad --parameters, --output write failure)
+      0: healthy (status ok, all findings <= warning)
+      1: critical finding present (status ok)
+      2: runner / degraded failure — --inspector: status != ok (timeout /
+         target_unreachable / requires_unmet / exception); --intent:
+         meta.status is degraded_* / empty_response / partial, or the run
+         produced no inspector results (no-result), or a persist orphan
+         degradation
+      3: usage error (unknown target/inspector, bad --parameters, --output
+         write failure, backend not configured for --intent)
 
     The body runs inside ``_with_restored_structlog_config`` so the stderr
     redirect installed by ``_dispatch`` never leaks past the command's
@@ -804,18 +858,12 @@ def inspect_cmd(
                     "hostlens inspect: --timeout has no effect with --intent; ignored",
                     err=True,
                 )
-            # --persist is an --inspector-only flag: the Agent path produces a
-            # PlannerResult (no Report), and fabricating a Report to persist is
-            # out of scope (add-diagnostician-agent). Reject as a usage error
-            # rather than silently dropping it.
-            if persist:
-                typer.echo(
-                    "hostlens inspect: --persist is not supported with --intent "
-                    "(Agent-path persistence is a future proposal)",
-                    err=True,
-                )
-                raise typer.Exit(code=3)
-            _run_intent(target, intent, fmt, output)
+            # --persist is now supported on the --intent path: it produces a
+            # faithful first-class Report (assembled from the per-run collector's
+            # InspectorResult snapshot), so it can be saved to the local store.
+            # A no-result run (empty collector) produces no Report and is not
+            # persisted (handled inside _run_intent).
+            _run_intent(target, intent, fmt, output, persist)
             return
 
         # ---- 0. Validate / parse parameters at the CLI boundary --------- #

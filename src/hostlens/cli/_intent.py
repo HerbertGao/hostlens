@@ -21,20 +21,28 @@ Three concerns, three helpers:
   the ``PlannerAgent`` (→ ``AgentLoop``), never the ``ToolContext`` (ADR-008).
   Retained for ``demo run`` / cassette recording (Planner-only flows).
 - ``run_intent_diagnosis`` — the ``--intent`` orchestration seam: calls
-  ``create_backend`` ONCE, runs the Planner, id-stamps + seeds its findings,
-  then runs the Diagnostician (reusing the same backend + a restricted
-  diagnostician ``ToolRegistry``). Returns ``None`` on the Planner
-  ``failed_api_unavailable`` no-result path.
+  ``create_backend`` ONCE, runs the Planner against a per-run
+  ``InspectorResultCollector``, seeds the Diagnostician's ``FindingStore`` from
+  the Planner-phase collector snapshot (ids stamped by ``compute_finding_id``,
+  no registry re-lookup), runs the Diagnostician (reusing the same backend +
+  collector + a restricted diagnostician ``ToolRegistry``), then snapshots the
+  full collector AFTER the diagnosis loop and assembles a faithful first-class
+  ``Report`` via ``Report.from_inspector_results`` (with the Diagnostician's
+  hypotheses projected into ``Report.hypotheses`` and its narrative into
+  ``Report.metadata["diagnosis_narrative"]``). Returns ``None`` on the
+  **no-result** path (the collector is empty — zero ``InspectorResult``).
 - ``render_planner_result`` — projects a ``PlannerResult`` to md / json (still
   used by ``demo run``).
-- ``render_diagnostician_result`` — projects a ``DiagnosticianResult`` to
-  md / json for the ``--intent`` path.
+- ``render_intent_report`` — projects the assembled ``Report`` to md / json for
+  the ``--intent`` path (md is the intent-style renderer; NOT
+  ``reporting.render_markdown``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -55,16 +63,23 @@ from hostlens.agent.events import (
     ToolStarted,
     TurnStarted,
 )
+from hostlens.agent.loop import LoopUsage
 from hostlens.agent.planner import PlannerAgent, PlannerResult
 from hostlens.core.redact import redact_text
-from hostlens.reporting._redact import redact_diagnostician_result_for_render
+from hostlens.reporting._redact import redact_report_for_render
+from hostlens.reporting.models import (
+    Finding,
+    Report,
+    ReportStatus,
+    TokenUsage,
+    compute_finding_id,
+)
+from hostlens.reporting.render_json import render as render_json
 from hostlens.tools.base import NoopApprovalService, ToolContext
 from hostlens.tools.default_tools import register_default_tools
-from hostlens.tools.diagnostician_tools import (
-    register_diagnostician_tools,
-    stamp_planner_findings,
-)
+from hostlens.tools.diagnostician_tools import register_diagnostician_tools
 from hostlens.tools.finding_store import FindingStore
+from hostlens.tools.inspector_result_collector import InspectorResultCollector
 from hostlens.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
@@ -76,15 +91,21 @@ if TYPE_CHECKING:
     from hostlens.agent.events import LoopEvent, LoopObserver
     from hostlens.core.config import Settings
     from hostlens.inspectors.registry import InspectorRegistry
+    from hostlens.inspectors.result import InspectorResult
     from hostlens.targets.registry import TargetRegistry
 
 __all__ = [
     "RichLiveObserver",
     "build_planner",
-    "render_diagnostician_result",
+    "render_intent_report",
     "render_planner_result",
     "run_intent_diagnosis",
 ]
+
+# Key under which the Diagnostician's narrative is projected into
+# ``Report.metadata`` (a ``dict[str, str]``): json keeps it, persistence can
+# retrieve it, and the intent-style md renderer reads it back (design D-6).
+_DIAGNOSIS_NARRATIVE_KEY = "diagnosis_narrative"
 
 
 # --------------------------------------------------------------------------- #
@@ -260,6 +281,123 @@ def _make_context_factory(
 # --------------------------------------------------------------------------- #
 
 
+def _seed_findings_from_snapshot(
+    planner_snapshot: list[InspectorResult],
+    store: FindingStore,
+) -> list[SeededFinding]:
+    """Stamp + seed the Planner-phase findings into ``store`` (design D-2 step 1).
+
+    Iterates the collector's Planner-phase ``InspectorResult`` snapshot — which
+    natively preserves the inspector grouping (each result carries its own
+    ``name`` / ``version`` / ``findings``), so there is **no registry re-lookup**
+    (the collector supplies the real ``InspectorResult.version`` directly, with
+    no version reverse-lookup that a TOCTOU inspector unload could break). Each
+    finding's id is stamped with ``compute_finding_id(name, version, message)``
+    — the SAME content-deterministic function ``Report.from_inspector_results``
+    uses after diagnosis, so the FindingStore ids and the final
+    ``Report.findings`` ids are naturally equal (design D-3). The stamped
+    findings are seeded into ``store`` (the Diagnostician needs labeled findings
+    to reference) and returned as ``(label, finding)`` pairs.
+    """
+    stamped: list[Finding] = []
+    for ir in planner_snapshot:
+        for finding in ir.findings:
+            stamped.append(
+                finding.model_copy(
+                    update={
+                        "inspector_name": ir.name,
+                        "inspector_version": ir.version,
+                        "id": compute_finding_id(ir.name, ir.version, finding.message),
+                    }
+                )
+            )
+    labels = store.seed(stamped)
+    return [
+        SeededFinding(label=label, finding=finding)
+        for label, finding in zip(labels, stamped, strict=True)
+    ]
+
+
+def _sum_loop_usage(*usages: LoopUsage) -> TokenUsage:
+    """Field-level sum of one-or-more ``LoopUsage`` into a ``TokenUsage`` (D-6).
+
+    The Planner and Diagnostician each run an independent ``AgentLoop`` with its
+    own ``LoopUsage``; the assembled ``Report.meta.token_usage`` must reflect the
+    WHOLE intent run, so the two are summed field-by-field (including the cache
+    counters) — never just the diagnosis loop's.
+    """
+    return TokenUsage(
+        input_tokens=sum(u.input_tokens for u in usages),
+        output_tokens=sum(u.output_tokens for u in usages),
+        cache_creation_input_tokens=sum(u.cache_creation_input_tokens for u in usages),
+        cache_read_input_tokens=sum(u.cache_read_input_tokens for u in usages),
+    )
+
+
+def _assemble_report(
+    target: str,
+    intent: str,
+    collector_snapshot: list[InspectorResult],
+    diag_result: DiagnosticianResult,
+    started_at: datetime,
+    finished_at: datetime,
+    *,
+    token_usage: TokenUsage,
+    target_type: str,
+) -> Report:
+    """Assemble the authoritative ``Report`` from the post-diagnosis snapshot.
+
+    ``status`` override (design D-5): the reconciled ``diag_result.status`` is
+    passed verbatim when it is a degraded / empty_response value (those cannot
+    be re-derived from ``InspectorResult`` statuses — ``_derive_report_status``
+    never produces ``empty_response``), otherwise ``status=None`` lets
+    ``_derive_report_status`` apply the §9 rules (all-ok → ok / non-ok-only-
+    timeout-with-an-ok → ok / unreachable·exception·requires_unmet or all-timeout
+    → partial). Never pass ``ok`` explicitly (it would bypass the partial
+    derivation and mask inspector-level loss).
+
+    The Diagnostician's hypotheses are projected into ``Report.hypotheses`` and
+    its narrative into ``Report.metadata[_DIAGNOSIS_NARRATIVE_KEY]`` via
+    ``model_copy`` (the factory does not take them). The id-consistency
+    invariant is then asserted: every ``hypotheses[*].supporting_findings`` id
+    must be present in ``Report.findings`` (fail-loud on a dangling reference —
+    the CLI boundary maps the raised error to ``internal: ... → exit 2``;
+    design D-3).
+    """
+    status_override: ReportStatus | None = (
+        diag_result.status if diag_result.status != ReportStatus.OK else None
+    )
+
+    report = Report.from_inspector_results(
+        target,
+        collector_snapshot,
+        intent=intent,
+        started_at=started_at,
+        finished_at=finished_at,
+        status=status_override,
+        token_usage=token_usage,
+        target_type=target_type,
+    )
+    report = report.model_copy(
+        update={
+            "hypotheses": list(diag_result.hypotheses),
+            "metadata": {**report.metadata, _DIAGNOSIS_NARRATIVE_KEY: diag_result.narrative},
+        }
+    )
+
+    finding_ids = {f.id for f in report.findings}
+    for hypothesis in report.hypotheses:
+        for ref in hypothesis.supporting_findings:
+            if ref not in finding_ids:
+                raise ValueError(
+                    "intent report id-consistency invariant violated: hypothesis "
+                    f"supporting_findings id {ref!r} is not present in Report.findings; "
+                    "refusing to persist a report with a dangling reference"
+                )
+
+    return report
+
+
 async def run_intent_diagnosis(
     settings: Settings,
     target: str,
@@ -268,9 +406,10 @@ async def run_intent_diagnosis(
     inspector_registry: InspectorRegistry,
     logger: structlog.stdlib.BoundLogger,
     *,
+    target_type: str,
     observer: LoopObserver | None = None,
-) -> DiagnosticianResult | None:
-    """Assemble + run Planner → id-stamp → Diagnostician (design D-5, spec §需求).
+) -> Report | None:
+    """Assemble + run Planner → seed → Diagnostician → assemble ``Report`` (D-2/D-5).
 
     ``create_backend(settings)`` is called **exactly once** here; the SAME
     backend instance reaches both the ``PlannerAgent`` and the
@@ -279,56 +418,103 @@ async def run_intent_diagnosis(
     The backend is handed only to the two agents' loops, never into any
     ``ToolContext`` (ADR-008).
 
-    Both stages share the SAME ``inspector_registry`` instance — the Planner
-    runs against it, and ``stamp_planner_findings`` re-looks-up versions against
-    it (design D-3).
+    A single per-run ``InspectorResultCollector`` is injected into BOTH the
+    Planner's default-tools registry and the Diagnostician's registry, so it
+    accumulates every ``InspectorResult`` across both loops (design D-1). The
+    orchestration operates the collector at TWO time points (design D-2):
 
-    Returns ``None`` for the **no-result** path: when the Planner finalizes
-    ``failed_api_unavailable`` there is no ``DiagnosticianResult`` to produce
-    (``reconcile_status`` would raise), and the CLI maps ``None`` to the
-    no-result degradation (stderr note + empty stdout + exit 2). Every other
-    path returns a ``DiagnosticianResult`` (diagnosis ran, or was skipped on a
-    Planner degrade — ``diagnostician_loop=None`` in the latter case).
+    1. **Before diagnosis** — seed the ``FindingStore`` from the Planner-phase
+       snapshot (ids stamped by ``compute_finding_id``, no registry re-lookup).
+    2. **After diagnosis** — snapshot the FULL collector (Planner + every
+       ``request_more_inspection`` supplement) and assemble the authoritative
+       ``Report`` via ``Report.from_inspector_results``.
+
+    ``started_at`` / ``finished_at`` are taken here (``LoopResult`` carries no
+    timestamps): once before the Planner runs and once after the diagnosis loop.
+
+    Returns ``None`` for the **no-result** path: when the collector is empty
+    (zero ``InspectorResult`` — the Planner never successfully ran an inspector,
+    e.g. ``failed_api_unavailable`` before any tool call, OR the model never
+    called ``run_inspector``). ``from_inspector_results`` raises ``ValueError``
+    on an empty list, so the emptiness is checked BEFORE assembly and the CLI
+    maps ``None`` to the no-result degradation (stderr note + empty stdout +
+    exit 2 + no persist). Every non-empty path returns a faithful ``Report``.
 
     ``observer`` is passed straight through to BOTH agent runs, so the Planner
     and Diagnostician progress trees both stream to the CLI's stderr sink.
+
+    ``target_type`` comes from the orchestration's already-resolved
+    ``ExecutionTarget.type`` and is threaded into the factory, so SSH/Docker/K8s
+    intent reports record their real target type instead of the factory default
+    ``local`` (which would pollute persisted metadata).
     """
     backend: LLMBackend = create_backend(settings)
     context_factory = _make_context_factory(settings, target_registry, inspector_registry, logger)
 
+    collector = InspectorResultCollector()
+
     planner_registry = ToolRegistry()
-    register_default_tools(planner_registry)
+    register_default_tools(planner_registry, collector=collector)
     planner = PlannerAgent(backend, planner_registry, settings, context_factory)
 
+    started_at = datetime.now(UTC)
     planner_result = await planner.run(intent, observer=observer)
 
     if planner_result.loop_result.terminal_status == "failed_api_unavailable":
-        # No-result path: the Planner never reached the API. There is nothing to
-        # diagnose and reconcile_status would raise on this status — return None
-        # so the CLI emits a one-line degrade note with empty stdout (exit 2).
+        # The Planner never reached the API: the collector is empty and there is
+        # nothing to diagnose (reconcile_status would raise on this status).
+        # Return None so the CLI takes the no-result path.
         return None
 
-    # id-stamp the Planner's findings (fail-loud if an inspector was unloaded —
-    # the CLI boundary wraps the bubbled InspectorError as ``internal: ...``).
-    stamped = stamp_planner_findings(planner_result.loop_result, inspector_registry)
-
+    # Seed the FindingStore from the Planner-phase collector snapshot (design
+    # D-2 step 1). The store stays the single label authority; the Diagnostician
+    # references findings by the labels seeded here.
     store = FindingStore()
-    labels = store.seed(stamped)
-    seeded = [
-        SeededFinding(label=label, finding=finding)
-        for label, finding in zip(labels, stamped, strict=True)
-    ]
+    seeded = _seed_findings_from_snapshot(collector.snapshot(), store)
 
     def _make_diag_agent() -> DiagnosticianAgent:
         # Built lazily by run_diagnosis only on the Planner-ok path, so a Planner
-        # degrade constructs no registry / agent at all (zero factory calls).
+        # degrade constructs no registry / agent at all (zero factory calls). The
+        # SAME collector is injected so request_more_inspection supplements land
+        # in the snapshot the Report is assembled from.
         diag_registry = ToolRegistry()
         register_diagnostician_tools(
-            diag_registry, finding_store=store, target_name=target, clock=None
+            diag_registry,
+            finding_store=store,
+            target_name=target,
+            clock=None,
+            collector=collector,
         )
         return DiagnosticianAgent(backend, diag_registry, settings, context_factory)
 
-    return await run_diagnosis(planner_result, seeded, store, _make_diag_agent, observer=observer)
+    diag_result = await run_diagnosis(
+        planner_result, seeded, store, _make_diag_agent, observer=observer
+    )
+
+    finished_at = datetime.now(UTC)
+
+    # No-result is "the collector is empty" (zero InspectorResult), NOT "no
+    # successful inspector": a Planner that finalized ok but whose model never
+    # called run_inspector also lands here, and from_inspector_results raises on
+    # an empty list — so check emptiness before assembly.
+    full_snapshot = collector.snapshot()
+    if not full_snapshot:
+        return None
+
+    diag_loop = diag_result.diagnostician_loop
+    diag_usage = diag_loop.usage_totals if diag_loop is not None else LoopUsage()
+    token_usage = _sum_loop_usage(planner_result.loop_result.usage_totals, diag_usage)
+
+    return _assemble_report(
+        target,
+        intent,
+        full_snapshot,
+        diag_result,
+        started_at,
+        finished_at,
+        token_usage=token_usage,
+        target_type=target_type,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -368,66 +554,67 @@ def render_planner_result(result: PlannerResult, fmt: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# DiagnosticianResult rendering
+# Report rendering (intent-style)
 # --------------------------------------------------------------------------- #
 
 
-def render_diagnostician_result(result: DiagnosticianResult, fmt: str) -> str:
-    """Render a ``DiagnosticianResult`` to ``md`` or ``json`` (design D-7, spec §需求).
+def render_intent_report(report: Report, fmt: str) -> str:
+    """Render the assembled ``Report`` to ``md`` or ``json`` (design D-6, spec §需求).
 
-    json: the verbatim ``DiagnosticianResult`` serialization (narrative /
-    findings(top-level, authoritative, id-bearing) / hypotheses / status /
-    planner_result(nested findings are the unstamped debug originals) /
-    diagnostician_loop(may be null)) so downstream can ``model_validate_json``
-    round-trip it; downstream MUST read the **top-level** ``findings``.
+    Both surfaces render from a redacted copy (``redact_report_for_render`` —
+    the SAME boundary the ``--inspector`` Report render path uses, which masks
+    ``metadata`` too so the projected diagnosis narrative is scrubbed): no md /
+    json string leaks a secret pattern.
 
-    Before rendering, the whole ``DiagnosticianResult`` graph is passed through
-    the ``core/redact`` boundary via ``redact_diagnostician_result_for_render``
-    (parity with the ``Report`` render path): every string field — top-level
-    findings / hypotheses / narrative AND the nested ``planner_result`` /
-    ``diagnostician_loop`` loop telemetry (whose ``tool_invocations`` carry raw
-    inspector output) — is masked, so neither md nor json leaks a secret
-    pattern. md and json both render from this redacted copy.
+    json: the redacted ``Report`` serialization via ``render_json`` (which
+    applies the redaction boundary itself; full field set, round-trippable by
+    ``Report.model_validate_json``); the
+    Diagnostician's outputs live in ``Report.hypotheses`` /
+    ``Report.metadata[diagnosis_narrative]`` / ``Report.meta.status``.
 
-    md: the diagnosis narrative + a ``## Findings`` summary (from the top-level
-    canonical set) + a ``## 根因假设`` section + one telemetry line. Three
-    tolerances the spec mandates:
+    md: an **intent-style** renderer (deliberately NOT
+    ``reporting.render_markdown`` — that one is for the mechanical ``--inspector``
+    report: a fixed ``# Hostlens Inspection Report`` title + a meta table + a
+    ``## Inspector Results`` raw-JSON dump, and it never reads ``metadata`` /
+    renders the narrative). It emits: the diagnosis narrative (from
+    ``metadata[diagnosis_narrative]``) + a ``## Findings`` summary (from
+    ``Report.findings``) + a ``## 根因假设`` section (from ``Report.hypotheses``)
+    + one telemetry line. Three tolerances the spec mandates:
 
-    - **Empty narrative** (degraded paths carry ``final_text=""``): render no
-      narrative heading at all — never an empty title (spec §场景:降级致 narrative
-      为空时渲染容忍).
-    - **No hypotheses**: emit the ``_暂无根因假设_`` placeholder, reusing the
-      exact wording/style from ``reporting.render_markdown`` (spec §场景:无根因
-      假设时显示占位).
+    - **Empty narrative** (degraded paths carry ``""``, or the key is absent):
+      render no narrative heading at all — never an empty title.
+    - **No hypotheses**: emit the ``_暂无根因假设_`` placeholder.
     - **No findings**: skip the ``## Findings`` heading; narrative + 根因假设
       placeholder + telemetry still render.
     """
-    result = redact_diagnostician_result_for_render(result)
-
     if fmt == "json":
-        return result.model_dump_json(indent=2)
+        # ``render_json`` applies ``redact_report_for_render`` itself, so it
+        # takes the raw report (do not pre-redact — that would double-mask).
+        return render_json(report)
+
+    redacted = redact_report_for_render(report)
 
     parts: list[str] = []
 
-    narrative = result.narrative.rstrip("\n")
+    narrative = redacted.metadata.get(_DIAGNOSIS_NARRATIVE_KEY, "").rstrip("\n")
     if narrative:
         parts.append(narrative)
 
-    if result.findings:
+    if redacted.findings:
         if parts:
             parts.append("")
         parts.append("## Findings")
-        for finding in result.findings:
+        for finding in redacted.findings:
             tags = f" [{', '.join(finding.tags)}]" if finding.tags else ""
             parts.append(f"- {finding.severity}: {finding.message}{tags}")
 
     if parts:
         parts.append("")
     parts.append("## 根因假设")
-    if not result.hypotheses:
+    if not redacted.hypotheses:
         parts.append("_暂无根因假设_")
     else:
-        for h in result.hypotheses:
+        for h in redacted.hypotheses:
             parts.append("")
             parts.append(f"### {h.description}")
             parts.append(f"- **Confidence:** {h.confidence}")
@@ -438,24 +625,18 @@ def render_diagnostician_result(result: DiagnosticianResult, fmt: str) -> str:
                 for action in h.suggested_actions:
                     parts.append(f"  - {action}")
 
-    # Telemetry: prefer the diagnosis loop's counters. When the diagnosis stage
-    # was skipped (Planner degraded → diagnostician_loop is None), there is no
-    # diagnosis loop to count, so report the Planner loop's telemetry and note
-    # the skip. ``status`` is always the reconciled DiagnosticianResult.status.
+    # Telemetry: one line drawn from the assembled Report.meta — turns is not a
+    # Report field (the loop counters were summed into token_usage), so the line
+    # reports status + token totals (the whole intent run, both loops).
+    meta = redacted.meta
     parts.append("")
-    diag_loop = result.diagnostician_loop
-    if diag_loop is not None:
-        usage = diag_loop.usage_totals
+    if meta is not None:
+        usage = meta.token_usage
         parts.append(
-            f"turns={diag_loop.turns} status={result.status} "
-            f"tokens_in={usage.input_tokens} tokens_out={usage.output_tokens}"
+            f"status={meta.status} tokens_in={usage.input_tokens} tokens_out={usage.output_tokens}"
         )
     else:
-        planner_loop = result.planner_result.loop_result
-        usage = planner_loop.usage_totals
-        parts.append(
-            f"turns={planner_loop.turns} status={result.status} "
-            f"tokens_in={usage.input_tokens} tokens_out={usage.output_tokens} "
-            "(diagnosis skipped: planner degraded)"
-        )
+        # The factory always produces a meta; a None here would be a legacy
+        # schema-1.0 load, not reachable on the assembled --intent path.
+        parts.append("status=unknown tokens_in=0 tokens_out=0")
     return "\n".join(parts)

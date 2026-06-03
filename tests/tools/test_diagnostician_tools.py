@@ -1,11 +1,7 @@
-"""Tests for the Diagnostician tool layer (group B: tasks 2.2 / 2.3 / 3.1-3.3).
+"""Tests for the Diagnostician tool layer (group B: tasks 3.1-3.3).
 
 Covers:
 
-- ``stamp_planner_findings`` (2.2): re-grouping `run_inspector` invocations,
-  version reverse-lookup, stable id stamping with correct name/version.
-- ``stamp_planner_findings`` fail-loud (2.3): an unloaded inspector makes the
-  helper bubble `inspector_not_found` (CLI exit-2 wrapping is group D's job).
 - ``correlate_findings`` ToolSpec (3.1): hit → accepted; dangling label → error
   envelope through the agent adapter (ToolError → wrapped, no crash).
 - ``request_more_inspection`` ToolSpec (3.2): new finding lands in the store and
@@ -24,9 +20,8 @@ from typing import Any, cast
 import pytest
 import structlog
 
-from hostlens.agent.loop import LoopResult, LoopUsage, ToolInvocation
 from hostlens.core.config import Settings
-from hostlens.core.exceptions import InspectorError, TargetError, ToolError
+from hostlens.core.exceptions import TargetError, ToolError
 from hostlens.inspectors.registry import (
     InspectorRegistry,
     build_registry_from_search_paths,
@@ -37,10 +32,7 @@ from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import LocalEntry
 from hostlens.targets.registry import TargetRegistry
 from hostlens.tools.base import NoopApprovalService, ToolContext
-from hostlens.tools.diagnostician_tools import (
-    register_diagnostician_tools,
-    stamp_planner_findings,
-)
+from hostlens.tools.diagnostician_tools import register_diagnostician_tools
 from hostlens.tools.finding_store import FindingStore
 from hostlens.tools.registry import ToolRegistry
 from hostlens.tools.schemas.correlate_findings import CorrelateFindingsInput
@@ -85,36 +77,6 @@ def _ctx(
     )
 
 
-def _run_inspector_invocation(
-    inspector_name: str, messages: list[str], *, tool_use_id: str
-) -> ToolInvocation:
-    """Build a `run_inspector` ToolInvocation whose `output` mirrors the
-    wire-stripped `RunInspectorOutput` (no id / inspector identity)."""
-    return ToolInvocation(
-        tool_name="run_inspector",
-        tool_use_id=tool_use_id,
-        input={"target_name": "local-host", "inspector_name": inspector_name},
-        output={
-            "target_name": "local-host",
-            "inspector_name": inspector_name,
-            "findings": [
-                {"severity": "warning", "message": m, "evidence": [], "tags": []} for m in messages
-            ],
-        },
-    )
-
-
-def _loop_result(invocations: list[ToolInvocation]) -> LoopResult:
-    return LoopResult(
-        final_text="",
-        tool_invocations=invocations,
-        turns=len(invocations),
-        terminal_status="ok",
-        usage_totals=LoopUsage(),
-        stop_reason="end_turn",
-    )
-
-
 def _register_manifest(
     registry: InspectorRegistry,
     *,
@@ -146,85 +108,6 @@ def _register_manifest(
         findings=[],
     )
     registry.register(manifest, source_path=None)
-
-
-# ---------------------------------------------------------------------------
-# 2.2 — stamp_planner_findings: re-group + reverse-lookup version + stamp id
-# ---------------------------------------------------------------------------
-
-
-def test_stamp_planner_findings_two_inspectors_stable_ids() -> None:
-    inspector_registry = _make_inspector_registry()
-    _register_manifest(inspector_registry, name="alpha.probe", version="2.1.0")
-    _register_manifest(inspector_registry, name="beta.probe", version="3.0.0")
-
-    loop_result = _loop_result(
-        [
-            _run_inspector_invocation("alpha.probe", ["disk full"], tool_use_id="t1"),
-            _run_inspector_invocation("beta.probe", ["high load", "swap thrash"], tool_use_id="t2"),
-        ]
-    )
-
-    stamped = stamp_planner_findings(loop_result, inspector_registry)
-    assert len(stamped) == 3
-
-    first = stamped[0]
-    assert first.inspector_name == "alpha.probe"
-    assert first.inspector_version == "2.1.0"
-    assert first.id == compute_finding_id("alpha.probe", "2.1.0", "disk full")
-
-    second = stamped[1]
-    assert second.inspector_name == "beta.probe"
-    assert second.inspector_version == "3.0.0"
-    assert second.id == compute_finding_id("beta.probe", "3.0.0", "high load")
-
-    third = stamped[2]
-    assert third.id == compute_finding_id("beta.probe", "3.0.0", "swap thrash")
-
-
-def test_stamp_planner_findings_ignores_non_run_inspector_and_error_invocations() -> None:
-    inspector_registry = _make_inspector_registry()
-    _register_manifest(inspector_registry, name="alpha.probe")
-
-    error_inv = ToolInvocation(
-        tool_name="list_inspectors",
-        tool_use_id="t0",
-        input={},
-        error={"is_error": True, "error_kind": "X", "message": "y"},
-    )
-    failed_run = ToolInvocation(
-        tool_name="run_inspector",
-        tool_use_id="t1",
-        input={"target_name": "local-host", "inspector_name": "alpha.probe"},
-        error={"is_error": True, "error_kind": "ToolError", "message": "boom"},
-    )
-    ok_run = _run_inspector_invocation("alpha.probe", ["only one"], tool_use_id="t2")
-
-    stamped = stamp_planner_findings(
-        _loop_result([error_inv, failed_run, ok_run]), inspector_registry
-    )
-    assert [f.message for f in stamped] == ["only one"]
-
-
-# ---------------------------------------------------------------------------
-# 2.3 — stamp_planner_findings fail-loud on unloaded inspector
-# ---------------------------------------------------------------------------
-
-
-def test_stamp_planner_findings_fail_loud_when_inspector_unloaded() -> None:
-    """If the inspector was unloaded/renamed after the Planner ran, the helper
-    must bubble `inspector_not_found` rather than silently skip the group.
-
-    (The CLI-boundary `internal: ... → exit 2` wrapping is group D's concern;
-    here we only assert the helper raises and does not swallow.)"""
-    inspector_registry = _make_inspector_registry()  # never registers gone.probe
-    loop_result = _loop_result(
-        [_run_inspector_invocation("gone.probe", ["orphan"], tool_use_id="t1")]
-    )
-
-    with pytest.raises(InspectorError) as exc_info:
-        stamp_planner_findings(loop_result, inspector_registry)
-    assert exc_info.value.kind == "inspector_not_found"
 
 
 # ---------------------------------------------------------------------------

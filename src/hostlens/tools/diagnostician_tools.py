@@ -7,15 +7,10 @@ the Diagnostician loop runs against (`correlate_findings` +
 `request_more_inspection` + the reused `list_inspectors`; **never**
 `list_targets` — design D-6 / §7 minimal capability).
 
-It also provides `stamp_planner_findings`, the assembly-layer helper that
-re-stamps the Planner's findings with stable ids by re-grouping the
-`run_inspector` tool invocations (design D-3). The Planner's flattened
-`PlannerResult.findings` lost their grouping, but each successful
-`run_inspector` invocation's `output` still carries its `inspector_name` and
-that group's findings — so this helper re-groups from `tool_invocations`,
-looks the version up via `InspectorRegistry.get(name)`, and calls
-`compute_finding_id` (forbidden to use the already-flattened
-`PlannerResult.findings` as the grouping source).
+Id stamping for the Planner-phase findings is done by the orchestration-layer
+seed helper `cli._intent._seed_findings_from_snapshot`, which reads the per-run
+`InspectorResultCollector` snapshot directly (each `InspectorResult` natively
+carries its `name` / `version` / `findings`, so there is no registry re-lookup).
 
 Per CLAUDE.md §4.10 / design.md §D-3, `@tool` is a pure spec factory:
 decoration mutates no module-level registry — assembly is explicit, threaded
@@ -33,15 +28,14 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from hostlens.agent.loop import LoopResult
 from hostlens.core.exceptions import InspectorError, ToolError
-from hostlens.inspectors.registry import InspectorRegistry
 from hostlens.inspectors.runner import InspectorRunner
-from hostlens.reporting.models import Finding, compute_finding_id
+from hostlens.reporting.models import compute_finding_id
 from hostlens.tools.base import ToolContext, ToolSpec
 from hostlens.tools.decorators import tool
-from hostlens.tools.default_tools import list_inspectors, run_inspector
+from hostlens.tools.default_tools import list_inspectors
 from hostlens.tools.finding_store import FindingStore
+from hostlens.tools.inspector_result_collector import InspectorResultCollector
 from hostlens.tools.registry import ToolRegistry
 from hostlens.tools.schemas.correlate_findings import (
     CorrelateFindingsInput,
@@ -52,66 +46,10 @@ from hostlens.tools.schemas.request_more_inspection import (
     RequestMoreInspectionInput,
     RequestMoreInspectionOutput,
 )
-from hostlens.tools.schemas.run_inspector import RunInspectorOutput
 
 __all__ = [
     "register_diagnostician_tools",
-    "stamp_planner_findings",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Assembly-layer id stamping (design D-3)
-# ---------------------------------------------------------------------------
-
-
-def stamp_planner_findings(
-    loop_result: LoopResult,
-    inspector_registry: InspectorRegistry,
-) -> list[Finding]:
-    """Re-stamp the Planner's findings with stable ids (design D-3).
-
-    Re-groups from ``loop_result.tool_invocations`` — the successful
-    ``run_inspector`` invocations, each carrying its ``inspector_name`` plus
-    that group's findings on ``inv.output`` — and **never** from the already
-    flattened ``PlannerResult.findings`` (which lost the grouping). For each
-    group the inspector's ``version`` is looked up via
-    ``InspectorRegistry.get(name).version`` (the only available source: the
-    ``run_inspector`` wire projection strips version off the output), and
-    each finding is stamped with ``compute_finding_id`` plus its
-    ``inspector_name`` / ``inspector_version`` via ``model_copy``.
-
-    ``inspector_registry`` must be the **same instance** the Planner ran
-    against (the orchestration layer holds it and shares it with both the
-    context factory and this helper) to avoid a TOCTOU version skew.
-
-    Fail-loud (design D-3): if ``InspectorRegistry.get(name)`` raises
-    ``inspector_not_found`` (the inspector was unloaded / renamed after the
-    Planner ran), this helper lets it propagate — it must NOT silently skip
-    the group, because skipping would make any hypothesis that references one
-    of those findings reference a vanished id. The CLI boundary (group D) wraps
-    the bubbled exception into ``internal: ... → exit 2``.
-    """
-    stamped: list[Finding] = []
-    for inv in loop_result.tool_invocations:
-        if inv.tool_name != run_inspector.name or inv.output is None:
-            continue
-        output = RunInspectorOutput.model_validate(inv.output)
-        # `get` raises InspectorError(kind="inspector_not_found") on a missing
-        # name; we deliberately do NOT catch it — fail-loud per design D-3.
-        manifest = inspector_registry.get(output.inspector_name)
-        version = manifest.version
-        for finding in output.findings:
-            stamped.append(
-                finding.model_copy(
-                    update={
-                        "inspector_name": output.inspector_name,
-                        "inspector_version": version,
-                        "id": compute_finding_id(output.inspector_name, version, finding.message),
-                    }
-                )
-            )
-    return stamped
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +125,7 @@ def _build_request_more_inspection_spec(
     finding_store: FindingStore,
     target_name: str,
     clock: Callable[[], datetime] | None,
+    collector: InspectorResultCollector | None,
 ) -> ToolSpec:
     """Build the `request_more_inspection` ToolSpec around per-run dependencies.
 
@@ -259,6 +198,13 @@ def _build_request_more_inspection_spec(
             cancel=ctx.cancel,
         )
 
+        # Collect the complete InspectorResult (side channel, not wire) so the
+        # supplementary collection lands in the same per-run collector the
+        # Planner phase fed — the orchestration layer snapshots Planner + supplement
+        # together after the diagnosis loop. ok and non-ok alike (real status/version).
+        if collector is not None:
+            collector.append(result)
+
         # 5-6. Stamp ids using InspectorResult.version (NOT a registry re-lookup),
         #      allocate fresh labels, append to the per-run finding-store.
         labeled: list[LabeledFinding] = []
@@ -309,6 +255,7 @@ def register_diagnostician_tools(
     finding_store: FindingStore,
     target_name: str,
     clock: Callable[[], datetime] | None = None,
+    collector: InspectorResultCollector | None = None,
 ) -> None:
     """Register the restricted Diagnostician tool batch into ``registry``.
 
@@ -326,9 +273,16 @@ def register_diagnostician_tools(
 
     ``clock`` mirrors ``register_default_tools(clock=...)`` and is threaded to
     ``request_more_inspection``'s ``InspectorRunner`` (the ``--intent`` path
-    passes ``None`` → real UTC). Non-idempotent: a duplicate call on the same
+    passes ``None`` → real UTC). ``collector`` mirrors
+    ``register_default_tools(collector=...)``: when supplied (the ``--intent``
+    path shares the **same** per-run ``InspectorResultCollector`` as the Planner
+    phase), ``request_more_inspection`` appends each supplementary
+    ``InspectorResult`` so the orchestration layer snapshots Planner + supplement
+    together after the diagnosis loop. Non-idempotent: a duplicate call on the same
     registry raises ``ToolError`` (``ToolRegistry.register`` rejects dupes).
     """
     registry.register(_build_correlate_findings_spec(finding_store))
-    registry.register(_build_request_more_inspection_spec(finding_store, target_name, clock))
+    registry.register(
+        _build_request_more_inspection_spec(finding_store, target_name, clock, collector)
+    )
     registry.register(list_inspectors)

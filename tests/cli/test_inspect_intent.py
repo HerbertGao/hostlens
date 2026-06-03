@@ -377,12 +377,15 @@ def test_intent_playback_json_mode_parseable(
     user_inspectors_dir: Path,
     agent_backend_env: None,
 ) -> None:
-    """``--intent --format json`` -> stdout is a valid DiagnosticianResult JSON.
+    """``--intent --format json`` -> stdout is a valid Report JSON (BREAKING).
 
-    Spec §场景:json 模式输出可解析的 DiagnosticianResult — contains narrative /
-    findings (top-level, authoritative) / hypotheses / status / planner_result /
-    diagnostician_loop.
+    Migrated to the Report contract: the --intent json surface is now an
+    assembled ``Report`` (``meta`` / ``findings`` / ``hypotheses`` /
+    ``metadata[diagnosis_narrative]``), not a ``DiagnosticianResult`` — the old
+    top-level ``planner_result`` / ``diagnostician_loop`` keys are gone.
     """
+
+    from hostlens.reporting.models import Report
 
     backend = FakeBackend(
         responses=[
@@ -400,15 +403,16 @@ def test_intent_playback_json_mode_parseable(
         monkeypatch,
     )
     assert exit_code == 0, stderr
+    report = Report.model_validate_json(stdout)
+    assert report.meta is not None
+    assert report.meta.status == "ok"
+    assert report.findings  # hello.echo produced one finding
+    assert report.metadata["diagnosis_narrative"] == "诊断完成"
+
     payload = json.loads(stdout)
-    assert payload["narrative"] == "诊断完成"
-    assert payload["status"] == "ok"
-    assert isinstance(payload["findings"], list)
-    assert payload["findings"]  # hello.echo produced one finding
-    assert "hypotheses" in payload
-    assert "planner_result" in payload
-    assert payload["planner_result"]["intent"] == "检查这台机器的健康状况"
-    assert "diagnostician_loop" in payload
+    assert "meta" in payload
+    assert "planner_result" not in payload
+    assert "diagnostician_loop" not in payload
 
 
 # --------------------------------------------------------------------------- #
@@ -416,21 +420,22 @@ def test_intent_playback_json_mode_parseable(
 # --------------------------------------------------------------------------- #
 
 
-def test_intent_degraded_max_tokens_exit_2_partial_output(
+def test_intent_degraded_max_tokens_no_result_exit_2(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     targets_yaml: Path,
     user_inspectors_dir: Path,
     agent_backend_env: None,
 ) -> None:
-    """Planner ``max_tokens`` degradation -> exit 2, diagnosis skipped, partial output.
+    """Planner ``max_tokens`` degradation BEFORE any inspector -> no-result, exit 2.
 
-    Spec §场景:降级退出 2 且仍输出部分结果 — a Planner stop_reason=max_tokens with a
-    text block makes the Planner loop finalize degraded_token_budget. Per design
-    D-5 the Diagnostician is then NEVER launched (status passes through), so the
-    single FakeBackend response is enough (no diagnostician turns consumed). The
-    CLI emits a degraded note to stderr and still writes the partial result to
-    stdout; it must NOT retry.
+    Migrated to the Report contract: a Planner stop_reason=max_tokens with a text
+    block (and no preceding run_inspector tool call) finalizes
+    degraded_token_budget with an EMPTY per-run collector. Per design D-5 the
+    no-result judge is "the collector is empty" — so there is no Report to
+    assemble, render, or persist; the CLI emits the generic no-result degrade note
+    to stderr, leaves stdout empty (no faked skeleton), exits 2, and must NOT
+    retry.
     """
 
     backend = FakeBackend(
@@ -446,13 +451,11 @@ def test_intent_degraded_max_tokens_exit_2_partial_output(
         monkeypatch,
     )
     assert exit_code == 2
-    # Reconciled status passes the Planner degrade through; the telemetry line on
-    # stdout notes the skipped diagnosis (diagnostician_loop is None).
-    assert "status=degraded_token_budget" in stdout
-    assert "diagnosis skipped" in stdout
-    # Degraded note on stderr names the reconciled status.
-    assert "degraded run" in stderr
-    assert "degraded_token_budget" in stderr
+    # No Report → empty stdout (no faked skeleton).
+    assert stdout == ""
+    # Generic no-result degrade note on stderr (not a hardcoded status string).
+    assert "no inspector results collected" in stderr
+    assert "no report produced" in stderr
     assert "Traceback" not in stderr
 
 
@@ -679,10 +682,16 @@ def test_intent_secret_in_tool_failure_not_leaked(
     appear on either stream.
 
     ``ToolSpec`` is frozen, so we cannot mutate the real ``run_inspector``'s
-    handler. Instead we patch the CLI's ``register_default_tools`` to register a
+    handler. Instead we patch the CLI's ``register_default_tools`` (matching its
+    new ``(registry, *, clock=None, collector=None)`` signature) to register a
     leaky stub spec (same name, so the loop dispatches it). This still exercises
     the real dispatch scrub boundary + CLI rendering — only the handler body
     differs.
+
+    Because the handler RAISES (run_inspector fails, nothing appended to the
+    per-run collector), the collector stays empty → no Report → the no-result path
+    (exit 2, empty stdout). The redaction surface under test is the stderr
+    progress / error envelope, which is unaffected by the no-result outcome.
     """
 
     import hostlens.cli._intent as intent_mod
@@ -695,7 +704,9 @@ def test_intent_secret_in_tool_failure_not_leaked(
     async def _leaky_handler(args: RunInspectorInput, ctx: Any) -> RunInspectorOutput:
         raise RuntimeError(f"failed reading {secret_path}")
 
-    def _register_leaky(registry: ToolRegistry) -> None:
+    def _register_leaky(
+        registry: ToolRegistry, *, clock: Any = None, collector: Any = None
+    ) -> None:
         from hostlens.tools.base import ToolSpec
 
         registry.register(
@@ -732,8 +743,9 @@ def test_intent_secret_in_tool_failure_not_leaked(
         capsys,
         monkeypatch,
     )
-    # Both loops complete (end_turn) — exit 0 (no critical finding, status ok).
-    assert exit_code == 0, stderr
+    # The leaky handler raised → empty collector → no-result path (exit 2).
+    assert exit_code == 2
+    assert stdout == ""
     # The sensitive username / full path must not appear on EITHER stream.
     assert secret_user not in stdout
     assert secret_user not in stderr

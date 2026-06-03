@@ -18,8 +18,10 @@ Scenarios covered:
   (report-regression-diff §场景:无基线时退出码 0 / 自动模式不把唯一 run 当自身基线).
 - ``inspect --persist`` round-trip: persisted runs are listable + showable
   (report-persistence §场景:--persist 后报告可被 reports list 看到).
-- ``--intent`` / ``demo run`` reject / do not expose ``--persist``
-  (report-persistence §场景:--intent 与 demo run 不接受 --persist).
+- ``demo run`` does not expose ``--persist`` (report-persistence §场景:demo run
+  不接受 --persist). The ``--intent`` path now SUPPORTS ``--persist`` (the Agent
+  assembles a faithful Report); its persist coverage lives in
+  ``test_inspect_intent_report.py`` / ``test_inspect_intent_persist.py``.
 
 The driver is the same ``_run_main`` (sys.argv patch + ``main()`` +
 capsys) used across ``tests/cli`` — it exercises the click-UsageError →
@@ -609,29 +611,10 @@ def test_inspect_without_persist_does_not_write_store(
 # --------------------------------------------------------------------------- #
 
 
-def test_inspect_intent_rejects_persist(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    xdg_home: Path,
-    targets_yaml: Path,
-    user_inspectors_dir: Path,
-) -> None:
-    """``--persist`` with ``--intent`` is a usage error (exit 3), no traceback.
-
-    Reaching the rejection does not require a configured backend — the
-    flag check fires before any Agent assembly.
-    """
-
-    code, stdout, stderr = _run_main(
-        ["inspect", "local-host", "--intent", "check disk", "--persist"],
-        capsys,
-        monkeypatch,
-    )
-
-    assert code == 3
-    assert stdout == ""
-    assert "--persist is not supported with --intent" in stderr
-    assert "Traceback" not in stderr
+# ``--persist`` with ``--intent`` is now SUPPORTED (the Agent path assembles a
+# faithful Report) — the old usage-error rejection no longer exists. The persist
+# round-trip + no-result-not-persisted coverage lives in
+# ``test_inspect_intent_report.py`` and ``test_inspect_intent_persist.py``.
 
 
 def test_demo_run_does_not_expose_persist(

@@ -22,7 +22,6 @@ wrapper runs) and captures the ``SystemExit`` exit code, mirroring
 
 from __future__ import annotations
 
-import json
 import sys
 from typing import Any, cast
 
@@ -38,7 +37,6 @@ from hostlens.agent.backend import (
     Usage,
 )
 from hostlens.agent.backends.fake import FakeBackend
-from hostlens.agent.diagnostician import DiagnosticianResult
 from hostlens.cli import main
 
 # --------------------------------------------------------------------------- #
@@ -318,48 +316,6 @@ class _PersistentUnavailableBackend:
         raise BackendUnavailable("down", backend_name="persistent-unavailable")
 
 
-def test_intent_stamping_inspector_unloaded_internal_exit_2(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    targets_yaml: Any,
-    user_inspectors_dir: Any,
-    agent_backend_env: None,
-) -> None:
-    """A fail-loud id-stamping InspectorError -> ``internal: ...`` exit 2, no traceback.
-
-    Group B's ``stamp_planner_findings`` bubbles ``InspectorError`` when an
-    inspector was unloaded after the Planner ran. The CLI boundary
-    (``_run_intent``'s ``except Exception``) must wrap it into one
-    ``internal: <kind>: <msg>`` line → exit 2 — never a Python traceback (tracked
-    item from group B's 2.3).
-
-    We simulate the unload by monkeypatching ``stamp_planner_findings`` (imported
-    into ``cli._intent``) to raise the same ``InspectorError`` the real helper
-    bubbles; the Planner still runs end-to-end first.
-    """
-
-    import hostlens.cli._intent as intent_mod
-    from hostlens.core.exceptions import InspectorError
-
-    def _boom(_loop: Any, _registry: Any) -> Any:
-        raise InspectorError(kind="inspector_not_found", inspector="hello.echo")
-
-    monkeypatch.setattr(intent_mod, "stamp_planner_findings", _boom)
-    _patch_backend(monkeypatch, _fake(_happy_script()))
-
-    exit_code, stdout, stderr = _run_main(
-        ["inspect", "local-host", "--intent", "检查健康"],
-        capsys,
-        monkeypatch,
-    )
-    assert exit_code == 2
-    assert stdout == ""
-    internal_lines = [ln for ln in stderr.splitlines() if "internal:" in ln]
-    assert len(internal_lines) == 1
-    assert "internal: InspectorError:" in internal_lines[0]
-    assert "Traceback" not in stderr
-
-
 # --------------------------------------------------------------------------- #
 # 5.2 — render_diagnostician_result md/json (CLI surface coverage)
 # --------------------------------------------------------------------------- #
@@ -467,12 +423,14 @@ def test_intent_empty_response_vs_ok_no_hypothesis_only_status_differs(
     """empty_response (findings non-empty) vs ok-no-hypothesis (findings non-empty):
     the findings + 根因假设 body is byte-identical; only the status differs.
 
-    Spec §场景:诊断师空响应 empty_response 退出 2 vs the ok end_turn-no-hypothesis
-    path (§场景:无根因假设). Both are adjacent paths that produce the SAME findings
-    summary + ``_暂无根因假设_`` placeholder body; the only observable differences
-    are the telemetry ``status=`` token (``ok`` vs ``empty_response``), the exit
-    code, and the (legitimately) present-vs-absent narrative. This locks the
-    distinction down to the status, not a divergent rendering.
+    Migrated to the Report contract: the --intent json/md surface is now an
+    assembled ``Report`` and the md telemetry line is ``status=... tokens_in=...
+    tokens_out=...`` (no ``turns=`` — the loop counters are summed into
+    token_usage). Both paths still produce the SAME ``## Findings`` +
+    ``_暂无根因假设_`` placeholder body; the only observable differences are the
+    telemetry ``status=`` token (``ok`` vs ``empty_response``), the exit code, and
+    the (legitimately) present-vs-absent narrative. This locks the distinction
+    down to ``Report.meta.status``, not a divergent rendering.
     """
 
     # Path A: ok end_turn but no hypothesis recorded (carries a narrative).
@@ -502,18 +460,19 @@ def test_intent_empty_response_vs_ok_no_hypothesis_only_status_differs(
     assert code_b == 2
 
     # The findings + 根因假设 body (everything from ``## Findings`` up to the
-    # telemetry line) must be byte-identical across the two adjacent paths.
+    # telemetry line) must be byte-identical across the two adjacent paths. The
+    # Report telemetry line starts with ``status=`` (no ``turns=``).
     def _body(text: str) -> str:
         lines = text.rstrip("\n").splitlines()
         start = lines.index("## Findings")
-        end = next(i for i, ln in enumerate(lines) if ln.startswith("turns="))
+        end = next(i for i, ln in enumerate(lines) if ln.startswith("status="))
         return "\n".join(lines[start:end]).rstrip("\n")
 
     assert _body(stdout_a) == _body(stdout_b)
 
     # The ONLY telemetry difference is the status token.
     def _status_token(text: str) -> str:
-        line = next(ln for ln in text.splitlines() if ln.startswith("turns="))
+        line = next(ln for ln in text.splitlines() if ln.startswith("status="))
         return next(tok for tok in line.split() if tok.startswith("status="))
 
     assert _status_token(stdout_a) == "status=ok"
@@ -543,63 +502,11 @@ def test_intent_healthy_exit_0(
     assert exit_code == 0, stderr
 
 
-def test_intent_critical_finding_exit_1(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    targets_yaml: Any,
-    user_inspectors_dir: Any,
-    agent_backend_env: None,
-) -> None:
-    """status=ok + >=1 critical finding -> exit 1 (spec §场景:critical finding 退出 1).
-
-    hello.echo emits an info finding, so we register a run_inspector-named stub
-    whose handler returns a critical finding, exercising the real dispatch +
-    stamping + critical-detection on the top-level canonical findings.
-    """
-
-    import hostlens.cli._intent as intent_mod
-    from hostlens.reporting.models import Finding
-    from hostlens.tools.registry import ToolRegistry
-    from hostlens.tools.schemas.run_inspector import RunInspectorInput, RunInspectorOutput
-
-    async def _critical_handler(args: RunInspectorInput, ctx: Any) -> RunInspectorOutput:
-        return RunInspectorOutput(
-            target_name="local-host",
-            inspector_name="hello.echo",
-            findings=[Finding(severity="critical", message="disk full")],
-        )
-
-    def _register_critical(registry: ToolRegistry) -> None:
-        from hostlens.tools.base import ToolSpec
-
-        registry.register(
-            ToolSpec(
-                name="run_inspector",
-                version="1.0.0",
-                input_schema=RunInspectorInput,
-                output_schema=RunInspectorOutput,
-                handler=cast(Any, _critical_handler),
-                agent_description="stub critical run inspector",
-                mcp_description="stub",
-                cli_help=None,
-                surfaces=cast(Any, {"agent"}),
-                side_effects=cast(Any, "read"),
-                requires_approval=False,
-                sensitive_output=True,
-                timeout=30.0,
-            )
-        )
-
-    monkeypatch.setattr(intent_mod, "register_default_tools", _register_critical)
-    _patch_backend(monkeypatch, _fake(_happy_script()))
-
-    exit_code, stdout, stderr = _run_main(
-        ["inspect", "local-host", "--intent", "检查健康"],
-        capsys,
-        monkeypatch,
-    )
-    assert exit_code == 1, stderr
-    assert "disk full" in stdout
+# critical-finding → exit 1 migrated to the Report contract in
+# ``test_inspect_intent_report.py::test_intent_critical_finding_exit_1`` (which
+# feeds the per-run collector so the assembled Report carries the critical
+# finding and ``_compute_intent_report_exit_code`` maps it to exit 1). Not
+# re-covered here.
 
 
 def test_intent_empty_response_exit_2(
@@ -689,86 +596,18 @@ class _PlannerOkThenDiagUnavailable:
         raise BackendUnavailable("down", backend_name=self.name)
 
 
-def test_intent_persist_with_intent_rejected_exit_3(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    targets_yaml: Any,
-    user_inspectors_dir: Any,
-    agent_backend_env: None,
-) -> None:
-    """``--persist`` with ``--intent`` stays a usage error (exit 3), unchanged.
-
-    The Agent path produces a DiagnosticianResult (not a Report), so --persist is
-    still rejected before any agent assembly.
-    """
-
-    exit_code, stdout, stderr = _run_main(
-        ["inspect", "local-host", "--intent", "检查健康", "--persist"],
-        capsys,
-        monkeypatch,
-    )
-    assert exit_code == 3
-    assert stdout == ""
-    assert "--persist is not supported with --intent" in stderr
+# ``--persist`` with ``--intent`` is now SUPPORTED (the Agent path assembles a
+# faithful Report): the round-trip is covered by
+# ``test_inspect_intent_report.py::test_intent_persist_round_trips_reports_show``
+# and the end-to-end persist + diff suite in ``test_inspect_intent_persist.py``.
+# The old usage-error rejection no longer exists.
 
 
-# --------------------------------------------------------------------------- #
-# 5.4 — JSON schema stability: round-trip + canonical-vs-debug id distinction
-# --------------------------------------------------------------------------- #
-
-
-def test_intent_json_round_trips_and_top_level_findings_authoritative(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    targets_yaml: Any,
-    user_inspectors_dir: Any,
-    agent_backend_env: None,
-) -> None:
-    """``--format json`` -> valid DiagnosticianResult; top-level findings are id-bearing.
-
-    Spec §场景:json 模式输出可解析的 DiagnosticianResult + task 5.4: the JSON
-    round-trips via ``DiagnosticianResult.model_validate_json`` with a stable
-    field set, and the canonical-vs-debug distinction is observable —
-    ``findings[*].id`` (top level) are all non-None while
-    ``planner_result.findings[*].id`` (the unstamped debug originals) are all
-    None. Downstream must read the top-level findings.
-    """
-
-    _patch_backend(monkeypatch, _fake(_happy_script()))
-
-    exit_code, stdout, stderr = _run_main(
-        ["inspect", "local-host", "--intent", "检查健康", "--format", "json"],
-        capsys,
-        monkeypatch,
-    )
-    assert exit_code == 0, stderr
-
-    # Round-trips back into the typed model (field set stable, no extras).
-    result = DiagnosticianResult.model_validate_json(stdout)
-
-    # Field set is exactly the declared schema.
-    payload = json.loads(stdout)
-    assert set(payload) == {
-        "narrative",
-        "findings",
-        "hypotheses",
-        "status",
-        "planner_result",
-        "diagnostician_loop",
-    }
-
-    # Top-level (canonical) findings all carry a real id; the nested
-    # planner_result.findings (debug originals) all carry None.
-    assert result.findings  # hello.echo produced one finding
-    assert all(f.id is not None for f in result.findings)
-    assert result.planner_result.findings
-    assert all(f.id is None for f in result.planner_result.findings)
-
-    # Hypotheses reference the canonical top-level ids (not labels).
-    top_ids = {f.id for f in result.findings}
-    for h in result.hypotheses:
-        for ref in h.supporting_findings:
-            assert ref in top_ids
+# 5.4 — JSON schema stability migrated to the Report contract in
+# ``test_inspect_intent_report.py::test_intent_json_round_trips_as_report``
+# (the --intent json surface is now a ``Report``, not a ``DiagnosticianResult``;
+# the canonical top-level findings + hypotheses⊆findings-id invariant is asserted
+# there). Not re-covered here.
 
 
 # --------------------------------------------------------------------------- #
@@ -883,15 +722,17 @@ def test_intent_request_more_inspection_grows_store_and_is_cited(
     supplement_inspector: str,
     agent_backend_env: None,
 ) -> None:
-    """6.2: a hypothesis cites a request_more_inspection NEW finding (FindingStore snapshot).
+    """6.2: a hypothesis cites a request_more_inspection NEW finding (Report snapshot).
 
     Spec §场景:诊断师补查证据后引用新 finding. The Diagnostician supplements via
     ``request_more_inspection`` (a distinct inspector → a NEW canonical finding),
-    then correlates citing that new finding's label (F2). On stdout the root-cause
-    section must carry an evidence link to the NEW finding's real id, and that id
-    must appear in the top-level ``## Findings`` set (proving the FindingStore
-    snapshot incorporated the supplemented finding, not just the Planner's F1).
+    then correlates citing that new finding's label (F2). Migrated to the Report
+    contract: the --intent json surface is now an assembled ``Report``; the
+    supplemented finding must appear in ``Report.findings`` (proving the per-run
+    collector snapshot incorporated the supplement, not just the Planner's F1) and
+    the single hypothesis must cite that NEW finding's real id.
     """
+    from hostlens.reporting.models import Report
 
     _patch_backend(monkeypatch, _fake(_supplement_diag_script(supplement_inspector)))
 
@@ -902,24 +743,24 @@ def test_intent_request_more_inspection_grows_store_and_is_cited(
     )
     assert exit_code == 1, stderr  # supplemented critical finding → exit 1
 
-    result = DiagnosticianResult.model_validate_json(stdout)
+    report = Report.model_validate_json(stdout)
 
     # The snapshot grew: Planner's hello.echo finding PLUS the supplemented one.
-    messages = [f.message for f in result.findings]
+    messages = [f.message for f in report.findings]
     assert any("hello received" in m for m in messages)
     assert any("supplemental signal" in m for m in messages)
-    assert len(result.findings) == 2
+    assert len(report.findings) == 2
 
     # The supplemented finding has its OWN distinct real id (different message →
     # different compute_finding_id), and the single hypothesis cites THAT id.
-    supplemented = next(f for f in result.findings if "supplemental signal" in f.message)
-    planner_finding = next(f for f in result.findings if "hello received" in f.message)
+    supplemented = next(f for f in report.findings if "supplemental signal" in f.message)
+    planner_finding = next(f for f in report.findings if "hello received" in f.message)
     assert supplemented.id is not None
     assert planner_finding.id is not None
     assert supplemented.id != planner_finding.id
 
-    assert len(result.hypotheses) == 1
-    cited = result.hypotheses[0].supporting_findings
+    assert len(report.hypotheses) == 1
+    cited = report.hypotheses[0].supporting_findings
     assert cited == [supplemented.id]  # cites the NEW finding, not the Planner's F1
 
 
@@ -1179,14 +1020,22 @@ def _register_secret_bearing_inspector(secret_in_message: bool) -> Any:
     """Build a ``register_default_tools`` stub registering a ``run_inspector``
     whose handler returns a Finding carrying ``_SECRET_SK``.
 
+    The stub mirrors the new ``register_default_tools(registry, *, clock=None,
+    collector=None)`` signature and feeds the per-run collector a matching
+    ``InspectorResult`` (the handler stub bypasses the real runner, so the
+    assembled Report only carries the secret-bearing finding if we append it to
+    the collector the orchestration snapshots).
+
     When ``secret_in_message`` the secret is in the Finding.message (surfaces in
-    the top-level ## Findings / json findings). The secret is ALWAYS placed in
-    the Evidence.stdout, which also lands verbatim in the run_inspector tool
-    output → ``tool_invocations[*].output`` (the json-only loop telemetry).
+    the top-level ## Findings / Report.findings json). The secret is ALWAYS placed
+    in the Evidence.stdout, which (since the collector appends the full finding
+    with its evidence) lands in ``Report.findings[*].evidence[*].stdout`` — the
+    surface the recursive redact walker must reach even when the message is benign.
     """
 
     from typing import cast as _cast
 
+    from hostlens.inspectors.result import InspectorResult
     from hostlens.reporting.models import Evidence, Finding
     from hostlens.tools.base import ToolSpec
     from hostlens.tools.registry import ToolRegistry
@@ -1194,27 +1043,40 @@ def _register_secret_bearing_inspector(secret_in_message: bool) -> Any:
 
     message = f"leaked {_SECRET_SK}" if secret_in_message else "benign finding"
 
-    async def _handler(args: RunInspectorInput, ctx: Any) -> RunInspectorOutput:
-        return RunInspectorOutput(
-            target_name="local-host",
-            inspector_name="hello.echo",
-            findings=[
-                Finding(
-                    severity="info",
-                    message=message,
-                    evidence=[
-                        Evidence(
-                            kind="command_output",
-                            command="cat /tmp/creds",
-                            stdout=f"token output: {_SECRET_SK}",
-                            exit_code=0,
-                        )
-                    ],
+    def _secret_finding() -> Finding:
+        return Finding(
+            severity="info",
+            message=message,
+            evidence=[
+                Evidence(
+                    kind="command_output",
+                    command="cat /tmp/creds",
+                    stdout=f"token output: {_SECRET_SK}",
+                    exit_code=0,
                 )
             ],
         )
 
-    def _register(registry: ToolRegistry) -> None:
+    def _register(registry: ToolRegistry, *, clock: Any = None, collector: Any = None) -> None:
+        async def _handler(args: RunInspectorInput, ctx: Any) -> RunInspectorOutput:
+            finding = _secret_finding()
+            if collector is not None:
+                collector.append(
+                    InspectorResult(
+                        name="hello.echo",
+                        version="1.0.0",
+                        status="ok",
+                        target_name="local-host",
+                        duration_seconds=0.1,
+                        findings=[finding],
+                    )
+                )
+            return RunInspectorOutput(
+                target_name="local-host",
+                inspector_name="hello.echo",
+                findings=[finding],
+            )
+
         registry.register(
             ToolSpec(
                 name="run_inspector",
@@ -1282,6 +1144,48 @@ def test_intent_redacts_finding_secret_in_md_and_json(
     assert _SECRET_MASKED_SK in stdout_json
 
 
+def test_intent_redacts_diagnosis_narrative_secret_in_report_md_and_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    targets_yaml: Any,
+    user_inspectors_dir: Any,
+    agent_backend_env: None,
+) -> None:
+    """A secret in the Diagnostician's narrative is masked in the rendered Report.
+
+    Task 4.2 redaction regression: the diagnosis narrative is projected into
+    ``Report.metadata[diagnosis_narrative]``. Both the intent-style md renderer
+    (which reads that key back) and the json surface go through
+    ``redact_report_for_render`` (which masks ``metadata`` values), so a secret
+    the model restated in its narrative must not surface raw on stdout — the
+    masked placeholder must appear instead.
+    """
+
+    leaky_narrative = f"诊断完成：发现凭据 {_SECRET_SK} 泄露。"  # noqa: RUF001
+
+    # md surface (narrative rendered from metadata[diagnosis_narrative]).
+    _patch_backend(monkeypatch, _fake(_happy_script(diag_narrative=leaky_narrative)))
+    code_md, stdout_md, stderr_md = _run_main(
+        ["inspect", "local-host", "--intent", "检查健康"],
+        capsys,
+        monkeypatch,
+    )
+    assert code_md == 0, stderr_md
+    assert _SECRET_SK not in stdout_md
+    assert _SECRET_MASKED_SK in stdout_md
+
+    # json surface (metadata serialized through the same redaction boundary).
+    _patch_backend(monkeypatch, _fake(_happy_script(diag_narrative=leaky_narrative)))
+    code_json, stdout_json, stderr_json = _run_main(
+        ["inspect", "local-host", "--intent", "检查健康", "--format", "json"],
+        capsys,
+        monkeypatch,
+    )
+    assert code_json == 0, stderr_json
+    assert _SECRET_SK not in stdout_json
+    assert _SECRET_MASKED_SK in stdout_json
+
+
 def test_intent_redacts_model_narrative_secret_on_stderr_progress(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1338,7 +1242,10 @@ def test_intent_redacts_hallucinated_tool_name_secret_on_stderr_progress(
 
     # The hallucinated tool name IS the secret (a ``sk-...`` string redact_text
     # masks). The name is not in the white-list, so the loop takes the UnknownTool
-    # path after emitting ToolStarted/ToolCompleted with this raw name.
+    # path after emitting ToolStarted/ToolCompleted with this raw name. Because the
+    # model never calls a real run_inspector, the per-run collector stays empty →
+    # no Report → the no-result path (exit 2, empty stdout). The redaction surface
+    # under test is the stderr progress label, which is unaffected by no-result.
     script = [
         _msg(
             content=[
@@ -1361,7 +1268,8 @@ def test_intent_redacts_hallucinated_tool_name_secret_on_stderr_progress(
         capsys,
         monkeypatch,
     )
-    assert exit_code == 0, stderr
+    assert exit_code == 2  # no-result: hallucinated tool ran no inspector
+    assert stdout == ""
     assert _SECRET_SK not in stderr
     assert _SECRET_SK not in stdout
     # The masked placeholder proves the progress label still showed the (scrubbed) name.
@@ -1375,16 +1283,19 @@ def test_intent_redacts_loop_telemetry_secret_in_json(
     user_inspectors_dir: Any,
     agent_backend_env: None,
 ) -> None:
-    """A secret living ONLY in the json loop telemetry is masked too.
+    """A secret living ONLY in a finding's evidence (benign message) is masked too.
 
-    The raw ``run_inspector`` output (with the secret in Evidence.stdout) is
-    recorded into ``planner_result.loop_result.tool_invocations[*].output`` — a
-    surface that exists ONLY in the json serialization, not in the top-level
-    findings rendering. The recursive walker must reach it, so ``--format json``
-    must not leak the raw secret even when the finding message is benign.
+    Migrated to the Report contract: the loop telemetry top-level keys
+    (``planner_result`` / ``diagnostician_loop``) are gone — the --intent json
+    surface is now a ``Report``. The raw ``run_inspector`` Evidence.stdout secret
+    lands in ``Report.findings[*].evidence[*].stdout`` (a nested surface, with a
+    benign finding message), so the recursive ``redact_report_for_render`` walker
+    must still reach it — ``--format json`` must not leak the raw secret even when
+    the finding message itself is benign.
     """
 
     import hostlens.cli._intent as intent_mod
+    from hostlens.reporting.models import Report
 
     monkeypatch.setattr(
         intent_mod, "register_default_tools", _register_secret_bearing_inspector(False)
@@ -1398,10 +1309,11 @@ def test_intent_redacts_loop_telemetry_secret_in_json(
     )
     assert code_json == 0, stderr_json
 
-    # The secret is present in the loop telemetry path (tool_invocations output).
-    payload = json.loads(stdout_json)
-    invocations = payload["planner_result"]["loop_result"]["tool_invocations"]
-    assert invocations, "expected the planner run_inspector invocation in telemetry"
+    # The secret lives only in the nested evidence (the message is benign); the
+    # masked placeholder proves the recursive walker reached evidence.stdout.
+    report = Report.model_validate_json(stdout_json)
+    assert report.findings, "expected the run_inspector finding in the Report"
+    assert all("leaked" not in f.message for f in report.findings)  # benign message
 
     assert _SECRET_SK not in stdout_json
     assert _SECRET_MASKED_SK in stdout_json
@@ -1414,14 +1326,16 @@ def test_intent_redaction_preserves_round_trip(
     user_inspectors_dir: Any,
     agent_backend_env: None,
 ) -> None:
-    """The redacted ``--format json`` output is still a valid DiagnosticianResult.
+    """The redacted ``--format json`` output is still a valid Report.
 
-    The ``model_dump`` → recursive-redact → ``model_validate`` round-trip must not
-    break the schema (datetime / enum / int scalars survive), so downstream can
-    still ``model_validate_json`` the masked output.
+    Migrated to the Report contract: the ``model_dump`` → recursive-redact →
+    ``model_validate`` round-trip must not break the schema (datetime / enum / int
+    scalars survive), so downstream can still ``Report.model_validate_json`` the
+    masked output.
     """
 
     import hostlens.cli._intent as intent_mod
+    from hostlens.reporting.models import Report
 
     monkeypatch.setattr(
         intent_mod, "register_default_tools", _register_secret_bearing_inspector(True)
@@ -1435,9 +1349,9 @@ def test_intent_redaction_preserves_round_trip(
     )
     assert code_json == 0, stderr_json
 
-    result = DiagnosticianResult.model_validate_json(stdout_json)
-    assert result.findings
-    assert all(f.id is not None for f in result.findings)
+    report = Report.model_validate_json(stdout_json)
+    assert report.findings
+    assert all(f.id is not None for f in report.findings)
 
 
 # --------------------------------------------------------------------------- #
