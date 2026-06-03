@@ -19,6 +19,7 @@ Covers spec report-regression-diff §需求 逐条对照:
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -26,7 +27,9 @@ from pydantic import ValidationError
 import hostlens.inspectors.result  # noqa: F401  # triggers Report.model_rebuild
 from hostlens.inspectors.result import InspectorResult
 from hostlens.reporting.diff import (
+    ConfidenceChange,
     FindingFingerprint,
+    HypothesisFingerprint,
     RegressionDiff,
     SeverityChange,
     compute_diff,
@@ -35,8 +38,11 @@ from hostlens.reporting.models import (
     Finding,
     Report,
     ReportStatus,
+    RootCauseHypothesis,
     Severity,
 )
+
+Confidence = Literal["low", "medium", "high"]
 
 
 def _t0() -> datetime:
@@ -79,8 +85,9 @@ def _report(
     *,
     target_id: str | None = None,
     status: ReportStatus | None = None,
+    hypotheses: list[RootCauseHypothesis] | None = None,
 ) -> Report:
-    return Report.from_inspector_results(
+    report = Report.from_inspector_results(
         "t",
         inspector_results,
         started_at=_t0(),
@@ -88,6 +95,25 @@ def _report(
         target_id=target_id,
         status=status,
     )
+    if hypotheses is not None:
+        report = report.model_copy(update={"hypotheses": hypotheses})
+    return report
+
+
+def _h(
+    *supporting_findings: str,
+    confidence: Confidence = "medium",
+    description: str = "root cause",
+) -> RootCauseHypothesis:
+    return RootCauseHypothesis(
+        description=description,
+        confidence=confidence,
+        supporting_findings=list(supporting_findings),
+    )
+
+
+def _ok_report(*, hypotheses: list[RootCauseHypothesis] | None = None) -> Report:
+    return _report([_ir("insp.a", findings=[_f("A")])], hypotheses=hypotheses)
 
 
 # --------------------------------------------------------------------------- #
@@ -211,8 +237,8 @@ def test_none_id_finding_skips_diff() -> None:
 
 
 def test_meta_none_on_baseline_skips_without_none_deref() -> None:
-    baseline = _report([_ir("insp.a", findings=[_f("A")])])
-    current = _report([_ir("insp.a", findings=[_f("A")])])
+    baseline = _report([_ir("insp.a", findings=[_f("A")])], hypotheses=[_h("f1")])
+    current = _report([_ir("insp.a", findings=[_f("A")])], hypotheses=[_h("f1")])
     baseline_no_meta = baseline.model_copy(update={"meta": None})
     # Must not raise AttributeError on `.meta.target_id`.
     d = compute_diff(baseline_no_meta, current)
@@ -222,6 +248,13 @@ def test_meta_none_on_baseline_skips_without_none_deref() -> None:
     assert d.changed_severity == []
     # baseline.meta is None → baseline_meta is None
     assert d.baseline_meta is None
+    assert (
+        d.hypothesis_added == []
+        and d.hypothesis_resolved == []
+        and d.hypothesis_confidence_changed == []
+        and d.hypothesis_unanchored == 0
+        and d.hypothesis_ambiguous_keys == 0
+    )
 
 
 def test_meta_none_on_current_skips_but_projects_baseline_meta() -> None:
@@ -354,3 +387,344 @@ def test_dst_boundary_crossed_always_false() -> None:
     r = _report([_ir("insp.a", findings=[_f("A")])])
     d = compute_diff(r, r)
     assert d.dst_boundary_crossed is False
+
+
+# --------------------------------------------------------------------------- #
+# RegressionDiff model — hypothesis fields
+# --------------------------------------------------------------------------- #
+
+
+def test_regression_diff_hypothesis_defaults() -> None:
+    d = RegressionDiff(baseline_meta=None)
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_regression_diff_rejects_negative_hypothesis_counts() -> None:
+    with pytest.raises(ValidationError):
+        RegressionDiff(baseline_meta=None, hypothesis_unanchored=-1)
+    with pytest.raises(ValidationError):
+        RegressionDiff(baseline_meta=None, hypothesis_ambiguous_keys=-1)
+    d = RegressionDiff(baseline_meta=None, hypothesis_unanchored=0, hypothesis_ambiguous_keys=0)
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_hypothesis_fingerprint_rejects_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        HypothesisFingerprint(  # type: ignore[call-arg]
+            confidence="low", supporting_findings=["a"], description="d", extra="x"
+        )
+
+
+def test_confidence_change_rejects_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        ConfidenceChange(  # type: ignore[call-arg]
+            supporting_findings=["a"],
+            from_confidence="low",
+            to_confidence="high",
+            description="d",
+            extra="x",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — hypothesis added / resolved / confidence_changed
+# --------------------------------------------------------------------------- #
+
+
+def test_hypothesis_new_evidence_set_goes_to_added() -> None:
+    baseline = _ok_report(hypotheses=[_h("f1")])
+    current = _ok_report(hypotheses=[_h("f1"), _h("f2", description="new cause")])
+    d = compute_diff(baseline, current)
+    assert [hf.description for hf in d.hypothesis_added] == ["new cause"]
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+
+
+def test_hypothesis_baseline_only_goes_to_resolved() -> None:
+    baseline = _ok_report(hypotheses=[_h("f1"), _h("f2", description="gone")])
+    current = _ok_report(hypotheses=[_h("f1")])
+    d = compute_diff(baseline, current)
+    assert [hf.description for hf in d.hypothesis_resolved] == ["gone"]
+    assert d.hypothesis_added == []
+    assert d.hypothesis_confidence_changed == []
+
+
+def test_hypothesis_same_key_confidence_change() -> None:
+    baseline = _ok_report(hypotheses=[_h("f1", confidence="low")])
+    current = _ok_report(hypotheses=[_h("f1", confidence="high")])
+    d = compute_diff(baseline, current)
+    assert len(d.hypothesis_confidence_changed) == 1
+    cc = d.hypothesis_confidence_changed[0]
+    assert cc.from_confidence == "low"
+    assert cc.to_confidence == "high"
+    assert cc.supporting_findings == ["f1"]
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+
+
+def test_hypothesis_matches_on_evidence_set_not_description() -> None:
+    # Same evidence key, same confidence, different description → no change.
+    baseline = _ok_report(hypotheses=[_h("f1", description="text A")])
+    current = _ok_report(hypotheses=[_h("f1", description="text B (rephrased)")])
+    d = compute_diff(baseline, current)
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+
+
+def test_hypothesis_key_is_order_independent_and_deduped() -> None:
+    # ["A","A"] and ["A"] → same key (frozenset dedupes) → matched.
+    baseline = _ok_report(hypotheses=[_h("A", "A")])
+    current = _ok_report(hypotheses=[_h("A")])
+    d = compute_diff(baseline, current)
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    # And the projected fingerprint dedupes/sorts.
+    baseline2 = _ok_report(hypotheses=[_h("b", "a", "a")])
+    current2 = _ok_report()
+    d2 = compute_diff(baseline2, current2)
+    assert d2.hypothesis_resolved[0].supporting_findings == ["a", "b"]
+
+
+def test_hypothesis_empty_report_no_hypothesis_diff() -> None:
+    baseline = _ok_report()
+    current = _ok_report()
+    d = compute_diff(baseline, current)
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — collision: added key emits exactly one representative
+# --------------------------------------------------------------------------- #
+
+
+def test_collision_added_key_emits_single_representative() -> None:
+    # current has 2 hypotheses sharing key {f1} (same confidence, diff
+    # description), key absent from baseline → exactly 1 representative.
+    current = _ok_report(
+        hypotheses=[
+            _h("f1", confidence="medium", description="zeta"),
+            _h("f1", confidence="medium", description="alpha"),
+        ]
+    )
+    baseline = _ok_report()
+    d = compute_diff(baseline, current)
+    assert len(d.hypothesis_added) == 1
+    # per-report sort by (sorted(support), confidence, description) → "alpha" first
+    assert d.hypothesis_added[0].description == "alpha"
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_collision_ambiguous_key_confidence_skipped_and_counted() -> None:
+    # baseline: key {f1} exactly 1 (low). current: key {f1} has 2 (one high).
+    baseline = _ok_report(hypotheses=[_h("f1", confidence="low")])
+    current = _ok_report(
+        hypotheses=[
+            _h("f1", confidence="high", description="a"),
+            _h("f1", confidence="medium", description="b"),
+        ]
+    )
+    d = compute_diff(baseline, current)
+    # key present both sides → not in added/resolved
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    # ambiguous → confidence comparison skipped, key counted
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_ambiguous_keys == 1
+
+
+def test_mixed_clean_and_ambiguous_keys_do_not_cross_contaminate() -> None:
+    # Clean key {f2,f1}: exactly 1 each side, confidence low → high → counted as
+    # a confidence change. Ambiguous key {g1}: current side has 2 collisions →
+    # skipped + counted, must not suppress the clean key's confidence change.
+    baseline = _ok_report(
+        hypotheses=[
+            _h("f2", "f1", confidence="low", description="clean"),
+            _h("g1", confidence="medium", description="amb-base"),
+        ]
+    )
+    current = _ok_report(
+        hypotheses=[
+            _h("f2", "f1", confidence="high", description="clean"),
+            _h("g1", confidence="high", description="amb-a"),
+            _h("g1", confidence="medium", description="amb-b"),
+        ]
+    )
+    d = compute_diff(baseline, current)
+    assert len(d.hypothesis_confidence_changed) == 1
+    cc = d.hypothesis_confidence_changed[0]
+    assert cc.supporting_findings == ["f1", "f2"]
+    assert cc.from_confidence == "low"
+    assert cc.to_confidence == "high"
+    assert d.hypothesis_ambiguous_keys == 1
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+
+    # Reversed key ordering: ambiguous key {a1} sorts BEFORE clean key {z2,z1}.
+    # Pins that the per-key skip is isolated regardless of iteration order — a
+    # contamination bug that suppressed later keys would surface only here.
+    baseline_rev = _ok_report(
+        hypotheses=[
+            _h("a1", confidence="medium", description="amb-base"),
+            _h("z2", "z1", confidence="low", description="clean"),
+        ]
+    )
+    current_rev = _ok_report(
+        hypotheses=[
+            _h("a1", confidence="high", description="amb-a"),
+            _h("a1", confidence="medium", description="amb-b"),
+            _h("z2", "z1", confidence="high", description="clean"),
+        ]
+    )
+    d_rev = compute_diff(baseline_rev, current_rev)
+    assert len(d_rev.hypothesis_confidence_changed) == 1
+    cc_rev = d_rev.hypothesis_confidence_changed[0]
+    assert cc_rev.supporting_findings == ["z1", "z2"]
+    assert cc_rev.from_confidence == "low"
+    assert cc_rev.to_confidence == "high"
+    assert d_rev.hypothesis_ambiguous_keys == 1
+    assert d_rev.hypothesis_added == []
+    assert d_rev.hypothesis_resolved == []
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — empty supporting_findings → unanchored
+# --------------------------------------------------------------------------- #
+
+
+def test_empty_support_counts_unanchored_and_absent_from_lists() -> None:
+    baseline = _ok_report(hypotheses=[_h(description="no evidence")])
+    current = _ok_report(hypotheses=[_h(description="no evidence")])
+    d = compute_diff(baseline, current)
+    # two-run total: baseline 1 + current 1 = 2
+    assert d.hypothesis_unanchored == 2
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — gate inheritance (hypothesis fields zeroed)
+# --------------------------------------------------------------------------- #
+
+
+def test_gate_baseline_not_ok_zeroes_hypothesis_fields() -> None:
+    baseline = _report(
+        [_ir("insp.a", findings=[_f("A")])],
+        status=ReportStatus.PARTIAL,
+        hypotheses=[_h("f1")],
+    )
+    current = _ok_report(hypotheses=[_h("f2")])
+    d = compute_diff(baseline, current, force=False)
+    assert d.diff_skipped_reason == "baseline_not_ok"
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_gate_schema_mismatch_zeroes_hypothesis_fields() -> None:
+    baseline = _ok_report(hypotheses=[_h("f1")])
+    current = _ok_report(hypotheses=[_h("f2")])
+    assert baseline.meta is not None
+    bumped_meta = baseline.meta.model_copy(update={"report_schema_version": "9.9"})
+    baseline_bumped = baseline.model_copy(update={"meta": bumped_meta})
+    d = compute_diff(baseline_bumped, current)
+    assert d.diff_skipped_reason == "schema_changed"
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_gate_none_finding_id_zeroes_hypothesis_fields() -> None:
+    baseline = _ok_report(hypotheses=[_h("f1")])
+    bare_finding = Finding(severity="info", message="A")  # id is None
+    current = baseline.model_copy(update={"findings": [bare_finding], "hypotheses": [_h("f2")]})
+    d = compute_diff(baseline, current)
+    assert d.diff_skipped_reason == "missing_finding_ids"
+    assert d.hypothesis_added == []
+    assert d.hypothesis_resolved == []
+    assert d.hypothesis_confidence_changed == []
+    assert d.hypothesis_unanchored == 0
+    assert d.hypothesis_ambiguous_keys == 0
+
+
+def test_gate_cross_target_raises_before_hypothesis_diff() -> None:
+    baseline = _report(
+        [_ir("insp.a", findings=[_f("A")])], target_id="host-a", hypotheses=[_h("f1")]
+    )
+    current = _report(
+        [_ir("insp.a", findings=[_f("A")])], target_id="host-b", hypotheses=[_h("f2")]
+    )
+    with pytest.raises(ValueError, match="across targets"):
+        compute_diff(baseline, current)
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — inspector skew does not rewrite hypothesis keys
+# --------------------------------------------------------------------------- #
+
+
+def test_inspector_skew_does_not_rewrite_hypothesis_key() -> None:
+    # insp upgraded 1.0 → 1.1; finding message differs → finding ids differ.
+    baseline_report = _report([_ir("linux.disk.usage", version="1.0", findings=[_f("old")])])
+    current_report = _report([_ir("linux.disk.usage", version="1.1", findings=[_f("new")])])
+    # Anchor hypotheses to the (distinct) finding ids declared as-is.
+    assert baseline_report.findings[0].id is not None
+    assert current_report.findings[0].id is not None
+    baseline_fid = baseline_report.findings[0].id
+    current_fid = current_report.findings[0].id
+    baseline = baseline_report.model_copy(
+        update={"hypotheses": [_h(baseline_fid, description="baseline cause")]}
+    )
+    current = current_report.model_copy(
+        update={"hypotheses": [_h(current_fid, description="current cause")]}
+    )
+    d = compute_diff(baseline, current)
+    # finding segment shows no change (rule 5 excludes upgraded inspector)
+    assert d.inspector_upgraded == ["linux.disk.usage"]
+    assert d.added == []
+    assert d.resolved == []
+    # but hypothesis keys are NOT rewritten → key drift produces added+resolved pair
+    assert [hf.supporting_findings for hf in d.hypothesis_resolved] == [[baseline_fid]]
+    assert [hf.supporting_findings for hf in d.hypothesis_added] == [[current_fid]]
+
+
+# --------------------------------------------------------------------------- #
+# compute_diff — determinism of representative selection + output ordering
+# --------------------------------------------------------------------------- #
+
+
+def test_hypothesis_lists_are_deterministic() -> None:
+    baseline = _ok_report(
+        hypotheses=[
+            _h("f3", description="d3"),
+            _h("f1", description="d1"),
+        ]
+    )
+    current = _ok_report(
+        hypotheses=[
+            _h("f4", description="d4"),
+            _h("f2", description="d2"),
+        ]
+    )
+    d1 = compute_diff(baseline, current)
+    d2 = compute_diff(baseline, current)
+    assert d1.hypothesis_added == d2.hypothesis_added
+    assert d1.hypothesis_resolved == d2.hypothesis_resolved
+    # output sorted by sorted(supporting_findings)
+    assert [hf.supporting_findings for hf in d1.hypothesis_added] == [["f2"], ["f4"]]
+    assert [hf.supporting_findings for hf in d1.hypothesis_resolved] == [["f1"], ["f3"]]

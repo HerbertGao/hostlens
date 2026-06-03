@@ -335,3 +335,35 @@ def _render_diff(diff: RegressionDiff) -> None:
     typer.echo(f"changed_severity ({len(diff.changed_severity)}):")
     for sc in diff.changed_severity:
         typer.echo(f"  ~ {sc.from_severity} -> {sc.to_severity}: {sc.message}")
+
+    typer.echo("hypothesis diff: 按 supporting_findings 证据集匹配, 非 description 文本")
+
+    typer.echo(f"hypothesis_added ({len(diff.hypothesis_added)}):")
+    for hf in diff.hypothesis_added:
+        typer.echo(f"  + {hf.confidence}: {hf.description}")
+
+    typer.echo(f"hypothesis_resolved ({len(diff.hypothesis_resolved)}):")
+    for hf in diff.hypothesis_resolved:
+        typer.echo(f"  - {hf.confidence}: {hf.description}")
+
+    typer.echo(f"hypothesis_confidence_changed ({len(diff.hypothesis_confidence_changed)}):")
+    for cc in diff.hypothesis_confidence_changed:
+        typer.echo(f"  ~ {cc.from_confidence} -> {cc.to_confidence}: {cc.description}")
+
+    if diff.hypothesis_unanchored > 0:
+        typer.echo(
+            f"未锚定假设 ({diff.hypothesis_unanchored}, 两 run 合计): "
+            "无 supporting_findings, 未参与对比"
+        )
+
+    if diff.hypothesis_ambiguous_keys > 0:
+        typer.echo(
+            f"歧义键 ({diff.hypothesis_ambiguous_keys}): "
+            "一报告内多条同键假设, confidence 变化未计算"
+        )
+
+    if diff.inspector_upgraded:
+        typer.echo(
+            "注意: 存在 inspector 版本变更, 部分 hypothesis 的 added/resolved "
+            "可能由证据 finding 的 inspector 升级导致, 非真实诊断变化"
+        )

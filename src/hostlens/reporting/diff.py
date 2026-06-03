@@ -27,11 +27,16 @@ from hostlens.reporting.models import (
     Finding,
     Report,
     ReportMeta,
+    RootCauseHypothesis,
     Severity,
 )
 
+Confidence = Literal["low", "medium", "high"]
+
 __all__ = [
+    "ConfidenceChange",
     "FindingFingerprint",
+    "HypothesisFingerprint",
     "RegressionDiff",
     "SeverityChange",
     "compute_diff",
@@ -66,6 +71,34 @@ class SeverityChange(BaseModel):
     message: str
 
 
+class HypothesisFingerprint(BaseModel):
+    """Compact projection of a `RootCauseHypothesis` for hypothesis-level
+    added/resolved listings.
+
+    The match key is `frozenset(supporting_findings)`; `supporting_findings`
+    here is its sorted+deduped readable form (rendering/audit). `description`
+    is display-only and does not participate in matching.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    confidence: Confidence
+    supporting_findings: list[str]
+    description: str
+
+
+class ConfidenceChange(BaseModel):
+    """A hypothesis whose evidence-set key is present in both runs but whose
+    `confidence` changed (`from_confidence` → `to_confidence`)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    supporting_findings: list[str]
+    from_confidence: Confidence
+    to_confidence: Confidence
+    description: str
+
+
 class RegressionDiff(BaseModel):
     """Closed output shape of `compute_diff`.
 
@@ -89,6 +122,11 @@ class RegressionDiff(BaseModel):
     diff_skipped_reason: (
         Literal["baseline_not_ok", "schema_changed", "missing_finding_ids"] | None
     ) = None
+    hypothesis_added: list[HypothesisFingerprint] = Field(default_factory=list)
+    hypothesis_resolved: list[HypothesisFingerprint] = Field(default_factory=list)
+    hypothesis_confidence_changed: list[ConfidenceChange] = Field(default_factory=list)
+    hypothesis_unanchored: int = Field(default=0, ge=0)
+    hypothesis_ambiguous_keys: int = Field(default=0, ge=0)
 
 
 def _project_baseline_meta(meta: ReportMeta) -> BaselineRef:
@@ -133,6 +171,92 @@ def _upgraded_inspectors(baseline: Report, current: Report) -> set[str]:
         for name in baseline_versions.keys() & current_versions.keys()
         if baseline_versions[name] != current_versions[name]
     }
+
+
+def _hyp_key(hypothesis: RootCauseHypothesis) -> frozenset[str]:
+    return frozenset(hypothesis.supporting_findings)
+
+
+def _sorted_key(key: frozenset[str]) -> list[str]:
+    return sorted(key)
+
+
+def _hyp_fingerprint(hypothesis: RootCauseHypothesis) -> HypothesisFingerprint:
+    return HypothesisFingerprint(
+        confidence=hypothesis.confidence,
+        supporting_findings=sorted(set(hypothesis.supporting_findings)),
+        description=hypothesis.description,
+    )
+
+
+def _index_hypotheses(
+    hypotheses: list[RootCauseHypothesis],
+) -> tuple[dict[frozenset[str], list[RootCauseHypothesis]], int]:
+    """Group anchored hypotheses by evidence-set key, dropping empty-support
+    ones (counted into `unanchored`). Within each key the list is stably
+    sorted by `(sorted(supporting_findings), confidence, description)` so the
+    deterministic representative is the first element.
+    """
+    unanchored = 0
+    by_key: dict[frozenset[str], list[RootCauseHypothesis]] = {}
+    for h in hypotheses:
+        if not h.supporting_findings:
+            unanchored += 1
+            continue
+        by_key.setdefault(_hyp_key(h), []).append(h)
+    for group in by_key.values():
+        group.sort(key=lambda h: (sorted(h.supporting_findings), h.confidence, h.description))
+    return by_key, unanchored
+
+
+def _hypothesis_diff(
+    baseline: Report, current: Report
+) -> tuple[
+    list[HypothesisFingerprint],
+    list[HypothesisFingerprint],
+    list[ConfidenceChange],
+    int,
+    int,
+]:
+    baseline_by_key, baseline_unanchored = _index_hypotheses(baseline.hypotheses)
+    current_by_key, current_unanchored = _index_hypotheses(current.hypotheses)
+
+    added = [
+        _hyp_fingerprint(current_by_key[key][0])
+        for key in sorted(current_by_key.keys() - baseline_by_key.keys(), key=_sorted_key)
+    ]
+    resolved = [
+        _hyp_fingerprint(baseline_by_key[key][0])
+        for key in sorted(baseline_by_key.keys() - current_by_key.keys(), key=_sorted_key)
+    ]
+
+    confidence_changed: list[ConfidenceChange] = []
+    ambiguous_keys = 0
+    for key in sorted(baseline_by_key.keys() & current_by_key.keys(), key=_sorted_key):
+        baseline_group = baseline_by_key[key]
+        current_group = current_by_key[key]
+        if len(baseline_group) > 1 or len(current_group) > 1:
+            ambiguous_keys += 1
+            continue
+        baseline_h = baseline_group[0]
+        current_h = current_group[0]
+        if baseline_h.confidence != current_h.confidence:
+            confidence_changed.append(
+                ConfidenceChange(
+                    supporting_findings=_sorted_key(key),
+                    from_confidence=baseline_h.confidence,
+                    to_confidence=current_h.confidence,
+                    description=current_h.description,
+                )
+            )
+
+    return (
+        added,
+        resolved,
+        confidence_changed,
+        baseline_unanchored + current_unanchored,
+        ambiguous_keys,
+    )
 
 
 def compute_diff(baseline: Report, current: Report, *, force: bool = False) -> RegressionDiff:
@@ -214,6 +338,14 @@ def compute_diff(baseline: Report, current: Report, *, force: bool = False) -> R
                 )
             )
 
+    (
+        hypothesis_added,
+        hypothesis_resolved,
+        hypothesis_confidence_changed,
+        hypothesis_unanchored,
+        hypothesis_ambiguous_keys,
+    ) = _hypothesis_diff(baseline, current)
+
     return RegressionDiff(
         baseline_meta=baseline_meta,
         added=added,
@@ -221,4 +353,9 @@ def compute_diff(baseline: Report, current: Report, *, force: bool = False) -> R
         changed_severity=changed_severity,
         inspector_upgraded=sorted(upgraded),
         dst_boundary_crossed=False,
+        hypothesis_added=hypothesis_added,
+        hypothesis_resolved=hypothesis_resolved,
+        hypothesis_confidence_changed=hypothesis_confidence_changed,
+        hypothesis_unanchored=hypothesis_unanchored,
+        hypothesis_ambiguous_keys=hypothesis_ambiguous_keys,
     )
