@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from hostlens.cli import main
+from hostlens.reporting.diff import compute_diff
 from hostlens.reporting.models import Report
 from hostlens.reporting.store import SaveResult
 
@@ -194,6 +195,72 @@ def test_demo_persist_two_runs_reports_diff_empty_finding_delta(
     assert "skipped" not in diff_out
     assert "added (0)" in diff_out
     assert "resolved (0)" in diff_out
+
+
+# --------------------------------------------------------------------------- #
+# two --persist runs → hypothesis-level diff is empty (deterministic replay)
+# --------------------------------------------------------------------------- #
+
+
+def test_demo_persist_two_runs_hypothesis_diff_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    xdg_home: Path,
+) -> None:
+    """Two ``--persist`` runs of the SAME scenario → the hypothesis-level delta is
+    empty under deterministic replay.
+
+    Deterministic cassette replay → both runs assemble hypotheses whose
+    ``supporting_findings`` resolve to the SAME set of content-derived
+    ``Finding.id``s → identical ``frozenset(supporting_findings)`` match keys
+    (the empty delta comes from key equality, NOT from ``description`` being
+    reproduced verbatim — ``description`` does not participate in matching).
+
+    ``hypothesis_unanchored == 0`` is a HARD assertion (not "scenario
+    dependent"): it relies on every demo cassette's ``correlate_findings``
+    yielding hypotheses with NON-EMPTY ``supporting_findings``. If a future
+    empty-support cassette is recorded, this test goes red immediately rather
+    than silently drifting to a non-zero count.
+
+    Run_ids + Reports are captured from the ``demo run -f json`` stdout (the
+    existing ``test_demo_persist`` precedent — JSON stdout is allowed; only
+    parsing human-readable CLI text is excluded). The diff is asserted directly
+    against ``compute_diff``'s ``RegressionDiff`` fields. No real API.
+
+    Spec §场景:同证据集两次确定性巡检的 hypothesis diff 为空 (D-7).
+    """
+
+    def _persist_run() -> Report:
+        code, stdout, stderr = _run_main(
+            ["demo", "run", "cpu_saturation", "--persist", "-f", "json", "--quiet"],
+            capsys,
+            monkeypatch,
+        )
+        assert code == 1, stderr
+        report = Report.model_validate_json(stdout)
+        assert report.meta is not None
+        assert report.meta.status == "ok"
+        # The cassette must produce anchored hypotheses for the empty-delta /
+        # zero-unanchored assertions below to be meaningful.
+        assert report.hypotheses
+        assert all(h.supporting_findings for h in report.hypotheses)
+        return report
+
+    baseline = _persist_run()
+    current = _persist_run()
+    assert baseline.meta is not None and current.meta is not None
+    # Distinct run_ids even under deterministic replay (uuid4 per assembly).
+    assert baseline.meta.run_id != current.meta.run_id
+
+    diff = compute_diff(baseline, current)
+    assert diff.diff_skipped_reason is None
+    # Identical evidence-set keys across the two runs → empty hypothesis delta.
+    assert diff.hypothesis_added == []
+    assert diff.hypothesis_resolved == []
+    assert diff.hypothesis_confidence_changed == []
+    assert diff.hypothesis_ambiguous_keys == 0
+    # HARD 0: every demo hypothesis carries non-empty supporting_findings.
+    assert diff.hypothesis_unanchored == 0
 
 
 # --------------------------------------------------------------------------- #
