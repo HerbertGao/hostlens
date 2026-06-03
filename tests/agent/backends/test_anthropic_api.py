@@ -449,17 +449,60 @@ def test_disable_thinking_does_not_flip_extended_thinking_capability() -> None:
 async def test_unmodeled_content_block_normalizes_to_backend_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """4.7①: a ``type="thinking"`` block (unmodeled) → ``BackendError(
-    kind="unsupported_content_block")``, never a bare ``ValidationError``."""
+    """A truly unmodeled block type (neither text/tool_use nor
+    thinking/redacted_thinking) → ``BackendError(kind="unsupported_content_block")``,
+    never a bare ``ValidationError``. ``thinking`` is now modeled and no longer
+    triggers this path (see ``test_thinking_block_parses_not_unsupported``)."""
 
     payload = _ok_message_dict()
-    payload["content"] = [{"type": "thinking", "thinking": "secret reasoning"}]
-    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, disable_thinking=True)
+    payload["content"] = [{"type": "some_future_block", "data": "x"}]
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
     _patch_messages_create(monkeypatch, backend, return_value=_FakeSDKMessage(payload))
 
     with pytest.raises(BackendError) as exc_info:
         await _call_simple(backend)
     assert exc_info.value.kind == "unsupported_content_block"
+    assert exc_info.value.cause is not None
+
+
+@pytest.mark.asyncio
+async def test_thinking_block_parses_not_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``type="thinking"`` block now parses successfully into the
+    ``ContentBlock`` union; it must NOT trigger
+    ``unsupported_content_block`` (tolerate-inbound-thinking Path 1)."""
+
+    payload = _ok_message_dict()
+    payload["content"] = [
+        {"type": "thinking", "thinking": "synthetic reasoning", "signature": "sig-1"},
+        {"type": "text", "text": "ok"},
+    ]
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    _patch_messages_create(monkeypatch, backend, return_value=_FakeSDKMessage(payload))
+
+    result = await _call_simple(backend)
+    assert isinstance(result, MessageResponse)
+    assert result.content[0].type == "thinking"
+    assert result.content[0].signature == "sig-1"
+
+
+@pytest.mark.asyncio
+async def test_thinking_block_missing_signature_normalizes_to_invalid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thinking block missing its required ``signature`` is a field-level
+    validation failure (not an unknown block type) → ``invalid_response``,
+    NOT ``unsupported_content_block`` (spec D-7)."""
+
+    payload = _ok_message_dict()
+    payload["content"] = [{"type": "thinking", "thinking": "no signature here"}]
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    _patch_messages_create(monkeypatch, backend, return_value=_FakeSDKMessage(payload))
+
+    with pytest.raises(BackendError) as exc_info:
+        await _call_simple(backend)
+    assert exc_info.value.kind == "invalid_response"
     assert exc_info.value.cause is not None
 
 

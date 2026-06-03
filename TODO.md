@@ -322,16 +322,24 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [x] `reporting/diff.py`：两份报告对比，输出 `added` / `resolved` / `changed_severity`（+ `inspector_upgraded`；compute_diff 规则 0-7：meta=None 前置 / None-id 跳过 / 版本对齐排除 / 指纹集合差，防自基线）
   - [x] CLI: `hostlens reports diff <run_id_a> <run_id_b>`（+ `diff --target <t>` 自动基线模式，rowid tie-break 排除 current）
   - [ ] 也作为定时巡检报告里的一个 section（M5 用到）
-- [ ] **3.6 extended-thinking 支持（独立提案 `support-extended-thinking`；M2 显式不支持，见 backend.py 注释「M3+ Diagnostician」）**
+- [ ] **3.6 thinking 支持（拆成 Path 1 容忍 / Path 2 请求+消费两个独立提案）**
 
-  > **触发背景**：M2.6 用 DeepSeek 做 live 测试时发现 `deepseek-v4-pro/flash` 经其 anthropic 兼容端点**强制返回 `type="thinking"` 块**，撞 M2 `MessageResponse` 只建模 `text`/`tool_use` 的 scope → 解析崩。Diagnostician（3.1）若用推理模型也会受益。**reference memory**：`deepseek-v4-thinking-incompatible-live-test`。
+  > **触发背景**：M2.6 用 DeepSeek 做 live 测试时发现 `deepseek-v4-pro/flash` 经其 anthropic 兼容端点**强制返回 `type="thinking"` 块**，撞 `MessageResponse` 只建模 `text`/`tool_use` 的 scope → 解析崩。Diagnostician（3.1）若用推理模型也会受益。**reference memory**：`deepseek-v4-thinking-incompatible-live-test` / `deepseek-thinking-block-schema`（含实测 schema）。
+  >
+  > **「近期兜底」已落地**：`add-backend-disable-thinking`（2026-05-31 archived）已加 `disable_thinking` 开关（抑制路径）+ `BackendError(kind="unsupported_content_block")` 归一。原 §3.6 四支柱按动机拆成两刀。
 
-  - [ ] **支柱①** `MessageResponse.content` 的 `ContentBlock` 联合新增 `ThinkingBlock{type,thinking,signature}` + `RedactedThinkingBlock{type,data}`（按 `type=="thinking"` 过滤会丢 redacted_thinking → 破多轮协议，务必两者都建模）
-  - [ ] **支柱②** `LLMBackend.messages_create` + Protocol 加 `thinking` 参数（`{type:enabled,budget_tokens}` / `disabled` / `adaptive`）+ `BackendCapabilities.extended_thinking=True`（对应 backend）
-  - [ ] **支柱③** Agent loop 工具多轮**原样保留并按序回传 thinking 块**（signature 不变、顺序不变、不可省略——Anthropic/DeepSeek 带工具时省略→400）；cache_control 断点**不能打在 thinking 块上**（「pass unchanged」要求，断点挪到末尾 tool_use/text）
-  - [ ] **支柱④（关键，与 M2.6 协同）** cassette keying 必须**归一化掉 thinking/redacted_thinking 块再 hash**（thinking 文本与 signature 都**非确定**，否则 record→replay 永不命中）；cassette 仍**存完整响应**（含 thinking 供回放回传），只在 `request_key_for_payload` 投影 messages 时 drop thinking 块——是加归一化前置步，**不**改 keying 算法形状
-  - [ ] **近期兜底（可并入本提案）**：在 extended_thinking=False 时，backend adapter 对默认开 thinking 的 provider（如 DeepSeek）发 `thinking:{type:"disabled"}`（需实测生效）；意外收到 thinking 块时 `MessageResponse` 解析给清晰 `BackendError(kind="unsupported_content_block")` 而非裸 `ValidationError`
-  - [ ] 验收：真 Anthropic key 开 thinking 跑通工具多轮 + cassette record→replay 命中；DeepSeek v4 经 anthropic 端点跑通
+  - [ ] **Path 1 — `tolerate-inbound-thinking`（容忍，提案已落，待实现）** 动机：DeepSeek 默认吐 thinking 我们不认 → 从「抑制」转向「建模容忍」，不依赖 `disable_thinking` 关得掉。范围 = 支柱①③④（不含②）。
+    - [ ] **支柱①** `ContentBlock` 联合新增 `ThinkingBlock{type,thinking,signature}` + `RedactedThinkingBlock{type,data}`，**两者 `extra="allow"`**（verbatim relay 保真）；`signature: str` required（实测 pro/flash 都有，值==message id，DeepSeek 不验签）
+    - [ ] **支柱③** Agent loop 多轮 verbatim 回传 thinking 块 —— **已天然成立**：断点 B 恒落末尾 user tool_result、永不落 thinking（loop 结构使然），只加结构回归测试钉死（design D-3）
+    - [ ] **支柱④** cassette keying 投影时**丢整个 thinking/redacted 块**再 hash（`extra="allow"` 残留字段会毁 hash 稳定）+ recorder 落盘 request 同源归一；response 存完整供回放
+    - [ ] **零新 capability**（design D-2）：容忍 = 无条件扩 union，没人 branch tolerate flag → 违反 §4.11，7 字段不变；`extended_thinking` 保持 False
+    - [ ] 收窄 `unsupported_content_block` 语义（thinking 现能 parse，该 kind 改指「真正未知新 block」）+ 改其测试
+    - [ ] `disable_thinking` 降级为「可选 token 优化」（非兼容必需）
+    - [ ] 验收：DeepSeek 不设 disable 也跑通 thinking-on 多轮（live 已预验证）+ cassette record→replay 命中
+  - [ ] **Path 2 — `support-extended-thinking`（请求+消费，未来独立提案）** 范围 = 支柱② + 把推理 trace 渲进 Report。
+    - [ ] **支柱②** `LLMBackend.messages_create` + Protocol 加 `thinking` 参数（`{type:enabled,budget_tokens}` / `disabled` / `adaptive`）+ 对应 backend `BackendCapabilities.extended_thinking=True`（此时才真正「主动请求」，loop 按 capability gate 决定注入）
+    - [ ] **消费**：Diagnostician 推理 trace 渲进 Report（reporting/models + 渲染 + 持久化 + diff）—— 简历级「Agent 给你看它的思考」亮点
+    - [ ] 验收：真 Anthropic key 开 thinking 跑通工具多轮 + cassette record→replay 命中
 
 ---
 

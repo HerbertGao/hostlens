@@ -23,6 +23,7 @@ from hostlens.agent.backend import (
     LLMBackend,
     MessageResponse,
     TextBlock,
+    ThinkingBlock,
     ToolUseBlock,
     Usage,
 )
@@ -98,6 +99,10 @@ def _text(text: str) -> TextBlock:
 
 def _tool_use(*, block_id: str, name: str, tool_input: dict[str, Any]) -> ToolUseBlock:
     return ToolUseBlock(type="tool_use", id=block_id, name=name, input=tool_input)
+
+
+def _thinking(*, thinking: str, signature: str, **extra: Any) -> ThinkingBlock:
+    return ThinkingBlock(type="thinking", thinking=thinking, signature=signature, **extra)
 
 
 class _ScriptedBackend:
@@ -825,3 +830,209 @@ def test_tool_invocation_requires_exactly_one_outcome() -> None:
             output={"a": 1},
             error={"b": 2},
         )
+
+
+# ---------------------------------------------------------------------------
+# 6.11 inbound-thinking relay structure (tolerate-inbound-thinking, §4 / D-3)
+#
+# Pillar ③ "multi-turn relay is naturally true" — no production code changes;
+# these are structural regression tests that pin the invariants:
+#   4.1 cache_control breakpoint count sequence == [1, 2, 2, …] and never lands
+#       on a thinking / redacted_thinking block (design.md D-3).
+#   4.2 the loop relays a thinking-bearing assistant content verbatim via the
+#       SDK ``model_dump()`` form (no exclude_unset / exclude_none) so every
+#       field — signature + provider-private extras — round-trips byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+_THINKING_TYPES = {"thinking", "redacted_thinking"}
+
+
+class _RecordingBackend:
+    """Structural ``LLMBackend`` that records EVERY request (not just the last).
+
+    Unlike ``_ScriptedBackend`` (which keeps only ``last_*``), this captures a
+    per-call snapshot of the exact ``system`` / ``messages`` passed to
+    ``messages_create`` AFTER the loop's cache_control injection — so a test
+    can assert the breakpoint-count sequence and which block types carry
+    ``cache_control`` across all turns.
+    """
+
+    name = "recording"
+
+    def __init__(
+        self,
+        responses: list[MessageResponse],
+        *,
+        capabilities: BackendCapabilities | None = None,
+    ) -> None:
+        self._responses = responses
+        self._idx = 0
+        self.requests: list[dict[str, Any]] = []
+        self.capabilities = capabilities if capabilities is not None else _DEFAULT_CAPS
+
+    async def messages_create(
+        self,
+        *,
+        model: str,
+        system: list[dict[str, Any]] | str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        timeout: float,
+    ) -> MessageResponse:
+        # Deep-copy via JSON round-trip so later loop mutation of the shared
+        # ``messages`` list cannot rewrite the snapshot we assert against.
+        self.requests.append(
+            {
+                "system": json.loads(json.dumps(system)),
+                "messages": json.loads(json.dumps(messages)),
+            }
+        )
+        response = self._responses[min(self._idx, len(self._responses) - 1)]
+        self._idx += 1
+        return response
+
+
+def _count_cache_breakpoints(request: dict[str, Any]) -> int:
+    """Count ``cache_control`` markers across system + messages of one request."""
+    count = 0
+    system = request["system"]
+    if isinstance(system, list):
+        count += sum(1 for block in system if isinstance(block, dict) and "cache_control" in block)
+    for message in request["messages"]:
+        content = message.get("content")
+        if isinstance(content, list):
+            count += sum(
+                1 for block in content if isinstance(block, dict) and "cache_control" in block
+            )
+    return count
+
+
+def _thinking_blocks_carry_no_breakpoint(request: dict[str, Any]) -> bool:
+    """Return True iff no thinking / redacted_thinking block carries ``cache_control``."""
+    for message in request["messages"]:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") in _THINKING_TYPES
+                and "cache_control" in block
+            ):
+                return False
+    return True
+
+
+async def test_thinking_relay_cache_breakpoint_sequence_never_on_thinking() -> None:
+    # turn1: assistant emits [thinking, tool_use] → tool_result → turn2 end_turn.
+    # System is a non-empty list so breakpoint A is always present; the rolling
+    # breakpoint B lands on the last message's last block, which is a user
+    # tool_result on turn2+ (never a thinking block, design.md D-3).
+    spec = make_spec(name="probe", handler=ok_handler)
+    backend = _RecordingBackend(
+        [
+            _msg(
+                content=[
+                    _thinking(thinking="let me check", signature="sig_1"),
+                    _tool_use(block_id="toolu_1", name="probe", tool_input={}),
+                ],
+                stop_reason="tool_use",
+            ),
+            _msg(
+                content=[
+                    _thinking(thinking="now I conclude", signature="sig_2"),
+                    _text("all good"),
+                ],
+                stop_reason="end_turn",
+            ),
+        ]
+    )
+    loop = _loop(
+        backend,
+        _adapter_with(spec),
+        _settings(),
+        system=[{"type": "text", "text": "sys"}],
+    )
+
+    result = await loop.run("inspect with thinking")
+
+    assert result.terminal_status == "ok"
+    assert result.turns == 2
+
+    # Two requests issued (turn1 tool_use, turn2 end_turn).
+    assert len(backend.requests) == 2
+
+    # Breakpoint-count sequence == [1, 2, 2, …]: turn1 has only breakpoint A
+    # (system); the turn-1 user message content is the bare intent string with
+    # no block to mark. turn2 adds breakpoint B on the last user tool_result
+    # block → 2. (design.md D-3)
+    counts = [_count_cache_breakpoints(req) for req in backend.requests]
+    assert counts == [1, 2]
+    assert counts[0] == 1
+    assert all(c == 2 for c in counts[1:])
+
+    # Critically: no thinking / redacted_thinking block EVER carries a breakpoint.
+    assert all(_thinking_blocks_carry_no_breakpoint(req) for req in backend.requests)
+
+    # Sanity: the turn-2 request really did relay the turn-1 thinking block into
+    # the assistant message (so the "never on thinking" assertion is non-vacuous).
+    turn2_assistant = next(m for m in backend.requests[1]["messages"] if m["role"] == "assistant")
+    assert any(block.get("type") == "thinking" for block in turn2_assistant["content"])
+
+
+async def test_thinking_block_relayed_verbatim_model_dump() -> None:
+    # A thinking block carrying a provider-private extra field must survive the
+    # relay byte-for-byte. The loop relays via ``block.model_dump()`` with NO
+    # exclude_unset / exclude_none — pin that so a future relay change that adds
+    # an exclude kwarg (which would drop unset/None fields and break verbatim
+    # fidelity) turns this test red.
+    spec = make_spec(name="probe", handler=ok_handler)
+    inbound_thinking = _thinking(
+        thinking="reasoning text",
+        signature="sig_abc",
+        provider_private="keep-me",
+    )
+    backend = _RecordingBackend(
+        [
+            _msg(
+                content=[
+                    inbound_thinking,
+                    _tool_use(block_id="toolu_1", name="probe", tool_input={}),
+                ],
+                stop_reason="tool_use",
+            ),
+            _msg(content=[_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    loop = _loop(
+        backend,
+        _adapter_with(spec),
+        _settings(),
+        system=[{"type": "text", "text": "sys"}],
+    )
+
+    result = await loop.run("relay verbatim")
+    assert result.terminal_status == "ok"
+
+    # The turn-2 assistant message must contain the turn-1 thinking block,
+    # first (order preserved) and byte-for-byte equal to the loop's actual
+    # relay form: ``model_dump()`` with no exclude kwargs.
+    turn2_assistant = next(m for m in backend.requests[1]["messages"] if m["role"] == "assistant")
+    relayed_thinking = turn2_assistant["content"][0]
+    assert relayed_thinking == inbound_thinking.model_dump()
+
+    # Order: thinking precedes tool_use, as emitted.
+    assert turn2_assistant["content"][0]["type"] == "thinking"
+    assert turn2_assistant["content"][1]["type"] == "tool_use"
+
+    # Verbatim fidelity, field-by-field (the provider-private extra survives
+    # because ThinkingBlock uses extra="allow" and the relay applies no exclude).
+    assert relayed_thinking["thinking"] == "reasoning text"
+    assert relayed_thinking["signature"] == "sig_abc"
+    assert relayed_thinking["provider_private"] == "keep-me"
+
+    # Guard against a future exclude_unset / exclude_none on the relay: such a
+    # dump would diverge from the plain model_dump() the assertion above pins.
+    assert relayed_thinking == inbound_thinking.model_dump(exclude_unset=False, exclude_none=False)

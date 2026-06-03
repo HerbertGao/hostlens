@@ -43,7 +43,9 @@ __all__ = [
     "LLMBackend",
     "MessageResponse",
     "QuotaStatus",
+    "RedactedThinkingBlock",
     "TextBlock",
+    "ThinkingBlock",
     "ToolUseBlock",
     "Usage",
     "api_key_fingerprint",
@@ -74,7 +76,15 @@ class BackendCapabilities:
         parallel_tool_use: Multiple ``tool_use`` blocks emitted per turn.
         extended_thinking: Extended thinking mode (M3+ Diagnostician). M2
             backends MUST declare False because the Protocol signature does
-            not yet carry a ``thinking`` parameter.
+            not yet carry a ``thinking`` parameter. This flag means **only**
+            "Hostlens does not actively request thinking" — it does **not**
+            mean "the response will be thinking-free": inbound thinking is
+            tolerated unconditionally (``ContentBlock`` now includes
+            ``ThinkingBlock`` / ``RedactedThinkingBlock``), so a consumer
+            MUST NOT treat ``extended_thinking == False`` as a guarantee that
+            ``response.content`` contains no thinking blocks. Tolerating
+            inbound thinking needs no capability field because the Agent loop
+            never branches on it (design.md D-2); the flag stays False.
         vision: Image inputs accepted (placeholder; Hostlens does not use).
         streaming: Streaming responses (placeholder; M2 fixed False — the
             Protocol returns a single ``MessageResponse``, not a chunk
@@ -121,12 +131,67 @@ class ToolUseBlock(BaseModel):
     input: dict[str, Any]
 
 
+class ThinkingBlock(BaseModel):
+    """``type="thinking"`` content block (extended-thinking / reasoning trace).
+
+    Modeled to **tolerate** inbound thinking blocks that thinking-on
+    anthropic-compatible endpoints (e.g. DeepSeek v4 via
+    ``https://api.deepseek.com/anthropic``) force into the response — the
+    Agent loop must parse them without crashing and relay them verbatim in
+    multi-turn tool loops (omitting a prior turn's thinking block makes the
+    next turn 400). This is the Path-1 tolerate slice: Hostlens neither
+    actively requests nor consumes thinking (that is the future Path 2).
+
+    ``extra="allow"`` (unlike ``TextBlock`` / ``ToolUseBlock``'s
+    ``extra="ignore"``): a thinking block is a verbatim-relay object, so
+    ``model_dump()`` must preserve any provider-private fields rather than
+    drop them — otherwise the relayed block stops being byte-for-byte
+    faithful (design.md D-4).
+
+    ``signature`` is a **required** ``str``: DeepSeek pro/flash and native
+    Anthropic both always carry it (DeepSeek's value happens to equal the
+    message ``id``, which is irrelevant to Hostlens — it is simply a string
+    that must be relayed verbatim). Modeling it optional would let
+    ``model_dump()`` emit ``"signature": null`` and change the wire shape; a
+    block that genuinely lacks it should surface as ``invalid_response``,
+    not be silently tolerated (design.md D-5).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["thinking"]
+    thinking: str
+    signature: str
+
+
+class RedactedThinkingBlock(BaseModel):
+    """``type="redacted_thinking"`` content block (opaque redacted reasoning).
+
+    Native Anthropic emits ``redacted_thinking`` blocks carrying only an
+    opaque ``data`` payload (no ``signature``) when a reasoning trace is
+    redacted. Modeled separately from ``ThinkingBlock`` so the discriminated
+    union routes it correctly: filtering only on ``type="thinking"`` would
+    drop redacted blocks and break the multi-turn verbatim-relay protocol.
+
+    ``extra="allow"`` for the same verbatim-relay reason as ``ThinkingBlock``
+    (design.md D-4). Shape is taken from the native Anthropic spec — not yet
+    observed from DeepSeek probes — so it is a defensive model against
+    dropping the block, backed by ``extra="allow"``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["redacted_thinking"]
+    data: str
+
+
 # Discriminated union by ``type`` field. The ``Annotated[..., Field(discriminator=...)]``
 # form is required so Pydantic v2 produces stable validation errors for unknown
-# ``type`` values; a bare ``TextBlock | ToolUseBlock`` union would not enforce
-# strict discriminator semantics inside list containers.
+# ``type`` values; a bare union would not enforce strict discriminator
+# semantics inside list containers (so a genuinely unknown block type would
+# yield an unstable error instead of a clean ``union_tag_invalid``).
 ContentBlock = Annotated[
-    TextBlock | ToolUseBlock,
+    TextBlock | ToolUseBlock | ThinkingBlock | RedactedThinkingBlock,
     Field(discriminator="type"),
 ]
 

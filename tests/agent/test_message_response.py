@@ -18,7 +18,9 @@ from pydantic import ValidationError
 
 from hostlens.agent.backend import (
     MessageResponse,
+    RedactedThinkingBlock,
     TextBlock,
+    ThinkingBlock,
     ToolUseBlock,
     Usage,
 )
@@ -91,6 +93,91 @@ def test_undeclared_top_level_field_is_ignored_not_rejected() -> None:
     assert isinstance(response.content[0], TextBlock)
     # Undeclared field MUST be silently dropped, not attached.
     assert not hasattr(response, "container")
+
+
+def test_thinking_block_parses_with_signature() -> None:
+    """A ``type="thinking"`` block MUST parse to ``ThinkingBlock`` with its
+    ``signature`` captured — thinking-on endpoints force these into the
+    response and the union must tolerate them, not crash.
+
+    Spec §需求:MessageResponse §场景:thinking 块解析为 ThinkingBlock.
+    """
+
+    payload = _base_payload()
+    payload["content"] = [
+        {"type": "thinking", "thinking": "let me reason", "signature": "abc"},
+        {"type": "text", "text": "hi"},
+    ]
+
+    response = MessageResponse.model_validate(payload)
+
+    assert isinstance(response.content[0], ThinkingBlock)
+    assert response.content[0].thinking == "let me reason"
+    assert response.content[0].signature == "abc"
+    assert isinstance(response.content[1], TextBlock)
+
+
+def test_redacted_thinking_block_parses_to_its_own_class() -> None:
+    """A ``type="redacted_thinking"`` block carries only ``data`` (no
+    ``signature``) and MUST route to ``RedactedThinkingBlock`` — filtering
+    only on ``type="thinking"`` would drop it and break verbatim relay.
+
+    Spec §需求:MessageResponse §场景:redacted_thinking 块解析为 RedactedThinkingBlock.
+    """
+
+    payload = _base_payload()
+    payload["content"] = [{"type": "redacted_thinking", "data": "opaque"}]
+
+    response = MessageResponse.model_validate(payload)
+
+    assert isinstance(response.content[0], RedactedThinkingBlock)
+    assert response.content[0].data == "opaque"
+
+
+def test_thinking_block_round_trip_preserves_extra_fields() -> None:
+    """``extra="allow"`` keeps provider-private fields through
+    ``model_dump()`` so the Agent loop relays the block byte-for-byte; the
+    dump MUST NOT inject ``null`` for absent declared fields either.
+
+    Spec §需求:MessageResponse §场景:thinking 块 verbatim round-trip 保真.
+    """
+
+    block_dict = {
+        "type": "thinking",
+        "thinking": "x",
+        "signature": "s",
+        "vendor_field": 1,
+    }
+
+    block = ThinkingBlock.model_validate(block_dict)
+    dumped = block.model_dump()
+
+    assert dumped["signature"] == "s"
+    assert dumped["vendor_field"] == 1
+    assert dumped == block_dict
+
+
+def test_thinking_block_missing_signature_raises_validation_error() -> None:
+    """``signature`` is required ``str``; a block lacking it is invalid (it
+    must surface as ``invalid_response`` upstream, not be silently
+    optional) — design.md D-5."""
+
+    payload = _base_payload()
+    payload["content"] = [{"type": "thinking", "thinking": "no sig"}]
+
+    with pytest.raises(ValidationError):
+        MessageResponse.model_validate(payload)
+
+
+def test_genuinely_unknown_type_still_raises_despite_thinking_in_union() -> None:
+    """Adding ``ThinkingBlock`` / ``RedactedThinkingBlock`` to the union MUST
+    NOT weaken rejection of a truly unmodeled block type."""
+
+    payload = _base_payload()
+    payload["content"] = [{"type": "some_future_block", "foo": "bar"}]
+
+    with pytest.raises(ValidationError):
+        MessageResponse.model_validate(payload)
 
 
 def test_cache_read_input_tokens_defaults_to_zero_when_omitted() -> None:
