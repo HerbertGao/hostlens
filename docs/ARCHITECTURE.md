@@ -1096,7 +1096,7 @@ backend:
   type: anthropic_api                    # anthropic_api | bedrock | vertex | claude_subscription
   api_key: ${ANTHROPIC_API_KEY}          # type=anthropic_api 必填
   base_url: null                         # 可选 (走自建代理 / Bedrock-compatible endpoint)
-  disable_thinking: false                # 默认 false; 接 thinking-默认-开的 anthropic 兼容端点 (如 DeepSeek) 时设 true
+  disable_thinking: false                # 默认 false; 可选 token 优化, 接 thinking-默认-开的端点 (如 DeepSeek) 推荐设 true 省 token (非必需, 不设也不崩)
   # type=bedrock:
   # aws_region: us-east-1
   # aws_profile: default
@@ -1117,7 +1117,7 @@ agent:
 
 `disable_thinking`（默认 `false`）控制 backend（`AnthropicAPIBackend.messages_create`）是否向 SDK 调用注入 `extra_body={"thinking":{"type":"disabled"}}` 抑制信号。官方 Anthropic API 保持默认 `false`。
 
-**何时设 `true`**：接「thinking 默认强制开」的 anthropic 兼容端点（如 DeepSeek）。这类端点即使请求未要求 thinking 也会返回 thinking 块，撞上当前 no-thinking 解析路径会报错；置 `true` 后 backend 注入上述抑制信号并归一化此类响应（`false` 则不注入）。只有 `type=anthropic_api` 路径消费此开关，其余 backend 类型上是 no-op。
+**这是可选的 token 节省优化，不是兼容必需**。接「thinking 默认强制开」的 anthropic 兼容端点（如 DeepSeek）这类端点即使请求未要求 thinking 也会返回 thinking 块——这类响应现已由 `ContentBlock` union（`tolerate-inbound-thinking` Path 1）建模并容忍，即便 `disable_thinking=false` 也能正常解析并多轮回传、不崩。**推荐设 `true`**：让 provider 不生成 thinking 输出从而省 input token（关闭抑制只是少花 token，不是修复崩溃）。只有 `type=anthropic_api` 路径消费此开关，其余 backend 类型上是 no-op。
 
 环境变量（`api_key` 走 secret，不要写进 yaml / commit）：
 

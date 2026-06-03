@@ -95,9 +95,12 @@ class AnthropicAPIBackend:
         tool_use=True,
         structured_output=True,
         parallel_tool_use=True,
-        # ``disable_thinking`` suppresses the provider's default thinking output;
-        # it does NOT enable Hostlens consumption of thinking blocks, so
-        # ``extended_thinking`` stays False regardless of the instance setting.
+        # ``disable_thinking`` is an optional token-saving optimization that
+        # suppresses the provider's default thinking output; it does NOT enable
+        # Hostlens consumption of thinking blocks, so ``extended_thinking`` stays
+        # False regardless of the instance setting. (Inbound thinking is now
+        # tolerated unconditionally via the ``ContentBlock`` union — closing the
+        # switch is no longer required to avoid a crash.)
         extended_thinking=False,
         vision=True,
         streaming=False,
@@ -117,6 +120,10 @@ class AnthropicAPIBackend:
         self._api_key: str = api_key
         self._base_url: str | None = base_url
         self._health_check_model: str = health_check_model
+        # Optional token-saving optimization (default False): when True the
+        # provider is asked to suppress thinking output. NOT required for
+        # correctness — inbound thinking is tolerated by the ``ContentBlock``
+        # union, so leaving it False no longer crashes (design.md D-8).
         self._disable_thinking: bool = disable_thinking
         # ``max_retries=0`` is the explicit Anthropic SDK API to disable its
         # internal retry layer — D-5 mandates single-source retry control by
@@ -159,12 +166,17 @@ class AnthropicAPIBackend:
             tools=tools,
         )
 
-        # ``disable_thinking`` rides on the SDK's ``extra_body`` passthrough so
-        # no new dependency / Protocol-shape change is needed (design.md D-2).
-        # The single injection path is ``extra_body`` (never the native
-        # ``thinking=`` kwarg) to avoid ambiguous deep-merge with the SDK's own
-        # thinking parameter; when False, NO thinking field is added at all so
-        # the real Anthropic request shape stays byte-for-byte unchanged.
+        # ``disable_thinking`` is an OPTIONAL token-saving optimization (default
+        # False), not a compatibility requirement: inbound thinking blocks are
+        # tolerated by the ``ContentBlock`` union, so closing the switch does
+        # not change whether the response parses — it only asks the provider not
+        # to spend tokens generating thinking in the first place. It rides on the
+        # SDK's ``extra_body`` passthrough so no new dependency / Protocol-shape
+        # change is needed (design.md D-2 / D-8). The single injection path is
+        # ``extra_body`` (never the native ``thinking=`` kwarg) to avoid
+        # ambiguous deep-merge with the SDK's own thinking parameter; when False,
+        # NO thinking field is added at all so the real Anthropic request shape
+        # stays byte-for-byte unchanged.
         extra_kwargs: dict[str, Any] = {}
         if self._disable_thinking:
             extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
@@ -232,8 +244,11 @@ class AnthropicAPIBackend:
         # any SDK additions without failing parse. A ``ValidationError`` here is
         # normalized to ``BackendError`` (D-5): a bare pydantic error is not a
         # ``Backend*`` type and would escape the loop's retry classification and
-        # leak SDK internals. ``kind`` distinguishes an unmodeled content block
-        # (provider ignored thinking:disabled) from generic format drift.
+        # leak SDK internals. ``kind`` distinguishes a truly unmodeled content
+        # block (some future block type Hostlens has not modeled yet) from
+        # generic format drift — ``thinking`` / ``redacted_thinking`` are now
+        # part of the ``ContentBlock`` union and parse successfully, so they no
+        # longer reach the ``unsupported_content_block`` path.
         try:
             return MessageResponse.model_validate(sdk_message.model_dump())
         except ValidationError as exc:
@@ -243,12 +258,15 @@ class AnthropicAPIBackend:
     def _is_content_discriminator_error(error: Mapping[str, Any]) -> bool:
         """True if ``error`` is a ``content[*]`` union-discriminator failure.
 
-        Per design.md D-5 an unmodeled content block (e.g. ``type="thinking"``
-        when the provider ignored ``thinking:disabled``) surfaces as a
-        discriminator error whose ``loc`` lands on ``content``. The check keys
-        on "loc contains ``content`` + discriminator-class error type" rather
-        than a single fixed tag name so SDK / Pydantic wording drift does not
-        silently re-route it to the generic bucket.
+        Per design.md D-7 this now fires only for a **truly unmodeled** content
+        block — a block type Hostlens has not modeled yet (e.g. a future
+        ``server_tool_use`` block). It surfaces as a discriminator error whose
+        ``loc`` lands on ``content``. ``thinking`` / ``redacted_thinking`` are
+        modeled in the ``ContentBlock`` union and parse successfully, so they
+        never reach here. The check keys on "loc contains ``content`` +
+        discriminator-class error type" rather than a single fixed tag name so
+        SDK / Pydantic wording drift does not silently re-route it to the
+        generic bucket.
         """
 
         loc = error.get("loc", ())
@@ -262,8 +280,9 @@ class AnthropicAPIBackend:
     def _classify_validation_error(self, exc: ValidationError) -> BackendError:
         if any(self._is_content_discriminator_error(e) for e in exc.errors()):
             return BackendError(
-                "response contains an unmodeled content block "
-                "(provider may have ignored thinking:disabled)",
+                "response contains a content block type Hostlens has not "
+                "modeled yet (thinking / redacted_thinking are modeled and "
+                "parse successfully; this is some other unknown block type)",
                 backend_name=self.name,
                 kind="unsupported_content_block",
                 cause=exc,

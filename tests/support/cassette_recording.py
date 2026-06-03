@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hostlens.agent.backend import BackendCapabilities, MessageResponse
+from hostlens.agent.cassette_key import project_messages_drop_thinking
 from hostlens.core.redact import detect_sensitive_text
 
 if TYPE_CHECKING:
@@ -152,9 +153,18 @@ class RecordingBackend:
             messages_snapshot: list[dict[str, Any]] = json.loads(
                 json.dumps(messages, ensure_ascii=False)
             )
+            # Drop inbound thinking/redacted blocks from the persisted canonical
+            # request via the SAME shared projection the keying helper uses (no
+            # second drop implementation, per design D-6). This is hygiene +
+            # safety only — it keeps non-deterministic chain-of-thought out of
+            # the committed cassette and out of the sensitive-content gate below
+            # — NOT a key-matching requirement (matching is guaranteed by the
+            # shared helper, which re-normalizes on read regardless of whether
+            # the persisted body was stripped). The RESPONSE is left untouched
+            # so replay can relay its thinking blocks verbatim.
             canonical_request: dict[str, Any] = {
                 "model": model,
-                "messages": messages_snapshot,
+                "messages": project_messages_drop_thinking(messages_snapshot),
                 "tools_count": len(tools),
             }
             request_text = json.dumps(canonical_request, sort_keys=True, ensure_ascii=False)
