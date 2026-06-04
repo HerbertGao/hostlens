@@ -374,10 +374,15 @@ class SchedulerRunner:
             # The pipeline produced a result. The terminal write (report_store +
             # run_store) MUST complete atomically: a cancel arriving here is past
             # the daemon_stopped window, so it must not split the write or land a
-            # second daemon_stopped row (one fire → one Run). Shield the whole
-            # finalize; a late cancel propagates through ``finally`` to the
-            # graceful_stop drain after the row is persisted.
-            run = await asyncio.shield(
+            # second daemon_stopped row (one fire → one Run). Run the finalize as
+            # an explicit task and shield the await; if a late cancel lands we
+            # ``await`` that same task to completion in the ``except`` (the
+            # shielded write keeps running) BEFORE propagating — so the row is
+            # persisted deterministically. A bare ``await asyncio.shield(coro)``
+            # would NOT suffice: on cancel the shielded coroutine detaches and
+            # ``graceful_stop`` only drains this job task (already finished by
+            # raising), never the detached write → the row could be lost.
+            finalize_task: asyncio.Task[Run] = asyncio.ensure_future(
                 self._finalize_outcome(
                     manifest=manifest,
                     target_name=target_name,
@@ -387,7 +392,14 @@ class SchedulerRunner:
                     terminal_status=captured["terminal_status"],
                 )
             )
-            return run
+            try:
+                return await asyncio.shield(finalize_task)
+            except asyncio.CancelledError:
+                # Cancel during the terminal write: let the shielded write finish
+                # and await it (row lands), then re-raise — no daemon_stopped here
+                # (past the pipeline window), so still one fire → one Run.
+                await finalize_task
+                raise
         finally:
             self._inflight.discard(inflight_task)
 
