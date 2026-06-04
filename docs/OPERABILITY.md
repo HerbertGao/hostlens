@@ -111,21 +111,21 @@
 
 ## 5. Daemon 健康（schedule daemon 模式）
 
-### 5.1 单实例锁
+### 5.1 单实例锁（规划，M4 未实现）
 
-- 启动时获取 `~/.local/share/hostlens/scheduler.pid` 文件锁（flock）
-- 已有实例 → 直接退出 1 + 提示 pid
-- 进程崩溃留下的 stale lock：进程不存在则自动清理
+- **M4 现状**：未实现单实例锁——M4 按非目标采用「单机单 daemon」假设，不做多 daemon 抢占同一 `schedules/` 目录的互斥（add-scheduler 提案非目标）。
+- **规划（尚未实现）**：启动时获取 `~/.local/share/hostlens/scheduler.pid` 文件锁（flock）；已有实例 → 退出 1 + 提示 pid；进程崩溃留下的 stale lock 在进程不存在时自动清理。生产硬化时引入。
 
 ### 5.2 健康检查（M4 已落地: doctor + status; HTTP 端点留后续）
 
 - **M4 实际交付的健康面**：`hostlens doctor --json` 的 `checks.schedules`（manifest 加载错误 / 各 job next_fire_time / 最近 N 次 Run 状态分布）+ `hostlens schedule status`（最近 Run 状态分布）。
 - **规划（尚未实现）**：可选 HTTP `:8765/healthz`（默认绑 `127.0.0.1`），返回 `{"status": "ok", "scheduler_running": bool, "next_fire": ..., "last_run_age_seconds": int, "memory_mb": int}`；内存超过 `daemon.memory_limit_mb`（默认 500MB）触发 `MemoryPressure` 警告。HTTP 端点 + 内存监控留后续里程碑。
 
-### 5.3 优雅停机
+### 5.3 优雅停机（M4 已落地）
 
-- SIGTERM：停止接受新触发，等当前 job 完成（超过 `daemon.shutdown_grace_seconds`，默认 120s）→ SIGKILL
-- 当前 job 信息在停机 banner 中显式打印（防止"我以为停了其实还在跑"）
+- **机制（实现，design D-5）**：SIGTERM/SIGINT → `scheduler.pause()`（停止派发新触发）→ `asyncio.wait(in-flight, timeout=grace)` 等当前 job 完成 → 超 grace 的 pending **`task.cancel()`**（单进程 asyncio daemon **不自我 SIGKILL**；`task.cancel()` 是「超 grace 强制停」的进程内实现）→ 主协程 `gather` drain，被强制中断的 in-flight job 落 `Run(status=daemon_stopped)`（shield + drain 保证终态写不丢）。信号 handler 幂等（停机中再收信号忽略）。
+- **grace 取值（待对齐讨论 / 实现偏差）**：实现默认 `_GRACE_SECONDS = 30s`（runner 构造器 `grace_seconds` 可注入，但 daemon CLI 暂用默认、**未接 `daemon.shutdown_grace_seconds` 配置**）。本文档原定 120s + 可配——**值与可配性待与实现对齐**：30s 对跑 LLM agent loop 的巡检 job 可能偏紧，是否上调 + 是否暴露配置项后续讨论。
+- 被 `SIGKILL`（-9 不可捕获）中断的 in-flight job 不留 Run 记录（已知限制，单机内存调度无 start-row WAL）。
 
 ---
 
