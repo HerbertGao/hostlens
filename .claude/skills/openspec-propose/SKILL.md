@@ -6,7 +6,7 @@ compatibility: 需要 openspec-cn CLI。
 metadata:
   author: openspec
   version: "1.0"
-  generatedBy: "1.3.1"
+  generatedBy: "1.4.1"
 ---
 
 提案新变更 - 一步创建变更并生成所有产出物。
@@ -37,7 +37,7 @@ metadata:
    ```bash
    openspec-cn new change "<name>"
    ```
-   这将在 `openspec/changes/<name>/` 创建一个带有 `.openspec.yaml` 的脚手架变更。
+   这将在 CLI 解析的规划主目录中创建一个带有 `.openspec.yaml` 的脚手架变更。
 
 3. **获取产出物构建顺序**
    ```bash
@@ -46,6 +46,7 @@ metadata:
    解析 JSON 以获取：
    - `applyRequires`: 实现前所需的产出物 ID 数组（例如：`["tasks"]`）
    - `artifacts`: 所有产出物及其状态和依赖项的列表
+   - `planningHome`、`changeRoot`、`artifactPaths` 和 `actionContext`：路径和范围上下文。使用这些而不是假设仓库本地路径。
 
 4. **按顺序创建产出物直到准备好应用**
 
@@ -63,10 +64,10 @@ metadata:
         - `rules`：产出物特定规则（对你的约束 - 不要包含在输出中）
         - `template`：用于输出文件的结构
         - `instruction`：此产出物类型的 Schema 特定指导
-        - `outputPath`：写入产出物的位置
+        - `resolvedOutputPath`：已解析的写入产出物的路径或模式
         - `dependencies`：已完成的产出物，用于读取上下文
       - 读取任何已完成的依赖文件以获取上下文
-      - 使用 `template` 作为结构创建产出物文件
+      - 使用 `template` 作为结构创建产出物文件，写入 `resolvedOutputPath`
       - 应用 `context` 和 `rules` 作为约束 - 但不要将它们复制到文件中
       - 显示简短进度："✓ 已创建 <artifact-id>"
 
