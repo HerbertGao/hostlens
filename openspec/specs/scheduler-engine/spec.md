@@ -25,7 +25,7 @@
 
 ### 需求:`Run` 模型必须强制 `report_id ⇔ status` 不变量
 
-`hostlens.scheduler` 必须定义 Pydantic v2 `Run` 模型，字段：`run_id: str` / `schedule_name: str` / `triggered_at: datetime`（tz-aware）/ `started_at: datetime | None` / `finished_at: datetime | None` / `status: RunStatus` / `report_id: str | None` / `error: str | None` / `notify_results: list[object] = []`（占位、M4 恒空）。**M4 必须用 `list[object]` 而非 `list[NotifyResult]`**——`NotifyResult` 是 M5 Notifier 子系统的类型、当前不存在（`src/hostlens/notifiers/` 为空），M4 引用它会 `ImportError`；也**不用裸 `list`**（mypy `--strict` 下等价 `list[Any]`、触 CLAUDE.md §6「不允许 Any」红线）。M5 接 Notifier 时收紧为 `list[NotifyResult]`。本字段在 M4 恒为空列表。
+`hostlens.scheduler` 必须定义 Pydantic v2 `Run` 模型，字段：`run_id: str` / `schedule_name: str` / `triggered_at: datetime`（tz-aware）/ `started_at: datetime | None` / `finished_at: datetime | None` / `status: RunStatus` / `report_id: str | None` / `error: str | None` / `notify_results: list[NotifyResult] = []`。**M5 起 `notify_results` 收紧为 `list[NotifyResult]`**（`NotifyResult` 由 `hostlens.notifiers` 提供，M5 起存在，不再有 M4 的 `ImportError` 约束）：有 Report 的触发经 notify 派发后填入每通道结果；无 Report 的状态恒为 `[]`。M4 写入的空数组 `[]` 反序列化仍合法（向后兼容、无迁移）。
 
 为满足 CLAUDE.md §4.6 / ARCHITECTURE §7 第 819 行「每次触发留痕含 who/when/target/inspectors/report_hash」，`Run` 还必须含：
 
@@ -85,6 +85,11 @@
 
 - **当** 对同一个 `Report` 对象计算 `report_hash` 两次
 - **那么** 两次必须相等，且等于 `hashlib.sha256(reporting.render_json.render(report).encode()).hexdigest()`（`render` 即 `ReportStore.save` 持久化用的同一函数、同一份渲染字节，可被测试逐字节核对）
+
+#### 场景:notify_results 收紧为 NotifyResult 且 M4 空数组兼容
+
+- **当** 反序列化一条 M4 写入的 `notify_results: []` 记录，以及构造一条 M5 含 `[NotifyResult(channel="x", status="sent")]` 的记录
+- **那么** 两者必须均合法；`notify_results` 元素类型为 `NotifyResult`（非 `object`）；空数组向后兼容无需迁移
 
 ### 需求:调度引擎必须基于 `AsyncIOScheduler`，每 manifest 一 job，固定积压策略
 
@@ -153,3 +158,31 @@ Report 持久化必须复用既有 `reporting.store.ReportStore`，**禁止** sc
 
 - **当** 检视默认存储路径
 - **那么** Run 记录库（`runs.db`）必须与 Report 库（`reports.db`）为不同文件，互不写对方的表
+
+### 需求:runner 必须在 Report 持久化后派发 notify 并落地结果
+
+当且仅当 job 体产出了 Report（`status in {ok, partial}`）时，runner 必须在 `ReportStore.save` 之后、构造终态 `Run` 之前，按 manifest 的 `notify` 路由把（已脱敏的）Report 发送到对应通道，并把每通道 `NotifyResult` 写入 `Run.notify_results`。无 Report 的状态（`failed_*` / `missed` / `skipped_due_to_running` / `budget_exhausted` / `daemon_stopped`）**禁止**派发 notify（无内容可推），`notify_results` 为 `[]`。
+
+notify 阶段必须**失败隔离**：任何通道在**路由（`only_if` 求值）/ 渲染 / 发送**任一环节的异常**禁止**冒泡出 job 体（Report 已留痕），仅记为 `NotifyResult(status="failed", error=...)`；notify 整体不得改变已裁定的 `RunStatus`。隔离面**含 `only_if` 求值的任何运行期异常**（含但不限于 `TypeError` / `NameNotDefined` / `TimeoutError` / `simpleeval.InvalidExpression` 等，详见 notify-routing「`only_if` 运行期求值异常」需求），不限于渲染/发送。多通道发送必须并发执行（`asyncio.gather` + 并发上限，默认 4），通道间互不阻塞；`gather` 必须以「单通道异常不取消其它通道」的方式收集（如 `return_exceptions=True` 或每通道独立 try）。`channel_registry` 必须经 runner 构造器注入（与既有 `RunStore` / `ReportStore` / `backend_factory` 同列，无 module-level singleton），daemon / `schedule run` / `trigger` 共用同一装配。
+
+`Run.notify_results` 持久化/反序列化沿用既有 RunStore 的 `model_validate_json` 路径。**已知可接受弱化（F15）**：`notify_results` 从 M4 的 `list[object]`（宽松）收紧为 `list[NotifyResult]`（严格）后，理论上新增「单条畸形 NotifyResult 记录拖累 `schedule status` 整表查询」的反序列化失败面——但 M5 起 `notify_results` 仅由本 runner 用强类型 `NotifyResult` 写入，正常运行不产畸形记录；单记录读取隔离继承 baseline RunStore 查询契约（本 delta 不收紧、不新增该保证），跨期 schema 演进的兼容性留后续里程碑，非本提案目标。
+
+#### 场景:有 Report 的触发派发并记录每通道结果
+
+- **当** job 体产出 `ok` Report，manifest 配两个通道（一个 `only_if` 真、一个假）
+- **那么** `Run.notify_results` 必须含两条：真的记 `sent`（或 `failed`），假的记 `skipped`；`RunStatus` 仍为 `ok`
+
+#### 场景:通道发送异常不改变 RunStatus 且不冒泡
+
+- **当** 某通道 `send` 持续失败耗尽重试
+- **那么** 该通道记 `NotifyResult(status="failed", error=...)`，job 体不抛异常，`Run.status` 维持 `ok`/`partial`
+
+#### 场景:only_if 运行期求值异常不改变 RunStatus 且不冒泡
+
+- **当** 某通道 `only_if` 运行期抛异常（如类型不匹配 / 拼错名 / 求值超时）
+- **那么** 该通道记 `NotifyResult(status="failed", error=...)`，job 体不抛异常，`Run.status` 维持 `ok`/`partial`，其它通道照常派发
+
+#### 场景:无 Report 状态不派发 notify
+
+- **当** 触发结果为 `failed_api_unavailable`（无 Report）
+- **那么** 必须不发生任何通道发送，`Run.notify_results == []`
