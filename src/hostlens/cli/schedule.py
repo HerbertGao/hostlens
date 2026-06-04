@@ -24,8 +24,8 @@ D-12). A daemon-unsafe backend (``ClaudeSubscriptionBackend``) raises
 
 Exit-code contract (aligned with the project-wide CLI semantics): ``0``
 success; ``1`` business failure (invalid manifest, unknown trigger name,
-daemon-unsafe backend, root EUID for the scheduling commands); ``3``
-Click-usage errors via the wrapper in ``cli/__init__.py``.
+daemon-unsafe backend, root EUID for the scheduling commands); ``2``
+config load error (malformed targets config).
 """
 
 from __future__ import annotations

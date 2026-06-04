@@ -56,7 +56,7 @@ from hostlens.scheduler.schema import (
     ScheduleManifest,
     ScheduleSpec,
 )
-from hostlens.scheduler.store import RunStatus, RunStore, compute_report_hash
+from hostlens.scheduler.store import Run, RunStatus, RunStore, compute_report_hash
 from hostlens.targets.config import LocalEntry
 from hostlens.targets.registry import TargetRegistry
 from hostlens.tools.base import NoopApprovalService, ToolContext
@@ -700,3 +700,84 @@ async def test_missed_event_maps_to_missed(tmp_path: Path) -> None:
     assert run.started_at is None
     assert run.report_id is None
     assert run.targets == [_TARGET]
+
+
+# --------------------------------------------------------------------------- #
+# C2 — EVENT_JOB_ERROR → failed keeps started_at (the job DID start)
+# --------------------------------------------------------------------------- #
+
+
+@_POSIX_ONLY
+async def test_job_error_event_keeps_started_at(tmp_path: Path) -> None:
+    from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent
+
+    run_store, report_store = _stores(tmp_path)
+    runner = _build_runner(
+        backend_factory=lambda: cast(LLMBackend, FakeBackend(responses=[])),
+        run_store=run_store,
+        report_store=report_store,
+    )
+
+    event = JobExecutionEvent(
+        EVENT_JOB_ERROR,
+        "nightly",
+        "default",
+        datetime(2026, 5, 26, 12, 0, tzinfo=UTC),
+        exception=RuntimeError("job blew up"),
+    )
+    run = runner._event_to_run(event)
+
+    # A FAILED job already started (it raised mid-run) → started_at non-None.
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.started_at is not None
+
+
+# --------------------------------------------------------------------------- #
+# C1 — cancel during the terminal write does NOT double-write a daemon_stopped
+# --------------------------------------------------------------------------- #
+
+
+class _BlockingSaveRunStore(RunStore):
+    """`RunStore` whose first `save` blocks until released, so a cancel can
+    land while the shielded terminal write is in flight."""
+
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(db_path=db_path)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._blocked_once = False
+
+    async def save(self, run: Run) -> None:
+        if not self._blocked_once:
+            self._blocked_once = True
+            self.entered.set()
+            await self.release.wait()
+        await super().save(run)
+
+
+@_POSIX_ONLY
+async def test_cancel_during_terminal_write_lands_exactly_one_run(tmp_path: Path) -> None:
+    run_store = _BlockingSaveRunStore(db_path=tmp_path / "runs.db")
+    report_store = ReportStore(db_path=tmp_path / "reports.db", orphan_dir=tmp_path / "orphans")
+    runner = _build_runner(
+        backend_factory=lambda: cast(LLMBackend, FakeBackend(responses=_happy_script())),
+        run_store=cast(RunStore, run_store),
+        report_store=report_store,
+    )
+
+    job: asyncio.Task[Run] = asyncio.create_task(runner._run_job("nightly"))
+    # Wait until the job reaches the (shielded) terminal save and blocks there.
+    await asyncio.wait_for(run_store.entered.wait(), timeout=2.0)
+
+    # Cancel now — the cancel lands inside the shielded ``_finalize_outcome``.
+    job.cancel()
+    run_store.release.set()
+    # The shield completes the terminal write; the cancel then propagates.
+    await asyncio.gather(job, return_exceptions=True)
+
+    rows = await run_store.list_recent(limit=10)
+    # Exactly one Run (the terminal ok), NO duplicate daemon_stopped row.
+    assert len(rows) == 1
+    assert rows[0].status is RunStatus.OK
+    assert all(r.status is not RunStatus.DAEMON_STOPPED for r in rows)

@@ -129,10 +129,13 @@ class ScheduleSpec(BaseModel):
 class ReportConfig(BaseModel):
     """Report rendering config — aligned with `inspect` / `reports` CLI.
 
-    ``format`` is **consumed** (drives render format). ``diff_with_last`` is
-    an **M4 placeholder**: parsed as a typed field but never consumed (no
-    auto-diff at report assembly, no embedded diff section — regression diff
-    stays a post-hoc `reports diff` op). See design D-9.
+    ``format`` is parsed and retained but **not consumed by the M4
+    scheduler**: the job body persists a format-agnostic structured Report;
+    ``format`` is applied at render time (`reports show --format` / M5 notify
+    rendering). ``diff_with_last`` is an **M4 placeholder**: parsed as a typed
+    field but never consumed (no auto-diff at report assembly, no embedded
+    diff section — regression diff stays a post-hoc `reports diff` op). See
+    design D-9.
 
     ``format`` is ``Literal["md", "json"]`` to match the existing
     ``--format`` literal; ``markdown`` / ``html`` are deliberately rejected.
@@ -176,8 +179,8 @@ class ScheduleManifest(BaseModel):
     targets: list[str] = Field(min_length=1)
     intent: str = Field(min_length=1)
     inspectors: list[str] | None = None
-    report: ReportConfig = ReportConfig()
-    notify: list[NotifyConfig] = []
+    report: ReportConfig = Field(default_factory=ReportConfig)
+    notify: list[NotifyConfig] = Field(default_factory=list)
 
     @field_validator("name", mode="after")
     @classmethod

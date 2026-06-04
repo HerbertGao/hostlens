@@ -338,49 +338,85 @@ class SchedulerRunner:
                 captured["terminal_status"] = result.loop_result.terminal_status
 
             backend = self._backend_factory()
-            report = await run_diagnosis_pipeline(
-                backend,
-                self._settings,
-                self._context_factory,
-                report_target_name=target_name,
-                target_lookup_name=target_name,
-                target_type=target_type,
-                intent=manifest.intent,
-                planner_result_sink=_sink,
-                schedule_name=manifest.name,
-            )
+            try:
+                report = await run_diagnosis_pipeline(
+                    backend,
+                    self._settings,
+                    self._context_factory,
+                    report_target_name=target_name,
+                    target_lookup_name=target_name,
+                    target_type=target_type,
+                    intent=manifest.intent,
+                    planner_result_sink=_sink,
+                    schedule_name=manifest.name,
+                )
+            except asyncio.CancelledError:
+                # Force-cancelled while the pipeline was still executing (design
+                # D-5). Persist a terminal ``daemon_stopped`` row, then re-raise.
+                # The save MUST be shielded — this coroutine is already
+                # cancelled, so an unshielded ``await`` would re-raise
+                # CancelledError immediately and the row would never reach
+                # runs.db. ``graceful_stop`` then drains this task (await it) so
+                # the shielded save completes before the loop closes — shield +
+                # drain, both required (design D-5).
+                daemon_stopped = Run(
+                    run_id=str(uuid.uuid4()),
+                    schedule_name=manifest.name,
+                    triggered_at=triggered_at,
+                    started_at=started_at,
+                    finished_at=self._clock(),
+                    status=RunStatus.DAEMON_STOPPED,
+                    targets=[target_name],
+                )
+                await asyncio.shield(self._run_store.save(daemon_stopped))
+                raise
 
-            run = await self._map_outcome(
-                manifest=manifest,
-                target_name=target_name,
-                triggered_at=triggered_at,
-                started_at=started_at,
-                report=report,
-                terminal_status=captured["terminal_status"],
+            # The pipeline produced a result. The terminal write (report_store +
+            # run_store) MUST complete atomically: a cancel arriving here is past
+            # the daemon_stopped window, so it must not split the write or land a
+            # second daemon_stopped row (one fire → one Run). Shield the whole
+            # finalize; a late cancel propagates through ``finally`` to the
+            # graceful_stop drain after the row is persisted.
+            run = await asyncio.shield(
+                self._finalize_outcome(
+                    manifest=manifest,
+                    target_name=target_name,
+                    triggered_at=triggered_at,
+                    started_at=started_at,
+                    report=report,
+                    terminal_status=captured["terminal_status"],
+                )
             )
-            await self._run_store.save(run)
             return run
-        except asyncio.CancelledError:
-            # Force-cancelled past the shutdown grace (design D-5). Persist a
-            # terminal ``daemon_stopped`` row, then re-raise. The save MUST be
-            # shielded — this coroutine is already cancelled, so an unshielded
-            # ``await`` would re-raise CancelledError immediately and the row
-            # would never reach runs.db. ``graceful_stop`` then drains this
-            # task (await it) so the shielded save completes before the loop
-            # closes — shield + drain, both required (design D-5).
-            daemon_stopped = Run(
-                run_id=str(uuid.uuid4()),
-                schedule_name=manifest.name,
-                triggered_at=triggered_at,
-                started_at=started_at,
-                finished_at=self._clock(),
-                status=RunStatus.DAEMON_STOPPED,
-                targets=[target_name],
-            )
-            await asyncio.shield(self._run_store.save(daemon_stopped))
-            raise
         finally:
             self._inflight.discard(inflight_task)
+
+    async def _finalize_outcome(
+        self,
+        *,
+        manifest: ScheduleManifest,
+        target_name: str,
+        triggered_at: datetime,
+        started_at: datetime,
+        report: Report | None,
+        terminal_status: str | None,
+    ) -> Run:
+        """Map the pipeline outcome to a `Run` and persist it atomically.
+
+        Wrapped in a single `asyncio.shield` by the caller so both the
+        report_store and run_store writes complete even if a cancel lands
+        after the pipeline (design D-5 / "one fire → one Run").
+        """
+        run = await self._map_outcome(
+            manifest=manifest,
+            target_name=target_name,
+            triggered_at=triggered_at,
+            started_at=started_at,
+            report=report,
+            terminal_status=terminal_status,
+        )
+        await self._run_store.save(run)
+        return run
 
     async def _map_outcome(
         self,
@@ -510,11 +546,16 @@ class SchedulerRunner:
                 redact_text(str(event.exception)) if event.exception is not None else "job raised"
             )
 
+        # A FAILED job already started (it raised mid-run); approximate its
+        # start with the event time. missed/skipped never started — the
+        # invariant requires started_at=None there.
+        started_at = triggered_at if status is RunStatus.FAILED else None
+
         return Run(
             run_id=str(uuid.uuid4()),
             schedule_name=manifest.name,
             triggered_at=triggered_at,
-            started_at=None,
+            started_at=started_at,
             status=status,
             error=error,
             targets=[target_name],

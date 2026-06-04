@@ -35,7 +35,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from hostlens.reporting.models import Report
 from hostlens.reporting.render_json import render
@@ -109,9 +109,9 @@ class Run(BaseModel):
     status: RunStatus
     report_id: str | None = None
     error: str | None = None
-    notify_results: list[object] = []
+    notify_results: list[object] = Field(default_factory=list)
     targets: list[str]
-    inspectors: list[str] = []
+    inspectors: list[str] = Field(default_factory=list)
     report_hash: str | None = None
     report_storage: Literal["db", "orphan"] | None = None
 
