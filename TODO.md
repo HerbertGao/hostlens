@@ -16,7 +16,7 @@
 | M1 | Core 抽象 + 最小管线 | `hostlens inspect localhost --inspector hello` 跑通 | ✅ |
 | M2 | 手写 Agent loop | 自然语言意图 → Agent 自选 Inspector → 出 markdown 报告 | ✅ |
 | M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ⬜ |
-| M4 | Scheduler | cron 定时跑 + 历史 run 持久化 | ⬜ |
+| M4 | Scheduler | cron 定时跑 + 历史 run 持久化 | ✅ |
 | M5 | Notifier 抽象 + Telegram + 飞书 | 定时报告自动推送到 TG / 飞书 | ⬜ |
 | M6 | 内置 Inspector 库扩充 | 覆盖 Linux/Nginx/MySQL/Redis/Docker 真实场景 | ⬜ |
 | M7 | MCP Server | Claude Code / Cursor 能直接调用 Hostlens | ⬜ |

@@ -117,11 +117,10 @@
 - 已有实例 → 直接退出 1 + 提示 pid
 - 进程崩溃留下的 stale lock：进程不存在则自动清理
 
-### 5.2 健康检查端点（M4 daemon 时引入）
+### 5.2 健康检查（M4 已落地: doctor + status; HTTP 端点留后续）
 
-- 可选 HTTP `:8765/healthz`（默认绑 `127.0.0.1`）
-- 返回：`{"status": "ok", "scheduler_running": bool, "next_fire": ..., "last_run_age_seconds": int, "memory_mb": int}`
-- 内存超过 `daemon.memory_limit_mb`（默认 500MB）触发 `MemoryPressure` 警告
+- **M4 实际交付的健康面**：`hostlens doctor --json` 的 `checks.schedules`（manifest 加载错误 / 各 job next_fire_time / 最近 N 次 Run 状态分布）+ `hostlens schedule status`（最近 Run 状态分布）。
+- **规划（尚未实现）**：可选 HTTP `:8765/healthz`（默认绑 `127.0.0.1`），返回 `{"status": "ok", "scheduler_running": bool, "next_fire": ..., "last_run_age_seconds": int, "memory_mb": int}`；内存超过 `daemon.memory_limit_mb`（默认 500MB）触发 `MemoryPressure` 警告。HTTP 端点 + 内存监控留后续里程碑。
 
 ### 5.3 优雅停机
 

@@ -18,13 +18,13 @@
 
 ## 当前状态（必读）
 
-> ⚠️ **设计阶段，无可运行代码** —— 截至当前，仓库只有架构文档（README / CLAUDE.md / TODO.md / docs/ARCHITECTURE.md / docs/OPERABILITY.md / openspec/）。**还没有 PyPI 包、没有 `src/` 代码、没有可执行的 `hostlens` 命令**。
+> 🚧 **开发中（M0–M4 已落地，未发 PyPI）** —— `src/` 已有可运行代码，`hostlens` CLI 可装可跑：**M0** 脚手架 + doctor、**M1** ExecutionTarget / Inspector / Report + `hostlens inspect`、**M2** 手写 Agent loop（自然语言意图 → 自选 Inspector → markdown 报告）、**M3** Diagnostician + 根因假设 + regression diff、**M4** Scheduler（cron/interval 定时巡检 + Run 留痕 + daemon 优雅停机 + `hostlens schedule`）。尚未发布 PyPI 包（本地 `pip install -e` 安装）。
 >
-> 下面的"快速开始"、"定时巡检"、"MCP Server"等章节展示的是 **目标 UX 与规划中的命令形态**，是为了让架构和路线图有具体的"我们要造什么"的参照系，不是当前可用的功能。
+> 下面的 "MCP Server"（M7）、"受控修复"（M9）、Telegram / 飞书 **通知推送**（M5）等章节展示的是 **目标 UX 与规划中的命令形态** —— 这些里程碑尚未实现。已实现并可直接用的命令：`inspect` / `demo` / `schedule` / `doctor` / `reports`（注意：`schedule` 的 `notify` 配置在 M4 仅占位、不发送，发送能力随 M5 落地）。
 >
-> 实现进度按 [TODO.md](TODO.md) 的 M0-M10 路线推进，每期开始前先用 [OpenSpec](openspec/) 起 proposal。
+> 实现进度按 [TODO.md](TODO.md) 的 M0-M10 路线推进（当前进度见其进度总览表），每期开始前先用 [OpenSpec](openspec/) 起 proposal。
 >
-> **唯一例外 —— 已可离线跑的 `hostlens demo`**：M2.9 已落地一条无需 SSH / 付费 API key / 任何配置就能在干净机器上跑通的离线 demo（见下方「立即试用」），让你不配真实环境也能看到 Agent 推理诊断的全过程。
+> **零配置离线体验 —— `hostlens demo`**：M2.9 已落地一条无需 SSH / 付费 API key / 任何配置就能在干净机器上跑通的离线 demo（见下方「立即试用」），让你不配真实环境也能看到 Agent 推理诊断的全过程。
 
 ## 立即试用（离线 demo，无需 API key）
 

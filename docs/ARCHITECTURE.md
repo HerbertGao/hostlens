@@ -843,8 +843,12 @@ class Run(BaseModel):
     finished_at: datetime | None
     status: RunStatus                         # Scheduler 层面状态
     report_id: str | None                     # 当且仅当 status in {ok, partial} 时非 None; 关联 ReportMeta.run_id
+    report_hash: str | None                   # 当且仅当 status in {ok, partial}; sha256(持久化 Report JSON) 完整性锚点
+    report_storage: Literal["db", "orphan"] | None  # 当且仅当 status in {ok, partial}; Report 落 reports.db 还是 orphan 文件
     error: str | None                         # 失败时的简短脱敏错误
-    notify_results: list[NotifyResult]        # 即使无 Report, 失败本身也可能触发通知 (例如 budget_exhausted 推送 ops)
+    targets: list[str]                        # 本次触发的 target 集合 (M4 恒 1 个; 留痕 who/target)
+    inspectors: list[str]                     # 本次实际跑的 inspector 集合快照 (无-Report 状态为 [])
+    notify_results: list[NotifyResult]        # 即使无 Report, 失败本身也可能触发通知 (例如 budget_exhausted 推送 ops); M4 恒 []
 ```
 
 **与 ReportStatus 的边界**：
