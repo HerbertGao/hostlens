@@ -15,7 +15,7 @@
 | M0 | 项目脚手架 | 可跑 `hostlens doctor` 的空骨架 | ✅ |
 | M1 | Core 抽象 + 最小管线 | `hostlens inspect localhost --inspector hello` 跑通 | ✅ |
 | M2 | 手写 Agent loop | 自然语言意图 → Agent 自选 Inspector → 出 markdown 报告 | ✅ |
-| M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ⬜ |
+| M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ✅ |
 | M4 | Scheduler | cron 定时跑 + 历史 run 持久化 | ✅ |
 | M5 | Notifier 抽象 + Telegram + 飞书 | 定时报告自动推送到 TG / 飞书 | ⬜ |
 | M6 | 内置 Inspector 库扩充 | 覆盖 Linux/Nginx/MySQL/Redis/Docker 真实场景 | ⬜ |
@@ -289,6 +289,8 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **目标**：Planner 拿到一堆原始 finding 后，由 Diagnostician 做跨信号关联，产出**带根因假设的报告**，并支持与历史 run 做 regression diff。
 
+> **状态：✅ 收口（核心交付完成）**。3.1/3.2/3.3/3.5 全部落地（Diagnostician + 根因假设 + 报告 schema/持久化 + regression diff）。两项**显式 deferred 至后续**（不在 M3 核心交付内、不阻塞里程碑）：**3.4 `render_html`**（markdown 渲染含根因章节已做，仅缺 HTML 渲染）与 **3.6 Path 2 `support-extended-thinking`**（推理 trace 主动请求+消费；Path 1 容忍已落地 #53）。
+
 **对应 OpenSpec proposal**：
 - `add-diagnostician-agent`（3.1，后续 —— 消费已落地的 `Report.hypotheses` 字段 + `ReportStatus` degraded_* 值）
 - [`add-report-persistence-and-diff`](openspec/changes/archive/2026-06-01-add-report-persistence-and-diff/) ✓ archived（3.2 schema + 3.3 持久化 + 3.5 diff 引擎 + `reports` CLI + `inspect --persist`；PR #46。提案 7 轮 + 代码 3 轮对抗 review APPROVE）
@@ -315,14 +317,14 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [x] **3.3 报告持久化** —— archived `add-report-persistence-and-diff`
   - [x] `reporting/store.py`：SQLite 单库（WAL，rowid 总序 tie-break，索引从内存 meta 投影，存脱敏 JSON，orphan 降级改写 meta.status + UUID 防穿越），存 run 记录与报告 JSON
   - [x] CLI: `hostlens reports list <target>` / `hostlens reports show <run_id>`
-- [ ] **3.4 报告渲染扩展**（render_html 未做）
+- [ ] **3.4 报告渲染扩展**（render_html 未做 — **deferred**，M3 已收口为 ✅，本项留后续）
   - [ ] `reporting/render_html.py`：基于 Jinja2 模板，含交互式 finding 展开
   - [x] markdown 渲染增加根因章节（`add-report-persistence-and-diff` 已加 `## 根因假设` 章节占位，空时显示 `_暂无根因假设_`）
 - [x] **3.5 Regression diff 引擎** —— archived `add-report-persistence-and-diff`
   - [x] `reporting/diff.py`：两份报告对比，输出 `added` / `resolved` / `changed_severity`（+ `inspector_upgraded`；compute_diff 规则 0-7：meta=None 前置 / None-id 跳过 / 版本对齐排除 / 指纹集合差，防自基线）
   - [x] CLI: `hostlens reports diff <run_id_a> <run_id_b>`（+ `diff --target <t>` 自动基线模式，rowid tie-break 排除 current）
   - [ ] 也作为定时巡检报告里的一个 section（M5 用到）
-- [ ] **3.6 thinking 支持（拆成 Path 1 容忍 / Path 2 请求+消费两个独立提案）**
+- [ ] **3.6 thinking 支持（拆成 Path 1 容忍 / Path 2 请求+消费两个独立提案）** — Path 1 ✅ 已落 #53；**Path 2 deferred**（M3 已收口为 ✅，Path 2 留作未来独立提案）
 
   > **触发背景**：M2.6 用 DeepSeek 做 live 测试时发现 `deepseek-v4-pro/flash` 经其 anthropic 兼容端点**强制返回 `type="thinking"` 块**，撞 `MessageResponse` 只建模 `text`/`tool_use` 的 scope → 解析崩。Diagnostician（3.1）若用推理模型也会受益。**reference memory**：`deepseek-v4-thinking-incompatible-live-test` / `deepseek-thinking-block-schema`（含实测 schema）。
   >
