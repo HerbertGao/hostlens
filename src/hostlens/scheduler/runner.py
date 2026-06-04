@@ -339,6 +339,11 @@ class SchedulerRunner:
 
             backend = self._backend_factory()
             try:
+                # Only ``intent`` drives the pipeline: the Planner autonomously
+                # selects inspectors from the registry (Agent-loop design,
+                # CLAUDE.md §4.2). ``manifest.inspectors`` is a soft hint parsed
+                # but NOT consumed in M4 — injecting it into the Planner context
+                # is a later milestone (see schedule-manifest spec).
                 report = await run_diagnosis_pipeline(
                     backend,
                     self._settings,

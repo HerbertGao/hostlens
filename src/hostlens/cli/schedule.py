@@ -14,7 +14,7 @@ runtime:
 - ``status`` — the most-recent ``Run`` rows + a status-count distribution.
 
 All five subcommands first load + validate every manifest (``load_schedules``);
-an invalid manifest is fail-loud (exit 1, stderr file + reason) — none of them
+an invalid manifest is fail-loud (exit 2, stderr file + reason) — none of them
 silently continue.
 
 ``run`` / ``daemon`` flip ``settings.daemon_mode`` so the existing
@@ -23,9 +23,11 @@ D-12). A daemon-unsafe backend (``ClaudeSubscriptionBackend``) raises
 ``BackendDaemonUnsafe`` at boot → exit 1, never enters the loop.
 
 Exit-code contract (aligned with the project-wide CLI semantics): ``0``
-success; ``1`` business failure (invalid manifest, unknown trigger name,
-daemon-unsafe backend, root EUID for the scheduling commands); ``2``
-config load error (malformed targets config).
+success; ``2`` config/manifest load error — the input files are invalid
+(malformed settings, targets config, or schedule manifest); ``1`` business
+failure — loaded fine but the operation is refused or fails (unknown trigger
+name, daemon-unsafe backend, root EUID for the scheduling commands, a job that
+raised at runtime).
 """
 
 from __future__ import annotations
@@ -102,8 +104,20 @@ def _default_log_file() -> Path:
 
 
 def _fail(message: str) -> NoReturn:
+    """Business failure (exit 1): config loaded fine but the operation is refused."""
     typer.echo(f"hostlens schedule: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+def _fail_config(message: str) -> NoReturn:
+    """Config/manifest load failure (exit 2): the input files are invalid.
+
+    Consistent across settings / targets / manifest loading so scripts can
+    distinguish "your config is wrong" (2) from "loaded fine but refused" (1),
+    matching the project-wide CLI convention (0 ok / 1 business / 2 config).
+    """
+    typer.echo(f"hostlens schedule: {message}", err=True)
+    raise typer.Exit(code=2)
 
 
 def _refuse_root(verb: str) -> None:
@@ -133,7 +147,7 @@ def _load_settings_or_exit() -> Settings:
         return load_settings()
     except ConfigError as exc:
         # core/config already redacted sensitive field values.
-        _fail(f"configuration error: {exc}")
+        _fail_config(f"configuration error: {exc}")
 
 
 def _build_target_registry(settings: Settings) -> TargetRegistry:
@@ -144,8 +158,7 @@ def _build_target_registry(settings: Settings) -> TargetRegistry:
         config = load_targets_config(settings.targets_config_path)
         return build_registry_from_config(config, settings)
     except (ConfigError, ValidationError) as exc:
-        typer.echo(f"hostlens schedule: failed to load targets config: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
+        _fail_config(f"failed to load targets config: {exc}")
 
 
 def _build_inspector_registry(settings: Settings) -> InspectorRegistry:
@@ -160,14 +173,14 @@ def _build_inspector_registry(settings: Settings) -> InspectorRegistry:
 def _load_manifests_or_exit(
     settings: Settings, target_registry: TargetRegistry
 ) -> list[ScheduleManifest]:
-    """Load + validate every manifest; fail-loud (exit 1) on the first invalid one."""
+    """Load + validate every manifest; fail-loud (exit 2) on the first invalid one."""
 
     try:
         return load_schedules(_SCHEDULES_DIR, target_registry)
     except ConfigError as exc:
         file = getattr(exc, "file", None)
         prefix = f"{file}: " if file else ""
-        _fail(f"invalid schedule manifest: {prefix}{exc}")
+        _fail_config(f"invalid schedule manifest: {prefix}{exc}")
 
 
 def _context_factory(
@@ -399,7 +412,7 @@ def _serve(*, daemon: bool, log_file: Path | None) -> None:
     except BackendDaemonUnsafe as exc:
         _fail(f"backend not safe for daemon mode: {exc}")
     except ConfigError as exc:
-        _fail(f"backend configuration error: {exc}")
+        _fail_config(f"backend configuration error: {exc}")
 
     runner = _build_runner(daemon_settings, manifests, target_registry, inspector_registry, logger)
     asyncio.run(_serve_loop(runner, logger))

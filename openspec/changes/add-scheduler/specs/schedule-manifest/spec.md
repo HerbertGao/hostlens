@@ -8,7 +8,7 @@
 - `schedule: ScheduleSpec`（cron / interval 判别结构，见下）
 - `targets: list[str]`（非空；每个是 `TargetRegistry` 中已注册的 target id；**M4 加载器校验恰 1 个成员**——多 target fan-out 为非目标，见下）
 - `intent: str`（非空；Planner Agent 据此规划）
-- `inspectors: list[str] | None = None`（可选 hint；Planner 优先考虑但可按需补查）
+- `inspectors: list[str] | None = None`（可选 hint）。**M4 解析并保留、但 scheduler job 体不消费它**——M4 的 job 体只把 `intent` 传给 `run_diagnosis_pipeline`，Planner 按 Agent-loop 设计（CLAUDE.md §4.2）**自主**从 Inspector registry 选 inspector；把 hint 注入 Planner 上下文/提示词留后续里程碑（与 `format`/`diff_with_last`/`notify` 同属「parse 早、消费在 M4 之外」）。设置该 hint 在 M4 不改变巡检行为。
 - `report: ReportConfig = ReportConfig()`（缺省整体可省略）。`ReportConfig` 字段精确定义、与既有 `inspect`/`reports` CLI 的格式字面量**对齐**：`format: Literal["md", "json"] = "md"`（**禁止** `markdown`/`html` 等其它字面量——既有 `--format` 是 `Literal["md","json"]`，见 inspect-cli-command spec / `reports.py:144`）。`format` 在 M4 **被解析并保留、但 scheduler job 体不消费它**——job 体持久化的是 format-agnostic 的**结构化 Report**，`format` 在**渲染时点**应用（`hostlens reports show --format` / M5 notify 渲染），与 `diff_with_last` 同属「parse 早、用在 M4 之外」。`diff_with_last: bool = False`（**M4 仅解析为类型化字段、不消费**——与 `notify` 同属占位）。**M4 的 regression diff 仍是 persisted reports 上的 post-hoc 操作**（既有 `hostlens reports diff` / `compute_diff`），**不**在报告组装期自动 diff、**不**把 diff 嵌进巡检报告 section（`Report.from_inspector_results` 不填 `baseline_ref`；自动 diff / 嵌入报告是 M5 非目标）。`diff_with_last` 为 M5 的 auto-diff 预留语义、M4 不据它改变任何行为。`ReportConfig` 也 `extra="forbid"`。
 - `notify: list[NotifyConfig] = []`（**占位**：解析为类型化字段，M4 不消费、不验其中 secret）
 

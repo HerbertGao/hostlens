@@ -210,7 +210,8 @@ def test_list_shows_next_fire_time(runner: CliRunner, env: Path) -> None:
 def test_list_invalid_manifest_fail_loud(runner: CliRunner, env: Path) -> None:
     _write_manifest(env, name="bad", target="not-registered")
     result = runner.invoke(app, ["schedule", "list"])
-    assert result.exit_code == 1, result.stdout + result.stderr
+    # config/manifest load error → exit 2 (consistent with settings/targets)
+    assert result.exit_code == 2, result.stdout + result.stderr
     assert "not-registered" in (result.stdout + result.stderr)
 
 
