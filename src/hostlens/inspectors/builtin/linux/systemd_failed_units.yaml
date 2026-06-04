@@ -3,7 +3,12 @@ version: 1.0.0
 description: List systemd units in the failed state.
 tags: [linux, systemd]
 targets: [local, ssh]
-requires_capabilities: [shell, systemd]
+# Gate on the `systemctl` binary (preflight-probed), NOT the `systemd`
+# capability: `systemd` is lazily probed (added only after the first `exec`),
+# but preflight checks capabilities before any exec — requiring it makes a
+# systemd host fail preflight with `requires_unmet`. See Authoring Contract
+# rule 9. `shell` is a static baseline capability and is safe to require.
+requires_capabilities: [shell]
 requires_binaries: [systemctl, awk]
 privilege: none
 

@@ -51,6 +51,28 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
 
+def _builtin_declared_secrets() -> set[str]:
+    """Every secret env var declared by any builtin inspector manifest.
+
+    Some builtins (``postgres.bloat_tables`` / ``redis.slowlog``) inject a
+    connection password via ``secrets``. The doctor secret tests below set
+    these so the warn/ok verdict isolates to the *user* manifest under test
+    rather than tripping on a builtin's unrelated missing secret. Derived from
+    disk so the set never drifts as new secret-bearing builtins land.
+    """
+
+    import hostlens.inspectors as _inspectors_pkg
+
+    pkg_file = _inspectors_pkg.__file__
+    assert pkg_file is not None
+    root = Path(pkg_file).parent / "builtin"
+    declared: set[str] = set()
+    for manifest_path in root.rglob("*.yaml"):
+        data = yaml.safe_load(manifest_path.read_text())
+        declared.update(data.get("secrets", []) or [])
+    return declared
+
+
 def _valid_manifest_payload(
     *,
     name: str,
@@ -485,15 +507,21 @@ def test_doctor_json_inspectors_status_ok_with_builtins_only(
     runner: CliRunner,
     user_inspectors_dir: Path,
     targets_yaml: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Spec §场景:全部加载成功 status=ok.
 
-    The builtin set always loads cleanly; with an empty user path and no
-    declared secrets, ``inspectors.status`` is ``ok``, ``loaded`` is at
-    least the two M1 builtins (``hello.echo`` + ``system.uptime``; the
-    M2.8 incident-pack adds more), and both error lists are empty.
+    The builtin set always loads cleanly; with an empty user path and every
+    builtin-declared secret present in the env, ``inspectors.status`` is
+    ``ok``, ``loaded`` is at least the two M1 builtins (``hello.echo`` +
+    ``system.uptime``; the M2.8 incident-pack and the authoring-contract
+    inspectors add more), and both error lists are empty. Secret-bearing
+    builtins (``postgres.bloat_tables`` / ``redis.slowlog``) must have their
+    env present for the OK path.
     """
 
+    for secret in _builtin_declared_secrets():
+        monkeypatch.setenv(secret, "doctor-test-pw")
     result = runner.invoke(app, ["doctor", "--json"])
     assert result.exit_code == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
@@ -513,15 +541,19 @@ def test_doctor_json_inspectors_status_warn_on_missing_secret(
 ) -> None:
     """Spec §场景:secret 缺失 status=warn.
 
-    A user manifest declaring ``secrets: [PGPASSWORD]`` plus the env var
+    A user manifest declaring ``secrets: [DB_PASSWORD]`` plus the env var
     being **absent** triggers ``status="warn"``; the overall doctor exit
-    stays 0 because ``warn`` does not flip readiness.
+    stays 0 because ``warn`` does not flip readiness. Every builtin-declared
+    secret is set so the warn isolates to the user manifest's own missing
+    secret.
     """
 
-    monkeypatch.delenv("PGPASSWORD", raising=False)
+    for secret in _builtin_declared_secrets():
+        monkeypatch.setenv(secret, "doctor-test-pw")
+    monkeypatch.delenv("DB_PASSWORD", raising=False)
     _write_manifest(
         user_inspectors_dir / "pg.yaml",
-        _valid_manifest_payload(name="db.pg", secrets=["PGPASSWORD"]),
+        _valid_manifest_payload(name="db.pg", secrets=["DB_PASSWORD"]),
     )
 
     result = runner.invoke(app, ["doctor", "--json"])
@@ -529,7 +561,7 @@ def test_doctor_json_inspectors_status_warn_on_missing_secret(
     payload = json.loads(result.stdout)
     assert payload["inspectors"]["status"] == "warn"
     assert payload["inspectors"]["missing_secrets"] == [
-        {"inspector": "db.pg", "secret": "PGPASSWORD"}
+        {"inspector": "db.pg", "secret": "DB_PASSWORD"}
     ]
     # Warn does not produce a load-error row.
     assert payload["inspectors"]["errors"] == []

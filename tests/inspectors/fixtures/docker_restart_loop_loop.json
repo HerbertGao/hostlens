@@ -1,0 +1,39 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "docker_cli",
+    "file_read",
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v docker",
+      "stdout": "/usr/local/bin/docker\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "command -v jq",
+      "stdout": "/usr/bin/jq\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "command -v xargs",
+      "stdout": "/usr/bin/xargs\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "ids=$(docker ps -aq --filter name=hlc-) || { echo \"docker ps failed\" >&2; exit 1; }\nif [ -z \"$ids\" ]; then\n  printf '{\"results\":[]}'\nelse\n  inspect_out=$(printf '%s\\n' \"$ids\" | xargs docker inspect) || { echo \"docker inspect failed\" >&2; exit 1; }\n  printf '%s' \"$inspect_out\" | jq -c '{\n    results: map({\n      name: (.Name | ltrimstr(\"/\")),\n      restart_count: .RestartCount,\n      state: .State.Status,\n      health: (.State.Health.Status // \"none\")\n    })\n  }' || { echo \"jq failed\" >&2; exit 1; }\nfi",
+      "stdout": "{\"results\":[{\"name\":\"hlc-rl-test\",\"restart_count\":6,\"state\":\"restarting\",\"health\":\"none\"},{\"name\":\"hlc-ok-test\",\"restart_count\":0,\"state\":\"running\",\"health\":\"none\"}]}\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

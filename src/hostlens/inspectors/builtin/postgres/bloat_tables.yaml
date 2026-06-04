@@ -1,0 +1,95 @@
+name: postgres.bloat_tables
+version: 1.0.0
+# Run prerequisites are documentation-only (承重墙 5): the manifest schema has
+# no `min_binary_version` field, so the PostgreSQL version floor lives here in
+# `description` + `tags` (`postgres12` — `json_build_object`/`json_agg` predate
+# it, but `pg_stat_user_tables.n_ins_since_vacuum` and a stable column set are
+# assumed; the `psql` preflight + main command failure is the runtime backstop).
+description: >-
+  Report table bloat (dead-tuple ratio) from pg_stat_user_tables. Requires a
+  reachable PostgreSQL server (12+) and the `psql` client; the connection
+  password is injected via the PGPASSWORD env secret, never inlined. All bloat
+  derivation (dead_ratio) happens in SQL computed columns; the Finding DSL only
+  compares the ready scalars.
+tags: [database, postgres, postgres12, bloat]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [psql]
+privilege: none
+
+# The connection password is injected via env (runner sets `env=PGPASSWORD=...`
+# from `os.environ`), referenced as the `$PGPASSWORD` shell variable in the
+# command — never interpolated into the command string (承重墙 6c). Declaring it
+# here also makes preflight require the env var to be present.
+secrets: [PGPASSWORD]
+
+parameters:
+  type: object
+  required: [dbname]
+  properties:
+    # `dbname` reaches the shell-evaluated command, so it carries a strict
+    # `pattern` (注入安全三件套 b) and renders through `| sh` (a). A PostgreSQL
+    # identifier is alnum + underscore, optionally schema-qualified — the
+    # pattern forbids anything shell-evaluable.
+    dbname:
+      type: string
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    # Numeric thresholds cannot be shell-evaluated as text, so they need no
+    # `| sh`; they are compared as scalars in the Finding DSL.
+    dead_ratio_threshold:  { type: number,  default: 0.2 }
+    dead_tuple_threshold:  { type: integer, default: 1000 }
+
+collect:
+  # `psql -tAc` runs a single SQL statement in tuples-only (-t), unaligned (-A)
+  # mode so stdout is exactly the one JSON value `json_build_object(...)`
+  # produces. The connection password is supplied via the PGPASSWORD env secret
+  # (runner injects it through `env=`, never the command string); `$PGPASSWORD`
+  # is referenced as a shell variable, NOT a `{{ }}` interpolation.
+  #
+  # `json_build_object('results', coalesce(json_agg(t), '[]'::json))` emits a
+  # top-level OBJECT `{"results":[...]}` — a bare `json_agg` would yield a
+  # top-level array, which `parse.format: json` rejects (parse_json_not_object,
+  # 承重墙 4). The output key `results` follows the naming convention so it can
+  # never be shadowed by a same-named parameter (承重墙 3).
+  #
+  # ALL bloat derivation lives in SQL computed columns inside the subquery —
+  # `dead_ratio` is `round(n_dead_tup / (n_live_tup + n_dead_tup), 4)`, computed
+  # by Postgres, NOT by the Finding DSL (承重墙 1). The DSL only threshold-
+  # compares the ready `dead_ratio` / `n_dead_tup` scalars per table.
+  #
+  # `--dbname` is `| sh`-quoted (a pattern-constrained identifier can never
+  # break out of the quoted word). The empty case (no user tables) still emits
+  # `{"results":[]}` because `coalesce(..., '[]'::json)` covers the NULL agg.
+  command: |
+    PGPASSWORD="$PGPASSWORD" psql -tAqX --dbname={{ dbname | sh }} -c "SELECT json_build_object('results', coalesce(json_agg(t), '[]'::json)) FROM (SELECT schemaname AS schema, relname AS table, n_live_tup AS n_live_tup, n_dead_tup AS n_dead_tup, round(n_dead_tup::numeric / nullif(n_live_tup + n_dead_tup, 0), 4) AS dead_ratio FROM pg_stat_user_tables ORDER BY n_dead_tup DESC) t"
+  timeout_seconds: 30
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          schema:     { type: string }
+          table:      { type: string }
+          n_live_tup: { type: integer }
+          n_dead_tup: { type: integer }
+          # dead_ratio is NULL when a table has zero tuples (nullif guard).
+          dead_ratio: { type: [number, "null"] }
+  required: [results]
+  additionalProperties: false
+
+findings:
+  # `when` uses attribute access (simpleeval resolves dict keys); the message
+  # uses subscript form so str.format reads dict keys. Only ready scalars are
+  # compared — no derivation in the DSL (承重墙 1). `dead_ratio` may be null
+  # (zero-tuple table), so the ratio rule guards against it before comparing.
+  - for_each: "results as t"
+    when: "t.dead_ratio != None and t.dead_ratio >= dead_ratio_threshold and t.n_dead_tup >= dead_tuple_threshold"
+    severity: warning
+    message: "Table {t[schema]}.{t[table]} is bloated: {t[n_dead_tup]} dead tuples (ratio {t[dead_ratio]})"

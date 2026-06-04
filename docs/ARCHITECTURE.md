@@ -326,8 +326,8 @@ def project_to_mcp(spec: ToolSpec) -> MCPToolDefinition | None:
 >
 > **M1 明确不在范围**（写了 loader 直接 raise，留给后续提案）：
 >
-> - `hook.py` Python 扩展 —— 留给 M6 复杂场景（PostgreSQL bloat / TLS expiry）
-> - `parse.format: sql_result` —— 留给 M6 PostgreSQL Inspector
+> - `hook.py` Python 扩展 —— 留给未来独立提案的复杂场景（TLS expiry 等逃生舱）
+> - `parse.format: sql_result` —— **未实现**，本期不引入（M6 PostgreSQL Inspector 经验证可纯 YAML 写出，superseded by《Inspector 作者契约》）
 > - `collect.sampling_window` —— 留给 M2.8 incident pack 的 `log.tail.error_burst` Inspector
 > - `artifacts` —— 留给 M3 报告系统（依赖 Report 数据模型支持 attachment）
 > - `hostlens inspect <target> --inspector <name>` 端到端命令 —— 依赖 Report 数据模型，留给下一提案 `add-report-data-model`
@@ -360,7 +360,7 @@ collect:
   timeout_seconds: 10
 
 parse:
-  format: table                       # raw / table / json / kv / sql_result
+  format: table                       # raw / table / json / kv
   columns: [pid, user, cpu_pct, mem_pct, command]
 
 output_schema:                        # JSON Schema
@@ -517,7 +517,10 @@ collect:
   timeout_seconds: 30
 
 parse:
-  format: sql_result                  # 按 |-分隔行解析为 columns
+  # 注：早期草案用过虚构的 format: sql_result，该 format 未实现、本期不引入；
+  # superseded by《Inspector 作者契约》—— psql 的 -At -F'|' 输出按 | 分隔，
+  # 可直接走 format: table（delimiter 化）纯 YAML 解析，无需新 parse format。
+  format: table
   columns: [table, size, n_dead_tup, n_live_tup, bloat_pct]
 
 output_schema:
@@ -559,8 +562,8 @@ findings:
 | `collect.command`         | ✓   | shell 命令（可 Jinja2 模板）；通过 ExecutionTarget 执行                                                                                      |
 | `collect.timeout_seconds` |      | 默认 60s                                                                                                                                     |
 | `collect.sampling_window` |      | 时窗采集，Runner 注入 `{{ window_start }}` / `{{ window_end }}`                                                                          |
-| `parse.format`            | ✓   | raw / table / json / kv / sql_result                                                                                                         |
-| `parse.columns`           |      | table / sql_result 必填                                                                                                                      |
+| `parse.format`            | ✓   | raw / table / json / kv                                                                                                                       |
+| `parse.columns`           |      | table 必填                                                                                                                                    |
 | `output_schema`           | ✓   | JSON Schema；用于校验 parse 结果与 LLM 引用                                                                                                  |
 | `findings`                | ✓   | DSL 列表；每条含 `for_each`（可选）/ `when`（必填，simpleeval 布尔表达式）/ `severity` / `message`。详见前述「Finding DSL 求值语义」 |
 | `artifacts`               |      | 额外产物声明（例如"附上最近 50 行 nginx error.log 给报告"）                                                                                  |
@@ -574,7 +577,7 @@ graph LR
     reg["Inspector Registry<br/>注册中心"]
     runner["Inspector Runner<br/>执行器"]
     target["ExecutionTarget<br/>执行目标"]
-    parser["Parser / 解析器<br/>(table / json / kv / sql_result)"]
+    parser["Parser / 解析器<br/>(table / json / kv)"]
     fmatcher["Findings Matcher / 判定匹配器<br/>(simpleeval 表达式求值)"]
     result["InspectorResult<br/>巡检结果 (含 findings)"]
 

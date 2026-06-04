@@ -63,12 +63,12 @@ user_paths, *, settings)`，返回 `(registry, errors)` 双值：
 | `message` | str | ✓ | Python `.format()` 模板；聚合模式禁止引用 `{var.attr}` 形式 |
 
 **M1 不支持的字段**（写了 loader 直接 raise）：`hook` / `sampling_window` /
-`artifacts` / `parse.format: sql_result`。这些留给后续提案：
+`artifacts`。这些留给后续提案：
 
-- `parse.format: sql_result` — 留给 M6 PostgreSQL Inspector
+- `parse.format: sql_result` — **未实现**，本期不引入（superseded by《Inspector 作者契约》：M6 PostgreSQL Inspector 经验证可纯 YAML 写出，无需新 parse format）
 - `collect.sampling_window` — 留给 M2.8 incident pack
 - `artifacts` — 留给 M3 报告系统
-- `hook.py` — 留给 M6 复杂场景（PostgreSQL bloat / TLS 探测等）
+- `hook.py` — 留给未来独立提案的复杂场景（TLS 探测等逃生舱）
 
 ## Shell 注入防御五件套
 

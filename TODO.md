@@ -137,11 +137,11 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
     - 参数化：`parameters` (JSON Schema，由 schedule manifest 或 CLI 传入，如 `tls.cert_expiry` 需要 host list)
     - 密钥：`secrets` (引用 `${ENV_VAR}` 占位列表，如 PGPASSWORD)
     - 采集：`collect.command` 支持 Jinja2 模板（吃 parameters 与 secrets）/ `collect.timeout_seconds` / `collect.sampling_window` (适合"过去 N 分钟错误数"时窗采集)
-    - 解析：`parse.format` (raw / table / json / kv / sql_result) / `parse.columns`
+    - 解析：`parse.format` (raw / table / json / kv) / `parse.columns`
     - 输出：`output_schema` (JSON Schema)
     - 判定：`findings` (`for_each` / `when` / `severity` / `message` 四字段 DSL；详见 docs/ARCHITECTURE.md §4 Finding DSL 求值语义)
     - 元数据：`artifacts` (列出额外产物，如"导出最近 50 行日志作为附件")
-  - [x] `inspectors/loader.py`：YAML 解析 + JSON Schema 校验 + 可选 `hook.py` 加载 + 密钥占位展开
+  - [x] `inspectors/loader.py`：YAML 解析 + JSON Schema 校验 + 密钥占位展开（`hook.py` 加载实为 M1-disabled，写了直接 raise）
   - [x] `inspectors/registry.py`：按 name 索引，启动时 walk `inspectors/builtin/` 与用户 `inspectors/`
   - [x] 验收：
     - [x] 加载失败时给出文件路径 + 字段级错误
