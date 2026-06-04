@@ -47,6 +47,7 @@ from hostlens.agent.backend import create_backend
 from hostlens.core.config import Settings, load_settings
 from hostlens.core.exceptions import BackendDaemonUnsafe, ConfigError
 from hostlens.core.logging import configure_logging
+from hostlens.core.redact import redact_text
 from hostlens.scheduler.loader import load_schedules
 from hostlens.scheduler.runner import SchedulerRunner
 from hostlens.scheduler.store import RunStore
@@ -321,7 +322,16 @@ def trigger_cmd(
         _fail(f"unknown schedule name: {name!r} (not in loaded manifests)")
 
     runner = _build_runner(settings, manifests, target_registry, inspector_registry, logger)
-    run = asyncio.run(runner.trigger(name))
+    try:
+        run = asyncio.run(runner.trigger(name))
+    except Exception as exc:
+        # ``runner.trigger`` already recorded a failed Run before re-raising; the
+        # CLI boundary turns that into a clean fail-loud exit (no raw traceback),
+        # consistent with the rest of the command's exit contract. Detail is
+        # logged through structlog (redacted); the stderr message is redacted too.
+        redacted = redact_text(str(exc))
+        logger.error("schedule.trigger_failed", name=name, error=redacted)
+        _fail(f"trigger {name!r} failed: {redacted}")
     typer.echo(
         f"triggered {name}: run_id={run.run_id} status={run.status} "
         f"report_id={run.report_id or '<none>'}"

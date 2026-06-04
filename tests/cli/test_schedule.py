@@ -273,6 +273,34 @@ def test_trigger_unknown_name_fail_loud(
     assert "no-such-name" in (result.stdout + result.stderr)
 
 
+def test_trigger_unexpected_exception_clean_exit_and_records_failed_run(
+    runner: CliRunner, env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected exception during a manual trigger must fail-loud cleanly.
+
+    ``runner.trigger`` records a ``failed`` Run then re-raises; the CLI boundary
+    turns that into exit 1 + a redacted message (no raw traceback), and the
+    failed Run is still in the ledger.
+    """
+    _write_manifest(env, name="nightly")
+
+    def _raising_factory() -> object:
+        raise RuntimeError("backend boom token=sk-ant-api03-deadbeefdeadbeefdeadbeef")
+
+    _patch_backend(monkeypatch, _raising_factory)
+
+    result = runner.invoke(app, ["schedule", "trigger", "nightly"])
+    combined = result.stdout + result.stderr
+    assert result.exit_code == 1, combined
+    assert "Traceback" not in combined  # clean fail-loud, not a raw traceback
+    assert "sk-ant-api03-deadbeef" not in combined  # secret redacted on the CLI boundary
+
+    # The failed Run is still recorded in the ledger (one fire → one Run).
+    status = runner.invoke(app, ["schedule", "status", "--json"])
+    payload = json.loads(status.stdout)
+    assert payload["status_counts"].get("failed") == 1
+
+
 # --------------------------------------------------------------------------- #
 # status
 # --------------------------------------------------------------------------- #
