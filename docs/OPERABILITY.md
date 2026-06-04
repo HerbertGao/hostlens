@@ -133,8 +133,8 @@
 
 ### 6.1 错过触发（misfire）
 
-- 每个 job `misfire_grace_time=300`（5 分钟）
-- 错过窗口：**合并不补跑**（避免 daemon 重启后"补"出几十次巡检洪水）
+- `misfire_grace_time` 固定默认（design D-7）：**cron job = 300s**（5 分钟）、**interval job = `max(30, interval_seconds // 2)`**（取周期一半、下限 30s）。M4 不做 per-manifest 配置。
+- 错过窗口：**合并不补跑**（`coalesce=True`，避免 daemon 重启后"补"出几十次巡检洪水）
 - 错过的触发记录到 run store，状态 `missed`
 
 ### 6.2 并发抑制
