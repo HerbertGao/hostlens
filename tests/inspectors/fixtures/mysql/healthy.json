@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v mysql",
+      "stdout": "/usr/bin/mysql\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "raw=$(MYSQL_PWD=\"${HOSTLENS_MYSQL_PWD:-}\" mysql -N -s --batch --connect-timeout=5 -h 127.0.0.1 -P 3306 -u root \\\n  -e \"SHOW GLOBAL STATUS LIKE 'Threads_connected'\") || { echo \"mysql threads_connected failed\" >&2; exit 1; }\nused=$(printf '%s' \"$raw\" | awk '{print $2}')\nmaxc=$(MYSQL_PWD=\"${HOSTLENS_MYSQL_PWD:-}\" mysql -N -s --batch --connect-timeout=5 -h 127.0.0.1 -P 3306 -u root \\\n  -e \"SELECT @@max_connections\") || { echo \"mysql max_connections failed\" >&2; exit 1; }\ncase \"$used\" in ''|*[!0-9]*) echo \"used non-numeric: $used\" >&2; exit 1;; esac\ncase \"$maxc\" in ''|*[!0-9]*) echo \"maxc non-numeric: $maxc\" >&2; exit 1;; esac\nif [ \"$maxc\" -gt 0 ]; then\n  pct=$(LC_ALL=C awk -v u=\"$used\" -v m=\"$maxc\" 'BEGIN{printf \"%.2f\", (u/m)*100}')\n  printf '{\"used_connections\":%d,\"max_connections\":%d,\"used_pct\":%s}' \"$used\" \"$maxc\" \"$pct\"\nelse\n  printf '{\"used_connections\":%d,\"max_connections\":%d,\"used_pct\":null}' \"$used\" \"$maxc\"\nfi",
+      "stdout": "{\"used_connections\":1,\"max_connections\":151,\"used_pct\":0.66}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

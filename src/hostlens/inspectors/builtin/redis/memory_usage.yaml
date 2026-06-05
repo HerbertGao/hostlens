@@ -1,0 +1,90 @@
+name: redis.memory_usage
+version: 1.0.0
+# Service-inspector-contract probe: proves the minimal common contract for a
+# PROVEN client (redis-cli) + single instance + secret env + failure
+# classification. Requires Redis 6+ and a redis-cli supporting INFO.
+description: >-
+  Redis 内存使用巡检(单实例)。需 Redis 6+ 与 redis-cli;经 HOSTLENS_REDIS_PASSWORD
+  env 注入鉴权(collector 内 remap 到 redis-cli 的 REDISCLI_AUTH,从不进 argv;HOSTLENS_
+  前缀对齐 ssh-execution-target 契约的 AcceptEnv HOSTLENS_* 投递路径)。只报聚合标量
+  (used/max bytes 与派生使用率),不回吐高基数明细。服务不可达/NOAUTH → status=exception
+  (诚实);缺 redis-cli → requires_unmet。SSH 上需远端 sshd 配 AcceptEnv HOSTLENS_*。
+tags: [redis, redis6, service, memory]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [redis-cli]
+secrets: [HOSTLENS_REDIS_PASSWORD]
+privilege: none
+
+parameters:
+  type: object
+  properties:
+    host:
+      type: string
+      pattern: "^[a-zA-Z0-9._-]+$"   # blocks shell injection in -h value
+      default: "127.0.0.1"
+    port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+      default: 6379
+    warn_used_pct:     { type: number, default: 80.0 }
+    critical_used_pct: { type: number, default: 95.0 }
+  additionalProperties: false
+
+collect:
+  # All derivation in the collector (Authoring Contract rule 1): used_pct is
+  # computed here, the DSL only threshold-compares the ready scalar. Two INFO
+  # fields (used_memory / maxmemory) are folded into one top-level JSON object
+  # so parse.format=json sees a dict. FAIL-LOUD (rule 8): redis-cli must
+  # succeed AND yield numerics, else exit 1 + empty stdout → status=exception
+  # (a dead/NOAUTH backend never fabricates used_pct=0 → "healthy").
+  # maxmemory=0 means "no limit": used_pct is then null (the DSL pct rules
+  # guard against null), so an unbounded instance reports raw bytes only.
+  # Secret declared as HOSTLENS_REDIS_PASSWORD (HOSTLENS_ prefix per the
+  # ssh-execution-target contract: only AcceptEnv HOSTLENS_* survives SSH). The
+  # collector REMAPS it to redis-cli's native REDISCLI_AUTH env channel — the
+  # password NEVER reaches argv (can't leak via `ps`, and spaces/glob chars can't
+  # word-split into bogus args the way an unquoted `-a $pwd` would). It is never
+  # `{{ }}`-interpolated (contract: secret via env only). The no-auth branch
+  # (empty HOSTLENS_REDIS_PASSWORD — exported as "" so preflight's secret-presence
+  # gate passes) omits REDISCLI_AUTH entirely. `host` flows through `| sh`; `port` int.
+  command: |
+    if [ -n "${HOSTLENS_REDIS_PASSWORD:-}" ]; then
+      info=$(REDISCLI_AUTH="$HOSTLENS_REDIS_PASSWORD" redis-cli --no-auth-warning -t 5 -h {{ host | sh }} -p {{ port }} INFO memory) || { echo "redis INFO memory failed" >&2; exit 1; }
+    else
+      info=$(redis-cli -t 5 -h {{ host | sh }} -p {{ port }} INFO memory) || { echo "redis INFO memory failed" >&2; exit 1; }
+    fi
+    used=$(printf '%s' "$info" | awk -F: '/^used_memory:/{gsub(/\r/,"",$2);print $2}')
+    max=$(printf '%s' "$info" | awk -F: '/^maxmemory:/{gsub(/\r/,"",$2);print $2}')
+    case "$used" in ''|*[!0-9]*) echo "used_memory non-numeric: $used" >&2; exit 1;; esac
+    case "$max"  in ''|*[!0-9]*) echo "maxmemory non-numeric: $max"   >&2; exit 1;; esac
+    if [ "$max" -gt 0 ]; then
+      pct=$(LC_ALL=C awk -v u="$used" -v m="$max" 'BEGIN{printf "%.2f", (u/m)*100}')
+      printf '{"used_memory":%d,"maxmemory":%d,"used_pct":%s}' "$used" "$max" "$pct"
+    else
+      printf '{"used_memory":%d,"maxmemory":%d,"used_pct":null}' "$used" "$max"
+    fi
+  timeout_seconds: 15   # client -t 5 < collect timeout (Operational Limits)
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    used_memory: { type: integer }
+    maxmemory:   { type: integer }
+    used_pct:    { type: [number, "null"] }
+  required: [used_memory, maxmemory, used_pct]
+  additionalProperties: false
+
+findings:
+  # Aggregate-mode: only scalar threshold comparisons over ready fields.
+  # used_pct may be null (maxmemory=0); guard before comparing.
+  - when: "used_pct != None and used_pct >= critical_used_pct"
+    severity: critical
+    message: "Redis memory at {used_pct}% of maxmemory ({used_memory}/{maxmemory} bytes)"
+  - when: "used_pct != None and used_pct >= warn_used_pct and used_pct < critical_used_pct"
+    severity: warning
+    message: "Redis memory at {used_pct}% of maxmemory ({used_memory}/{maxmemory} bytes)"

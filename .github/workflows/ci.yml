@@ -24,6 +24,9 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Upgrade pip (keep runner's pip ahead of known CVEs)
+        run: python -m pip install --upgrade pip
+
       - name: Install project (editable) with dev extras
         run: pip install -e ".[dev]"
 

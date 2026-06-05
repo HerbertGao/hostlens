@@ -101,6 +101,24 @@ command string (`export VAR=value; cmd`) — that puts the secret into
 remote `ps` output and shell history, violating
 [`docs/ARCHITECTURE.md` §4](../ARCHITECTURE.md) secret boundary.
 
+Service inspectors (those reaching an external service such as Redis /
+MySQL / PostgreSQL via a client CLI) declare their connection secret with
+the `HOSTLENS_` prefix (e.g. `HOSTLENS_REDIS_PASSWORD`,
+`HOSTLENS_MYSQL_PWD`) and remap it inside the collector to the client's
+native env auth channel (`REDISCLI_AUTH` / `MYSQL_PWD` / `PGPASSWORD`),
+so the password never reaches `argv` (never `-a <pwd>` / `-p<pwd>`).
+Running such an inspector against a **password-protected** backend over
+SSH therefore **requires** the remote sshd to be configured with
+`AcceptEnv HOSTLENS_*`; if it is not, the non-empty secret is dropped at
+the allowlist and the inspector honestly fails as `status=exception`
+(auth failure) rather than silently reporting a healthy backend. Against
+a **no-auth** backend the inspector still succeeds — the empty secret
+carries nothing the allowlist could drop. Note that pre-spike seed
+inspectors (`redis.slowlog`, `postgres.bloat_tables`) still declare
+non-`HOSTLENS_` secret names pending migration; the `HOSTLENS_*`
+guarantee above covers the service-inspector-contract probes and every
+inspector authored after them.
+
 ## Connection pool behavior (SSH)
 
 Each `SSHTarget` instance holds **one** asyncssh control connection
