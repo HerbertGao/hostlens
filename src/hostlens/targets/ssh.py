@@ -403,6 +403,17 @@ class SSHTarget:
 
             if self._conn is None:
                 self._conn = await self._open_connection()
+                # Stamp the open time INSIDE the lock so a just-opened
+                # connection is never seen as idle. Without this,
+                # ``_last_used_at`` stays at its 0.0 init until the first
+                # ``exec`` finishes its channel run (bumped at the post-run
+                # bookkeeping, outside this lock) — so a *concurrent* first
+                # ``exec`` (e.g. ``asyncio.gather`` of several) acquiring the
+                # lock between the open and that bookkeeping computes
+                # ``idle = monotonic() - 0.0`` (≈ uptime, far over the
+                # timeout) and wrongly closes + reopens the fresh connection,
+                # dialling out once per racing caller instead of sharing one.
+                self._last_used_at = time.monotonic()
             return self._conn
 
     async def _close_conn_locked(self) -> None:
