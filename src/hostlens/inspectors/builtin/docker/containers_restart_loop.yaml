@@ -1,0 +1,129 @@
+name: docker.containers.restart_loop
+version: 1.0.0
+description: >-
+  Detect Docker containers stuck in a restart loop or reporting unhealthy.
+  Joins `docker ps` with per-container `docker inspect` inside the command
+  (load-bearing wall 2: cross-container correlation happens in the collector,
+  the single `for_each` binding iterates one already-joined container) and
+  emits a top-level JSON object with a `results` array. Requires the Docker CLI
+  reachable on the target and the daemon running.
+tags: [docker, containers, restart-loop, health]
+targets: [local, ssh]
+# NOTE: gate on the `docker` binary (preflight-probed), NOT
+# `requires_capabilities: [docker_cli]`. The `docker_cli` capability is added to
+# Local/SSH targets *lazily* (only after the first `exec`), but the runner's
+# preflight checks capabilities (step 2) before any `exec`/binary probe (step 5)
+# — so requiring `docker_cli` makes a Docker-capable host fail preflight with
+# `requires_unmet` and the inspector never runs. See Authoring Contract rule 9.
+requires_binaries: [docker, jq, xargs]
+
+parameters:
+  type: object
+  properties:
+    # `name_filter` is interpolated into `docker ps --filter name=...`. It flows
+    # through `| sh` (shlex.quote) and the pattern below blocks shell injection
+    # by restricting it to the Docker name-filter charset. Empty (the default)
+    # means "all containers". The `*` quantifier in the pattern admits the empty
+    # default so schema-default injection does not violate the constraint.
+    name_filter:
+      type: string
+      pattern: "^[a-zA-Z0-9_.-]*$"
+      default: ""
+    # Restart-loop threshold: a container whose RestartCount exceeds this is
+    # flagged. Numeric parameters need no `| sh` (shell cannot evaluate them as
+    # text), so no pattern is required.
+    restart_threshold:
+      type: integer
+      default: 5
+  additionalProperties: false
+
+collect:
+  # All extraction + correlation happens here (load-bearing wall 1): the join of
+  # `docker ps` IDs with `docker inspect` details, the `/`-stripped name, the
+  # State.Status / Health.Status projection, and the `{results: [...]}` wrapping
+  # are all done with shell + jq. The Finding DSL only compares the ready scalar
+  # fields (restart_count / state / health) against thresholds.
+  #
+  # `parse.format: json` requires a top-level JSON object (parsers/json.py
+  # rejects a top-level array), so the per-container objects are wrapped in
+  # `{"results": [...]}` — `results` (not a parameter name) avoids the
+  # output/parameter shadowing trap (load-bearing wall 3).
+  #
+  # `name_filter` flows through `| sh`; the empty case (no matching container)
+  # short-circuits to `{"results":[]}` so the JSON parser still sees an object.
+  #
+  # FAIL-LOUD CONTRACT (Authoring Contract rule 8): `docker ps`, `docker inspect`,
+  # and `jq` must EACH succeed, else the collector exits non-zero with empty
+  # stdout. Reason: the runner does NOT check the main command's exit code — it
+  # only parses stdout — so emitting `{"results":[]}` when the Docker daemon is
+  # unreachable would be blessed as `status=ok` and report "no restart-loop
+  # containers" while the daemon is in fact dead. A genuinely empty match (docker
+  # ps succeeds, zero ids) is distinguishable: only THEN do we emit
+  # `{"results":[]}`. A daemon-down `docker ps` exits non-zero → exit 1 → empty
+  # stdout → parse exception → `status=exception` (honest).
+  #
+  # `inspect` and `jq` are gated SEPARATELY rather than as one `… | jq … || exit 1`
+  # pipeline: `||` on a pipeline only inspects the LAST stage's exit code, so a
+  # mid-pipeline `docker inspect` failure (TOCTOU — a container deleted between
+  # `docker ps` and `docker inspect`; or the daemon dying after ps) would be
+  # masked by jq exiting 0 on the partial/empty input, fabricating `status=ok`
+  # and silently dropping the failed container. `set -o pipefail` is non-POSIX
+  # (the target `sh` may be dash), so we cannot rely on it. Instead we capture
+  # inspect output in a command substitution — `$( … | xargs docker inspect )`
+  # exits with `xargs`'s code, and `xargs` exits non-zero (123 on GNU, 1 on
+  # BSD/macOS) when the `docker inspect` it invokes fails → `|| exit 1` fires
+  # before jq runs → exit 1 + empty
+  # stdout → parse exception → `status=exception` (honest). jq is then gated on
+  # its own line.
+  command: |
+    ids=$(docker ps -aq --filter name={{ name_filter | sh }}) || { echo "docker ps failed" >&2; exit 1; }
+    if [ -z "$ids" ]; then
+      printf '{"results":[]}'
+    else
+      inspect_out=$(printf '%s\n' "$ids" | xargs docker inspect) || { echo "docker inspect failed" >&2; exit 1; }
+      printf '%s' "$inspect_out" | jq -c '{
+        results: map({
+          name: (.Name | ltrimstr("/")),
+          restart_count: .RestartCount,
+          state: .State.Status,
+          health: (.State.Health.Status // "none")
+        })
+      }' || { echo "jq failed" >&2; exit 1; }
+    fi
+  timeout_seconds: 30
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        type: object
+        properties:
+          name:          { type: string }
+          restart_count: { type: integer }
+          state:         { type: string }
+          health:        { type: string }
+        required: [name, restart_count, state, health]
+        additionalProperties: false
+  required: [results]
+  additionalProperties: false
+
+findings:
+  # The DSL only does scalar threshold / membership comparisons over the
+  # already-derived fields — no string ops, no derivation (load-bearing wall 1).
+  - for_each: "results as c"
+    when: "c.restart_count > restart_threshold"
+    severity: critical
+    message: "container {c[name]} in restart loop (RestartCount={c[restart_count]})"
+  - for_each: "results as c"
+    when: "c.health == 'unhealthy'"
+    severity: critical
+    message: "container {c[name]} reports health=unhealthy"
+  - for_each: "results as c"
+    when: "c.state != 'running' and c.state != 'restarting'"
+    severity: warning
+    message: "container {c[name]} not running (state={c[state]})"

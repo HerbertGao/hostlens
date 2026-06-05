@@ -1,0 +1,108 @@
+name: redis.slowlog
+version: 1.0.0
+# Metrics-only Redis SLOWLOG inspector: reports the slow-query COUNT and the
+# longest slow-query duration (max_micros) ONLY — it deliberately does NOT
+# return the slow-query command text. Reason: `redis-cli --json SLOWLOG GET`
+# renders a slow command's raw (possibly non-UTF-8) argument bytes inline, so
+# stdout can contain invalid UTF-8 and `json.loads` raises UnicodeDecodeError
+# (e.g. a `SET binkey "\xff\xfe ..."` slow entry). Faithfully reconstructing
+# binary command-args is the first `hook.py` trigger (see the Inspector
+# Authoring Contract); this YAML stays on the clean metrics-only path.
+# Requires Redis 6+ and a `redis-cli` that supports `--json` (used here on
+# the scalar `SLOWLOG LEN` reply, never on `SLOWLOG GET`). The `redis6` /
+# `json-client` tags encode that premise (tag regex forbids `+`, so the
+# version floor lives in this description, not a `redis6+` tag).
+description: >-
+  Redis 慢日志巡检（metrics-only）。需 Redis 6+ 且 redis-cli 支持 --json；
+  只报慢查询计数（count）与最长慢查询时长（max_micros 微秒），不含命令文本——
+  因 --json 对二进制 command-args 产非法 UTF-8，见《Inspector 作者契约》。
+tags: [redis, redis6, json-client]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [redis-cli]
+
+secrets: [REDIS_PASSWORD]
+
+parameters:
+  type: object
+  properties:
+    host:
+      type: string
+      pattern: "^[a-zA-Z0-9._-]+$"   # blocks shell injection in the -h value
+      default: "127.0.0.1"
+    port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+      default: 6379
+    warn_count:      { type: integer, default: 1 }
+    critical_count:  { type: integer, default: 10 }
+    slow_micros:     { type: integer, default: 100000 }   # 100ms
+
+collect:
+  # All extraction / derivation is done here so the Finding DSL only compares
+  # scalars (Authoring Contract rule 1). Two scalar replies are assembled into
+  # a single top-level JSON object via `printf` (rule 4: parse.format=json
+  # requires a top-level dict):
+  #   * count      — `redis-cli --json SLOWLOG LEN` → bare integer.
+  #   * max_micros — server-side EVAL folds SLOWLOG GET into the single max
+  #     duration field (index 3 of each entry), returning ONLY an integer.
+  #     The slow commands' raw argument bytes are never echoed, so no
+  #     non-UTF-8 byte ever reaches stdout.
+  # The password is injected via env (`secrets_env`) and referenced as the
+  # shell variable $REDIS_PASSWORD — never spliced through `{{ }}` (rule 6c).
+  # `host` flows through `| sh` (shlex.quote); `port` is an integer and needs
+  # no quoting.
+  #
+  # FAIL-LOUD CONTRACT (Authoring Contract rule 8): every redis-cli call must
+  # succeed AND return a bare integer, else the collector exits non-zero with an
+  # empty stdout. Reason: the runner does NOT check the main command's exit code
+  # — it only parses stdout — so a fabricated fallback success object
+  # (`{"count":0}`) on a dead/unauthenticated backend would be blessed as
+  # `status=ok` and monitoring would silently report "healthy" while Redis is
+  # down. A genuinely empty slowlog returns count=0 (a real integer) → a valid
+  # `{"count":0,...}`; a conn-refused / NOAUTH backend makes redis-cli fail or
+  # echo a non-numeric error string → exit 1 + empty stdout → parse exception →
+  # `status=exception` (honest). The two cases are therefore distinguishable.
+  #
+  # `-a "$REDIS_PASSWORD"` is quoted to block word-splitting of the secret; the
+  # auth/no-auth split avoids passing an empty `-a` argument.
+  command: |
+    if [ -n "${REDIS_PASSWORD:-}" ]; then
+      count=$(redis-cli -a "$REDIS_PASSWORD" --no-auth-warning -h {{ host | sh }} -p {{ port }} --json SLOWLOG LEN) || { echo "redis SLOWLOG LEN failed" >&2; exit 1; }
+    else
+      count=$(redis-cli -h {{ host | sh }} -p {{ port }} --json SLOWLOG LEN) || { echo "redis SLOWLOG LEN failed" >&2; exit 1; }
+    fi
+    case "$count" in ''|*[!0-9]*) echo "redis SLOWLOG LEN non-numeric: $count" >&2; exit 1;; esac
+    if [ -n "${REDIS_PASSWORD:-}" ]; then
+      max_micros=$(redis-cli -a "$REDIS_PASSWORD" --no-auth-warning -h {{ host | sh }} -p {{ port }} EVAL 'local r=redis.call("SLOWLOG","GET",tonumber(ARGV[1])); local m=0; for i,e in ipairs(r) do if e[3]>m then m=e[3] end end; return m' 0 1024) || { echo "redis EVAL failed" >&2; exit 1; }
+    else
+      max_micros=$(redis-cli -h {{ host | sh }} -p {{ port }} EVAL 'local r=redis.call("SLOWLOG","GET",tonumber(ARGV[1])); local m=0; for i,e in ipairs(r) do if e[3]>m then m=e[3] end end; return m' 0 1024) || { echo "redis EVAL failed" >&2; exit 1; }
+    fi
+    case "$max_micros" in ''|*[!0-9]*) echo "redis EVAL non-numeric: $max_micros" >&2; exit 1;; esac
+    printf '{"count":%d,"max_micros":%d}' "$count" "$max_micros"
+  timeout_seconds: 15
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    count:      { type: integer }
+    max_micros: { type: integer }
+  required: [count, max_micros]
+  additionalProperties: false
+
+findings:
+  # Aggregate-mode rules: only scalar threshold comparisons (rule 1). No
+  # for_each because the metrics-only output is a flat object, not a list.
+  - when: "count >= critical_count"
+    severity: critical
+    message: "Redis slowlog has {count} slow queries (>= critical threshold {critical_count})"
+  - when: "count >= warn_count and count < critical_count"
+    severity: warning
+    message: "Redis slowlog has {count} slow queries (>= warn threshold {warn_count})"
+  - when: "max_micros >= slow_micros"
+    severity: warning
+    message: "Redis slowest query took {max_micros} micros (>= {slow_micros})"
