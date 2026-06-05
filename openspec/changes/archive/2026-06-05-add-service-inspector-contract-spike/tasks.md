@@ -37,5 +37,5 @@
 - [x] 5.2 `mypy --strict` + `ruff` + 全量 `pytest`（默认 replay 模式，不消耗 API）全绿
 - [x] 5.3 跑 Demo Path：`hostlens inspectors list --tag redis`/`--tag mysql` 看注册、`hostlens inspectors show mysql.connection_usage` 看 manifest + 注释、`pytest -k "memory_usage or connection_usage"` 全绿
 - [x] 5.4 对本次变更跑对抗性 review（`/review-loop-codex`），triage + 修复到放行（本 spike 含安全边界=secret/失败分类，属应 review 类）
-- [ ] 5.5 开 feature branch `feat/add-service-inspector-contract-spike` → commit → push → `\gh pr create --base main`，CI 绿后 squash-merge
-- [ ] 5.6 归档：`openspec-cn archive add-service-inspector-contract-spike`，delta 合入 `openspec/specs/service-inspector-contract/`
+- [x] 5.5 开 feature branch `feat/add-service-inspector-contract-spike` → commit → push → `\gh pr create --base main`，CI 绿后 squash-merge
+- [x] 5.6 归档：`openspec-cn archive add-service-inspector-contract-spike`，delta 合入 `openspec/specs/service-inspector-contract/`
