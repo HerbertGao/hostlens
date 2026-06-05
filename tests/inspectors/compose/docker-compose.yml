@@ -1,0 +1,115 @@
+# Recording-lane scenario orchestration for service-inspector-contract fixtures.
+#
+# This compose file is the SINGLE source of service-version + topology + abnormal
+# scenario orchestration for the wave-2 service inspectors (redis / mysql). It is
+# used ONLY by the `_record_*.py` recording entry points (groups B/C) to bring up
+# real services, capture ReplayTarget fixtures, then tear down. It is NEVER part
+# of day-to-day CI — CI replays the recorded fixtures offline (design D-5).
+#
+# Image tags are pinned to a PATCH-level version (design D-5 / proposal Failure
+# Mode 4: "镜像固定 digest/patch 版本") so a re-record reproduces byte-identical
+# baselines. Bump deliberately, never float a major/minor tag.
+#
+# Four services, named so groups B/C can address them directly:
+#   redis           — healthy single instance, no auth (PROVEN client path)
+#   redis-abnormal  — low maxmemory + noeviction → fill to used_pct >= 95
+#                     (semantic-abnormal fixture, D-4)
+#   mysql           — healthy single instance (NEW client path)
+#   mysql-abnormal  — low max-connections → saturate connections to used_pct
+#                     over threshold (semantic-abnormal fixture, D-4)
+#
+# Groups B/C drive these with, e.g.:
+#   docker compose -f tests/inspectors/compose/docker-compose.yml up -d redis
+#   docker exec <project>-redis-1 redis-cli PING
+# (or via the shared `_compose_record.py` helper which wraps up + readiness poll
+# + a docker-exec ExecutionTarget). See `_compose_record.py` for the contract.
+#
+# Readiness is expressed as a healthcheck on each service (redis PING /
+# mysqladmin ping) so the recording entry points poll `docker inspect` health
+# instead of a fixed `sleep` (design D-5 / Operational risk: "禁固定 sleep 竞态").
+#
+# Secrets: the healthy instances run WITHOUT auth on purpose — the redis/mysql
+# inspectors declare HOSTLENS_REDIS_PASSWORD / HOSTLENS_MYSQL_PWD secrets, and the
+# recording entry points export an EMPTY value (`HOSTLENS_REDIS_PASSWORD=`) so the
+# preflight secret-presence gate passes while the collector takes its no-auth
+# branch (design D-3). The access-denied fixture (group C) is recorded against
+# `mysql` with a deliberately WRONG password value, not against a no-auth server.
+
+services:
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--save", ""]
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-abnormal:
+    image: redis:7.4.2-alpine
+    # Tiny maxmemory + noeviction: writing past the limit drives used_memory
+    # toward maxmemory so used_pct >= 95 (real high-memory state for the
+    # semantic-abnormal fixture, NOT a lowered inspector threshold — D-4).
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--maxmemory"
+      - "2mb"
+      - "--maxmemory-policy"
+      - "noeviction"
+    ports:
+      - "16380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: mysql:8.0.40
+    environment:
+      MYSQL_ROOT_PASSWORD: ${HOSTLENS_MYSQL_ROOT_PW:?recorder must export HOSTLENS_MYSQL_ROOT_PW}
+      MYSQL_DATABASE: hostlens
+    ports:
+      - "13306:3306"
+    healthcheck:
+      # mysqladmin ping returns success once the server accepts connections.
+      # Use the root password env so the ping authenticates on 8.0.
+      test:
+        - "CMD"
+        - "mysqladmin"
+        - "ping"
+        - "-h"
+        - "127.0.0.1"
+        - "-uroot"
+        - "-p${HOSTLENS_MYSQL_ROOT_PW:?recorder must export HOSTLENS_MYSQL_ROOT_PW}"
+      interval: 2s
+      timeout: 4s
+      retries: 45
+
+  mysql-abnormal:
+    image: mysql:8.0.40
+    # max-connections=5 is tiny enough that a handful of held client
+    # connections saturates the server → used_connections/max_connections over
+    # the default threshold (real high-connection state — D-4).
+    command: ["--max-connections=5"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${HOSTLENS_MYSQL_ROOT_PW:?recorder must export HOSTLENS_MYSQL_ROOT_PW}
+      MYSQL_DATABASE: hostlens
+    ports:
+      - "13307:3306"
+    healthcheck:
+      test:
+        - "CMD"
+        - "mysqladmin"
+        - "ping"
+        - "-h"
+        - "127.0.0.1"
+        - "-uroot"
+        - "-p${HOSTLENS_MYSQL_ROOT_PW:?recorder must export HOSTLENS_MYSQL_ROOT_PW}"
+      interval: 2s
+      timeout: 4s
+      retries: 45

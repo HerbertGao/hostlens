@@ -128,6 +128,11 @@ _BINARY_GATE_CASES: list[tuple[str, str, str]] = [
     ("linux.process.zombies", "linux/process_zombies.yaml", "ps"),
     ("net.dns.resolve", "net/dns_resolve.yaml", "dig"),
     ("log.exception_burst", "log/exception_burst.yaml", "awk"),
+    # add-service-inspector-contract-spike §4.6 — a missing service client
+    # binary (redis-cli / mysql) is a premise gap → requires_unmet skip, NOT
+    # an exception or crash that aborts the same run.
+    ("redis.memory_usage", "redis/memory_usage.yaml", "redis-cli"),
+    ("mysql.connection_usage", "mysql/connection_usage.yaml", "mysql"),
 ]
 
 
@@ -136,7 +141,9 @@ _BINARY_GATE_CASES: list[tuple[str, str, str]] = [
     _BINARY_GATE_CASES,
     ids=[c[0] for c in _BINARY_GATE_CASES],
 )
-def test_missing_binary_skips_with_requires_unmet(name: str, rel_path: str, binary: str) -> None:
+def test_missing_binary_skips_with_requires_unmet(
+    name: str, rel_path: str, binary: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     manifest = load_manifest(_BUILTIN_DIR / rel_path)
     assert manifest.name == name
     assert binary in manifest.requires_binaries
@@ -149,6 +156,15 @@ def test_missing_binary_skips_with_requires_unmet(name: str, rel_path: str, bina
         parameters = {"names": ["example.com"]}
     elif name == "log.exception_burst":
         parameters = {"log_path": "/var/log/app.log"}
+    elif name == "mysql.connection_usage":
+        parameters = {"user": "root"}
+
+    # The secret-env gate (preflight step 4) runs BEFORE the binary probe
+    # (step 5). For the service probes (which declare a secret) we set the
+    # declared secret so the BINARY gate is the one under test fires — without
+    # this the missing secret would short-circuit to env:* instead of bin:*.
+    for secret in manifest.secrets:
+        monkeypatch.setenv(secret, "")
 
     target = _NoBinaryTarget()
     result: InspectorResult = asyncio.run(
@@ -160,3 +176,97 @@ def test_missing_binary_skips_with_requires_unmet(name: str, rel_path: str, bina
     assert result.findings == []
     # The skipped run surfaces the missing binary so the report can annotate it.
     assert any(m.startswith("bin:") for m in result.missing), result.missing
+
+
+# --------------------------------------------------------------------------- #
+# add-service-inspector-contract-spike — declared-secret preflight gate (§4.6)
+# --------------------------------------------------------------------------- #
+#
+# Spec §场景:声明 secret 即强制其 env 存在 — a manifest that declares
+# `secrets: [X]` must skip with `status=requires_unmet` (surfacing `env:X`) when
+# `X` is absent from the environment (not even an empty string). This is a
+# premise gap, NOT an exception, and must not abort the same run. A no-auth
+# instance must export `X=` explicitly to pass.
+
+
+class _AllBinariesPresentTarget:
+    """Stub target where every `command -v X` probe SUCCEEDS (binary present).
+
+    Used to isolate the secret-env gate: with the binary present, the only
+    preflight gate left to fire for a probe with a missing declared secret is
+    the secret-env gate (step 4). The collector must never run (no fixture).
+    """
+
+    type = "local"
+    name = "all-binaries-host"
+    capabilities: ClassVar[set[Capability]] = {Capability.SHELL, Capability.FILE_READ}
+
+    async def exec(
+        self,
+        cmd: str,
+        *,
+        timeout: int,
+        env: dict[str, str] | None = None,
+    ) -> ExecResult:
+        del timeout, env
+        if cmd.startswith("command -v "):
+            binary = cmd[len("command -v ") :].strip().strip("'\"")
+            return ExecResult(
+                exit_code=0,
+                stdout=f"/usr/bin/{binary}\n",
+                stderr="",
+                duration_seconds=0.0,
+                timed_out=False,
+            )
+        if cmd.startswith("[ -r "):
+            return ExecResult(
+                exit_code=0, stdout="", stderr="", duration_seconds=0.0, timed_out=False
+            )
+        raise AssertionError(
+            f"collector must not run when a declared secret env is absent: {cmd!r}"
+        )
+
+    async def read_file(self, path: str) -> bytes:
+        raise AssertionError(f"read_file must not be reached: {path!r}")
+
+
+# (registry name, yaml rel path, the declared secret env, parameters)
+_SECRET_GATE_CASES: list[tuple[str, str, str, dict[str, object]]] = [
+    ("redis.memory_usage", "redis/memory_usage.yaml", "HOSTLENS_REDIS_PASSWORD", {}),
+    (
+        "mysql.connection_usage",
+        "mysql/connection_usage.yaml",
+        "HOSTLENS_MYSQL_PWD",
+        {"user": "root"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name,rel_path,secret,parameters",
+    _SECRET_GATE_CASES,
+    ids=[c[0] for c in _SECRET_GATE_CASES],
+)
+def test_missing_secret_env_skips_with_requires_unmet(
+    name: str,
+    rel_path: str,
+    secret: str,
+    parameters: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = load_manifest(_BUILTIN_DIR / rel_path)
+    assert manifest.name == name
+    assert secret in manifest.secrets
+
+    # Secret entirely absent (not even an empty string) → preflight requires_unmet.
+    monkeypatch.delenv(secret, raising=False)
+
+    target = _AllBinariesPresentTarget()
+    result: InspectorResult = asyncio.run(
+        _runner().run(manifest, target, parameters=parameters)  # type: ignore[arg-type]
+    )
+
+    # Graceful skip — NOT an exception, NOT a crash; surfaces the missing env.
+    assert result.status == "requires_unmet"
+    assert result.findings == []
+    assert f"env:{secret}" in result.missing, result.missing

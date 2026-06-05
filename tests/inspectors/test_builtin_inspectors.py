@@ -159,6 +159,43 @@ _WAVE1_STEM_BY_NAME: dict[str, str] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# add-service-inspector-contract-spike — clean registration (tasks.md §4.5)
+# --------------------------------------------------------------------------- #
+#
+# The two service-inspector-contract probes must load cleanly and register with
+# `errors == []`, exactly the way the wave-1 inspectors do — so a malformed
+# service manifest (or a loader gate the secret/`| sh` patterns trip) fails this
+# acceptance gate loud rather than silently shipping a broken builtin.
+
+_SERVICE_PROBES: dict[str, str] = {
+    "redis.memory_usage": "redis/memory_usage.yaml",
+    "mysql.connection_usage": "mysql/connection_usage.yaml",
+}
+
+
+class TestServiceInspectorContractProbes:
+    """tasks.md §4.5 — both spike probes register cleanly, registry errors==[]."""
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted(_SERVICE_PROBES.items()),
+        ids=sorted(_SERVICE_PROBES),
+    )
+    def test_probe_manifest_loads_clean(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        assert manifest.name == name
+
+    def test_probes_register_with_no_errors(self) -> None:
+        result = build_registry_from_search_paths([], settings=Settings())
+        # The registry must surface BOTH probes and report zero load errors —
+        # the same invariant the wave-1 suite locks.
+        assert result.errors == []
+        registered = set(result.registry.names())
+        missing = set(_SERVICE_PROBES) - registered
+        assert not missing, f"service probes absent from registry: {sorted(missing)}"
+
+
 class TestWave1SuiteRegistration:
     """tasks.md §10.1 — every wave-1 inspector loads clean + registers."""
 

@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v redis-cli",
+      "stdout": "/usr/local/bin/redis-cli\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "if [ -n \"${HOSTLENS_REDIS_PASSWORD:-}\" ]; then\n  info=$(REDISCLI_AUTH=\"$HOSTLENS_REDIS_PASSWORD\" redis-cli --no-auth-warning -t 5 -h 127.0.0.1 -p 6379 INFO memory) || { echo \"redis INFO memory failed\" >&2; exit 1; }\nelse\n  info=$(redis-cli -t 5 -h 127.0.0.1 -p 6379 INFO memory) || { echo \"redis INFO memory failed\" >&2; exit 1; }\nfi\nused=$(printf '%s' \"$info\" | awk -F: '/^used_memory:/{gsub(/\\r/,\"\",$2);print $2}')\nmax=$(printf '%s' \"$info\" | awk -F: '/^maxmemory:/{gsub(/\\r/,\"\",$2);print $2}')\ncase \"$used\" in ''|*[!0-9]*) echo \"used_memory non-numeric: $used\" >&2; exit 1;; esac\ncase \"$max\"  in ''|*[!0-9]*) echo \"maxmemory non-numeric: $max\"   >&2; exit 1;; esac\nif [ \"$max\" -gt 0 ]; then\n  pct=$(LC_ALL=C awk -v u=\"$used\" -v m=\"$max\" 'BEGIN{printf \"%.2f\", (u/m)*100}')\n  printf '{\"used_memory\":%d,\"maxmemory\":%d,\"used_pct\":%s}' \"$used\" \"$max\" \"$pct\"\nelse\n  printf '{\"used_memory\":%d,\"maxmemory\":%d,\"used_pct\":null}' \"$used\" \"$max\"\nfi",
+      "stdout": "{\"used_memory\":1116256,\"maxmemory\":0,\"used_pct\":null}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

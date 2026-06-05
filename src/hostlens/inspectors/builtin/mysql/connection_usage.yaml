@@ -1,0 +1,98 @@
+name: mysql.connection_usage
+version: 1.0.0
+# Service-inspector-contract probe: proves the NEW client (mysql) + secret
+# declared as HOSTLENS_MYSQL_PWD (HOSTLENS_ prefix per ssh-execution-target
+# contract) remapped to the client-native MYSQL_PWD env + TSV→JSON collector
+# normalization. Requires MySQL 5.7+/8+ and the mysql client. Auth via env
+# (D-1), never inlined (no -p<pwd>).
+description: >-
+  MySQL 连接使用率巡检(单实例)。需 MySQL 5.7+/8+ 与 mysql client;secret 声明为
+  HOSTLENS_MYSQL_PWD(HOSTLENS_ 前缀对齐 ssh-execution-target 契约的 AcceptEnv
+  HOSTLENS_* 投递),collector 内 remap 到 client 原生 MYSQL_PWD(从不内联、不用
+  -p<pwd> 明文)。只报聚合标量(已用连接数 / max_connections / 派生率)。
+  服务不可达/Access denied → status=exception(诚实);缺 mysql client → requires_unmet。
+  SSH 上需远端 sshd 配 AcceptEnv HOSTLENS_*。
+tags: [mysql, mysql57, service, connections]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [mysql]
+secrets: [HOSTLENS_MYSQL_PWD]
+privilege: none
+
+parameters:
+  type: object
+  required: [user]
+  properties:
+    host:
+      type: string
+      pattern: "^[a-zA-Z0-9._-]+$"      # blocks shell injection in -h value
+      default: "127.0.0.1"
+    port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+      default: 3306
+    user:
+      type: string
+      pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"   # mysql identifier charset
+    warn_used_pct:     { type: number, default: 80.0 }
+    critical_used_pct: { type: number, default: 95.0 }
+  additionalProperties: false
+
+collect:
+  # D-1/D-6: secret declared as HOSTLENS_MYSQL_PWD (HOSTLENS_ prefix survives SSH
+  # AcceptEnv HOSTLENS_*); the collector REMAPS it to the client-native MYSQL_PWD
+  # env prefix on the mysql invocation, read implicitly by the client — NEVER
+  # `-p<pwd>` (which leaks in `ps`) and NEVER `{{ }}`-interpolated. D-2: status
+  # vars read with `--batch -N -s`
+  # (tab-separated, no header, silent); we DERIVE used_pct in awk then `printf`
+  # a top-level JSON object — TSV never reaches a parser, so no table-parser
+  # dependency on \N/escaping. used_connections comes from the GLOBAL status var
+  # `Threads_connected` (NOT `COUNT(*) FROM information_schema.processlist`,
+  # which a non-PROCESS-privileged inspector user sees ONLY its own thread for →
+  # silent under-count → false "healthy" while the backend is connection-
+  # saturated). `SHOW GLOBAL STATUS` needs no special privilege and is global.
+  # D-3 fail-loud: each mysql call must succeed AND yield a bare integer, else
+  # exit 1 + empty stdout → status=exception (a down/Access-denied backend never
+  # fabricates used_pct=0). NOTE the value is captured into `$raw` via command
+  # substitution and awk'd on a SEPARATE line — piping `mysql … | awk` would
+  # make `|| exit 1` inspect awk's exit (always 0 on empty input), masking a
+  # mysql failure (the same pipeline-exit trap docker.restart_loop documents).
+  # host/user flow through `| sh`; port is int. --connect-timeout 5 < timeout 15
+  # (covers the TCP-connect phase; an auth/query hang past 15s falls to
+  # status=timeout, an orthogonal transport-layer state — see spec failure-class).
+  command: |
+    raw=$(MYSQL_PWD="${HOSTLENS_MYSQL_PWD:-}" mysql -N -s --batch --connect-timeout=5 -h {{ host | sh }} -P {{ port }} -u {{ user | sh }} \
+      -e "SHOW GLOBAL STATUS LIKE 'Threads_connected'") || { echo "mysql threads_connected failed" >&2; exit 1; }
+    used=$(printf '%s' "$raw" | awk '{print $2}')
+    maxc=$(MYSQL_PWD="${HOSTLENS_MYSQL_PWD:-}" mysql -N -s --batch --connect-timeout=5 -h {{ host | sh }} -P {{ port }} -u {{ user | sh }} \
+      -e "SELECT @@max_connections") || { echo "mysql max_connections failed" >&2; exit 1; }
+    case "$used" in ''|*[!0-9]*) echo "used non-numeric: $used" >&2; exit 1;; esac
+    case "$maxc" in ''|*[!0-9]*) echo "maxc non-numeric: $maxc" >&2; exit 1;; esac
+    if [ "$maxc" -gt 0 ]; then
+      pct=$(LC_ALL=C awk -v u="$used" -v m="$maxc" 'BEGIN{printf "%.2f", (u/m)*100}')
+      printf '{"used_connections":%d,"max_connections":%d,"used_pct":%s}' "$used" "$maxc" "$pct"
+    else
+      printf '{"used_connections":%d,"max_connections":%d,"used_pct":null}' "$used" "$maxc"
+    fi
+  timeout_seconds: 15
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    used_connections: { type: integer }
+    max_connections:  { type: integer }
+    used_pct:         { type: [number, "null"] }
+  required: [used_connections, max_connections, used_pct]
+  additionalProperties: false
+
+findings:
+  - when: "used_pct != None and used_pct >= critical_used_pct"
+    severity: critical
+    message: "MySQL connections at {used_pct}% ({used_connections}/{max_connections})"
+  - when: "used_pct != None and used_pct >= warn_used_pct and used_pct < critical_used_pct"
+    severity: warning
+    message: "MySQL connections at {used_pct}% ({used_connections}/{max_connections})"
