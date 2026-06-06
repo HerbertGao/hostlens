@@ -133,6 +133,20 @@ _BINARY_GATE_CASES: list[tuple[str, str, str]] = [
     # an exception or crash that aborts the same run.
     ("redis.memory_usage", "redis/memory_usage.yaml", "redis-cli"),
     ("mysql.connection_usage", "mysql/connection_usage.yaml", "mysql"),
+    # add-single-instance-service-inspectors §6.2 — every wave-2a service
+    # client binary (redis-cli / psql / curl / nginx / docker) is a premise gap
+    # → requires_unmet skip, NOT an exception that aborts the run. The two
+    # secret-declaring probes (redis.persistence / postgres.connection_usage)
+    # also exercise the gate ordering: the loop below sets each declared secret
+    # to "" so the BINARY gate (step 5) — not the secret-env gate (step 4) — is
+    # the one under test. The docker/nginx probes declare no secret and have no
+    # required parameters, so an empty `parameters={}` reaches preflight.
+    ("redis.persistence", "redis/persistence.yaml", "redis-cli"),
+    ("postgres.connection_usage", "postgres/connection_usage.yaml", "psql"),
+    ("nginx.health", "nginx/health.yaml", "curl"),
+    ("nginx.config_test", "nginx/config_test.yaml", "nginx"),
+    ("docker.images.disk_usage", "docker/images_disk_usage.yaml", "docker"),
+    ("docker.networks", "docker/networks.yaml", "docker"),
 ]
 
 
@@ -156,7 +170,7 @@ def test_missing_binary_skips_with_requires_unmet(
         parameters = {"names": ["example.com"]}
     elif name == "log.exception_burst":
         parameters = {"log_path": "/var/log/app.log"}
-    elif name == "mysql.connection_usage":
+    elif name in ("mysql.connection_usage", "postgres.connection_usage"):
         parameters = {"user": "root"}
 
     # The secret-env gate (preflight step 4) runs BEFORE the binary probe
@@ -238,6 +252,21 @@ _SECRET_GATE_CASES: list[tuple[str, str, str, dict[str, object]]] = [
         "mysql/connection_usage.yaml",
         "HOSTLENS_MYSQL_PWD",
         {"user": "root"},
+    ),
+    # add-single-instance-service-inspectors §6.2 — the two wave-2a secret-
+    # declaring probes: an absent declared secret env is a premise gap →
+    # requires_unmet (surfacing env:HOSTLENS_*), not an exception.
+    (
+        "redis.persistence",
+        "redis/persistence.yaml",
+        "HOSTLENS_REDIS_PASSWORD",
+        {},
+    ),
+    (
+        "postgres.connection_usage",
+        "postgres/connection_usage.yaml",
+        "HOSTLENS_POSTGRES_PASSWORD",
+        {"user": "postgres"},
     ),
 ]
 

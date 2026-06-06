@@ -6,17 +6,47 @@
 # real services, capture ReplayTarget fixtures, then tear down. It is NEVER part
 # of day-to-day CI — CI replays the recorded fixtures offline (design D-5).
 #
-# Image tags are pinned to a PATCH-level version (design D-5 / proposal Failure
-# Mode 4: "镜像固定 digest/patch 版本") so a re-record reproduces byte-identical
-# baselines. Bump deliberately, never float a major/minor tag.
+# Image tags are pinned (design D-5 / proposal Failure Mode 4: "镜像固定
+# digest/patch 版本") so a re-record reproduces byte-identical baselines. wave-2a
+# NEW images (postgres / nginx) are pinned by @sha256 digest; the base-spike
+# redis/mysql images remain patch-level, which is the already-archived change's
+# convention. Bump deliberately, never float a major/minor tag.
 #
-# Four services, named so groups B/C can address them directly:
+# Services, named so the recorder groups can address them directly:
 #   redis           — healthy single instance, no auth (PROVEN client path)
 #   redis-abnormal  — low maxmemory + noeviction → fill to used_pct >= 95
 #                     (semantic-abnormal fixture, D-4)
 #   mysql           — healthy single instance (NEW client path)
 #   mysql-abnormal  — low max-connections → saturate connections to used_pct
 #                     over threshold (semantic-abnormal fixture, D-4)
+#   postgres        — healthy single instance (NEW client path, psql + PGPASSWORD)
+#   postgres-lowconn— low max_connections=10 → hold a few connections to push
+#                     pg_stat_activity count / max_connections over the DEFAULT
+#                     threshold (semantic-abnormal fixture, D-3)
+#   nginx           — healthy single instance with a stub_status location for
+#                     `nginx.health` (curl probe — D-5; NOT systemctl, no systemd
+#                     in a compose container)
+#
+# === wave-2a cross-group recording conventions (G3 postgres / G5 nginx) ===
+# postgres / postgres-lowconn:
+#   * Both reference ${HOSTLENS_PG_ROOT_PW:?...}; the recorder
+#     (`_compose_record.POSTGRES_ROOT_PW`) exports HOSTLENS_PG_ROOT_PW into the
+#     compose subprocess env so the `:?` interpolation resolves at parse time
+#     (symmetric with HOSTLENS_MYSQL_ROOT_PW). G3's recorder injects the SAME
+#     POSTGRES_ROOT_PW value as HOSTLENS_POSTGRES_PASSWORD (user=postgres) for
+#     healthy / finding-trigger / semantic-abnormal.
+# nginx:
+#   * Container listens on 80, published to host 18080.
+#   * stub_status path is `/stub_status` (leading `/`, no trailing slash).
+#   * G5's `nginx.health` recording uses HOST curl (the host has /usr/bin/curl,
+#     the alpine container does not): `curl -fsS http://127.0.0.1:18080/stub_status`.
+#   * `nginx -t` invalid-config fixture for `nginx.config_test` (G5
+#     semantic-abnormal): see `nginx/bad.conf` — a deliberately INVALID config
+#     whose `nginx -t` stderr naturally contains quotes / backslash / newline (to
+#     exercise the `jq -n --arg` escaping in task 5.5). It is NOT mounted as a
+#     live config (would break startup); G5 mounts it on demand via
+#     `docker run --rm -v .../nginx/bad.conf:/tmp/bad.conf:ro nginx@sha256:814a8e88…
+#      nginx -t -c /tmp/bad.conf` (rc=1, stderr with quotes/backslash/newline).
 #
 # Groups B/C drive these with, e.g.:
 #   docker compose -f tests/inspectors/compose/docker-compose.yml up -d redis
@@ -89,6 +119,55 @@ services:
       interval: 2s
       timeout: 4s
       retries: 45
+
+  postgres:
+    image: postgres@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    environment:
+      POSTGRES_PASSWORD: ${HOSTLENS_PG_ROOT_PW:?recorder must export HOSTLENS_PG_ROOT_PW}
+      POSTGRES_DB: hostlens
+    ports:
+      - "15432:5432"
+    healthcheck:
+      # pg_isready ships in postgres:16-alpine; success once the server accepts
+      # connections to the seeded `hostlens` database.
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "hostlens"]
+      interval: 2s
+      timeout: 4s
+      retries: 45
+
+  postgres-lowconn:
+    image: postgres@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    # max_connections=10 is low enough that a handful of held connections plus
+    # postgres' own background processes push count(*) FROM pg_stat_activity / 10
+    # over the DEFAULT critical threshold (real high-connection state — D-3,
+    # NOT a lowered inspector threshold).
+    command: ["postgres", "-c", "max_connections=10"]
+    environment:
+      POSTGRES_PASSWORD: ${HOSTLENS_PG_ROOT_PW:?recorder must export HOSTLENS_PG_ROOT_PW}
+      POSTGRES_DB: hostlens
+    ports:
+      - "15433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "hostlens"]
+      interval: 2s
+      timeout: 4s
+      retries: 45
+
+  nginx:
+    image: nginx@sha256:814a8e88df978ade80e584cc5b333144b9372a8e3c98872d07137dbf3b44d0e4
+    # Overlay the whole default server block (default.conf) so the stub_status
+    # location lives in the SAME `server { listen 80; }` as the default site —
+    # avoids a duplicate server block. The host probes /stub_status via host
+    # curl on 18080 (D-5); readiness uses busybox wget (alpine has no curl).
+    volumes:
+      - "./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"
+    ports:
+      - "18080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/stub_status"]
+      interval: 2s
+      timeout: 4s
+      retries: 30
 
   mysql-abnormal:
     image: mysql:8.0.40

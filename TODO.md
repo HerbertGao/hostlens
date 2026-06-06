@@ -442,11 +442,11 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 | 内核 / 系统 | dmesg errors / kernel taint / reboot-required / uptime | — | system.kernel_messages ✅, system.uptime, system.reboot_required ✅, system.kernel_taint ✅ |
 | 安全基线 | failed logins / sudo history / 异常监听端口 | — | security.failed_logins, security.sudo_history, security.unexpected_listen |
 | 包管理 | 待升级包 / 安全补丁 | — | pkg.pending_updates, pkg.security_patches |
-| Web / Nginx | health / config test / 5xx rate / upstream health | — | nginx.health, nginx.config_test, nginx.error_rate, nginx.upstream |
+| Web / Nginx | health / config test / 5xx rate / upstream health | — | nginx.health ✅, nginx.config_test ✅, nginx.error_rate, nginx.upstream |
 | MySQL | conn usage / slow queries / replication lag / deadlocks | — | mysql.connection_usage, mysql.slow_queries, mysql.replication_lag, mysql.deadlocks |
-| PostgreSQL | conn usage / replication lag / bloat（真实 SQL）/ long queries | — | postgres.connection_usage, postgres.replication_lag, postgres.bloat_tables, postgres.long_queries |
-| Redis | memory / persistence / replication / slowlog | — | redis.memory_usage, redis.persistence, redis.replication_lag, redis.slowlog |
-| Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy, docker.containers.restart_loop, docker.images.disk_usage, docker.networks |
+| PostgreSQL | conn usage / replication lag / bloat（真实 SQL）/ long queries | — | postgres.connection_usage ✅, postgres.replication_lag, postgres.bloat_tables, postgres.long_queries |
+| Redis | memory / persistence / replication / slowlog | — | redis.memory_usage, redis.persistence ✅, redis.replication_lag, redis.slowlog |
+| Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy（由 docker.containers.restart_loop 覆盖、不单列）, docker.containers.restart_loop, docker.images.disk_usage ✅, docker.networks ✅ |
 | K8s（M8 target 就位后） | pod OOM history / evicted / pending / node pressure | — | k8s.pods.oom_history, k8s.pods.evicted, k8s.pods.pending, k8s.nodes.pressure |
 | 运行时（JVM） | heap usage / GC pressure / thread count | — | jvm.heap, jvm.gc, jvm.threads |
 | 运行时（Go） | goroutine count / heap from pprof | — | go.goroutines, go.heap |
