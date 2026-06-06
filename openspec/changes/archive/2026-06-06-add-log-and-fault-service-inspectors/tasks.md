@@ -66,5 +66,5 @@
 - [x] 6.2 `mypy --strict` + `ruff` + 全量 `pytest`(默认 ReplayTarget 回放,不消耗 API)全绿
 - [x] 6.3 跑 Demo Path(proposal 所列命令)
 - [x] 6.4 对本次变更跑对抗性 review(`/review-loop-codex`),triage + 修复到放行(含 secret / 失败分类 / 确定性回放 / 监控盲区暴露 / awk 字段 / 小样本门安全边界,属应 review 类)
-- [ ] 6.5 开 feature branch `feat/add-log-and-fault-service-inspectors` → commit → push → `\gh pr create --base main`,CI 绿后 squash-merge(合并前查 Copilot + Cursor BugBot review 逐条 triage)
-- [ ] 6.6 归档:`openspec-cn archive add-log-and-fault-service-inspectors`,delta(ADDED wave-2b 覆盖需求)合入 `openspec/specs/service-inspector-suite/`,**不**触 wave-2a 冻结需求
+- [x] 6.5 开 feature branch `feat/add-log-and-fault-service-inspectors` → commit → push → `\gh pr create --base main`,CI 绿后 squash-merge(合并前查 Copilot + Cursor BugBot review 逐条 triage)
+- [x] 6.6 归档:`openspec-cn archive add-log-and-fault-service-inspectors`,delta(ADDED wave-2b 覆盖需求)合入 `openspec/specs/service-inspector-suite/`,**不**触 wave-2a 冻结需求
