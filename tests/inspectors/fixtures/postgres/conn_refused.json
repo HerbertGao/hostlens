@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v psql",
+      "stdout": "/usr/local/bin/psql\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "raw=$(PGPASSWORD=\"${HOSTLENS_POSTGRES_PASSWORD:-}\" PGCONNECT_TIMEOUT=5 \\\n  psql -tA -F'|' -h 127.0.0.1 -p 15999 -U postgres -d postgres \\\n  -c \"SELECT (SELECT count(*) FROM pg_stat_activity), current_setting('max_connections')::int\") \\\n  || { echo \"psql connection_usage failed\" >&2; exit 1; }\nused=$(printf '%s' \"$raw\" | awk -F'|' 'NR==1{print $1}')\nmaxc=$(printf '%s' \"$raw\" | awk -F'|' 'NR==1{print $2}')\ncase \"$used\" in ''|*[!0-9]*) echo \"used non-numeric: $used\" >&2; exit 1;; esac\ncase \"$maxc\" in ''|*[!0-9]*) echo \"maxc non-numeric: $maxc\" >&2; exit 1;; esac\nif [ \"$maxc\" -gt 0 ]; then\n  pct=$(LC_ALL=C awk -v u=\"$used\" -v m=\"$maxc\" 'BEGIN{printf \"%.2f\", (u/m)*100}')\n  printf '{\"used_connections\":%d,\"max_connections\":%d,\"used_pct\":%s}' \"$used\" \"$maxc\" \"$pct\"\nelse\n  printf '{\"used_connections\":%d,\"max_connections\":%d,\"used_pct\":null}' \"$used\" \"$maxc\"\nfi",
+      "stdout": "",
+      "stderr": "psql: error: connection to server at \"127.0.0.1\", port 15999 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\npsql connection_usage failed\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

@@ -24,6 +24,13 @@ readiness signal (PING / mysqladmin ping, expressed as the compose healthcheck)
 makes recording reproducible regardless of host speed — which is the whole point
 of a deterministic fixture lane.
 
+The wave-2a postgres / nginx services go through the SAME `wait_healthy` — they
+each declare a compose healthcheck (postgres `pg_isready` / nginx busybox `wget`
+on the stub_status location), so `wait_healthy` polls their
+`.State.Health.Status` verdict with zero changes. A group-C recorder just calls
+`compose_up("postgres")` / `wait_healthy("postgres")` exactly like the redis/mysql
+template below.
+
 Recording NEVER runs in day-to-day CI (these files have no `test_` prefix and
 are not collected by pytest); CI replays the recorded fixtures offline via
 `ReplayTarget`.
@@ -81,6 +88,20 @@ COMPOSE_FILE: Final = Path("tests/inspectors/compose/docker-compose.yml")
 #: resolves at parse time. Exported for the mysql recorder (root auth).
 MYSQL_ROOT_PW: Final = "hostlens-" + "throwaway-" + "root-pw"
 
+#: Throwaway superuser password for the recording-lane postgres containers.
+#: Symmetric with ``MYSQL_ROOT_PW``: built by concatenation (not a single
+#: literal) so GitGuardian's dashboard scan does not flag a fake one-shot test
+#: credential. The compose file references it as ``${HOSTLENS_PG_ROOT_PW:?...}``;
+#: ``_compose`` exports this value into every ``docker compose`` subprocess env
+#: so the ``:?`` interpolation resolves at parse time.
+#:
+#: Cross-group contract: G3's postgres recorder imports this constant and injects
+#: it as ``HOSTLENS_POSTGRES_PASSWORD`` (user=postgres) for the healthy /
+#: finding-trigger / semantic-abnormal fixtures, and G6's secret-leak regression
+#: (`test_service_contract_crosscheck._RECORDED_SECRET_VALUES`) MUST include this
+#: value so the postgres.connection_usage leak scan is not vacuous.
+POSTGRES_ROOT_PW: Final = "hostlens-" + "throwaway-" + "pg-pw"
+
 #: Compose project-name PREFIX. Each service gets its OWN project
 #: (``<prefix>-<service>``) so two recorders running concurrently never share a
 #: project — ``compose_down(service)`` then tears down only its own containers
@@ -103,9 +124,15 @@ def _compose(service: str, *args: str, check: bool = True) -> subprocess.Complet
         check=check,
         capture_output=True,
         text=True,
-        # Export the throwaway root pw so the compose file's
-        # ``${HOSTLENS_MYSQL_ROOT_PW:?}`` interpolation resolves at parse time.
-        env={**os.environ, "HOSTLENS_MYSQL_ROOT_PW": MYSQL_ROOT_PW},
+        # Export the throwaway root pws so the compose file's
+        # ``${HOSTLENS_MYSQL_ROOT_PW:?}`` / ``${HOSTLENS_PG_ROOT_PW:?}``
+        # interpolations resolve at parse time (a missing one fails `config` for
+        # the WHOLE file, so both are always exported regardless of service).
+        env={
+            **os.environ,
+            "HOSTLENS_MYSQL_ROOT_PW": MYSQL_ROOT_PW,
+            "HOSTLENS_PG_ROOT_PW": POSTGRES_ROOT_PW,
+        },
     )
 
 

@@ -1,0 +1,96 @@
+name: nginx.config_test
+version: 1.0.0
+# Service-inspector-suite wave-2a probe: `nginx -t` static config validation.
+# This is a FINDING-ROUTE inspector and its collector's fail-loud direction is
+# DELIBERATELY OPPOSITE to the rest of this batch (docker / redis / postgres),
+# which all treat a non-zero client exit as `status=exception`.
+#
+# WHY OPPOSITE (design D-5): `nginx -t` reporting "config invalid" is a
+# SUCCESSFUL collection of an abnormal RESULT, not a collection FAILURE. A bad
+# config must surface as a FINDING, not an exception. But `nginx -t` writes its
+# verdict to STDERR and exits 1 with EMPTY stdout — if passed through verbatim
+# the runner (which only parses stdout) would read empty stdout as an exception.
+# So the collector captures rc + stderr and routes by exit code.
+#
+# RC WHITELIST {0,1} + EXCEPTION FALLBACK FOR EVERYTHING ELSE: only rc∈{0,1}
+# take the "collection succeeded" path — rc=0 → config_valid:true, rc=1 → nginx
+# ran and found a bad config → config_valid:false (finding-route, collector
+# itself exits 0). EVERY OTHER rc (126/127 / >128 signals / any 2..125) means
+# "could not execute / killed / unexpected" → collector exits 1 with empty stdout
+# → status=exception. We NEVER misreport such an rc as config_valid:false — a
+# crashed/uninvokable nginx is not "a bad config". `requires_binaries: [nginx]`
+# preflight already gates "nginx absent" (→requires_unmet); this fallback covers
+# the rare "present but uninvokable / abnormal exit".
+#
+# rc=1 COVERS ANY `nginx -t` TEST FAILURE — by nginx's own exit-code contract a
+# syntactically-bad config AND an unreadable/permission-denied config BOTH emit
+# `[emerg] … test failed` and exit 1 (nginx itself cannot start with either).
+# That is faithfully mapped to config_valid:false; the actual cause (syntax vs
+# `open() … failed (13: Permission denied)`) is surfaced verbatim in `detail`, so
+# the finding is honest — never a false "config OK", never a silent loss. We do
+# NOT parse the stderr to split syntax from unreadable: both are genuine
+# config-test failures worth a finding, and nginx gives them the same exit code,
+# so a stderr-semantics split would be fragile without changing the correct
+# verdict (the operator reads `detail` for the cause).
+#
+# JSON-SAFE SERIALIZATION (mandatory): the stderr verdict routinely contains
+# quotes / backslashes / newlines (nginx quotes offending tokens, echoes them
+# verbatim, spans multiple lines). `printf '{"detail":"%s"}' "$err"` would
+# produce INVALID JSON → parse failure → spurious exception. So `jq -n --arg d`
+# escapes it safely (`jq` is in requires_binaries).
+description: >-
+  Nginx 配置静态校验(`nginx -t`,finding-route)。collector 按 `nginx -t` 退出码分流:
+  rc=0 → config_valid:true 无 finding;rc=1 → 采集到坏配置 → config_valid:false +
+  finding(collector 自身 exit 0);其余一切非 {0,1} 的 rc(126/127/>128 signal 及
+  2..125 等)→ collector exit 1 + 空 stdout → status=exception(白名单 finding + 兜底
+  exception,禁把不可执行误吞成坏配置)。stderr 经 `jq -n --arg` 转义(含引号/反斜杠/换行
+  仍产合法 JSON)。此 collector fail-loud 方向与同批次 docker/redis/postgres「非零→
+  exception」相反(rc1=采集成功出坏配置,见 design D-5)。缺 nginx → requires_unmet。
+tags: [nginx, web, service, config]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [nginx, jq]
+secrets: []
+privilege: none
+
+parameters:
+  type: object
+  properties: {}
+  additionalProperties: false
+
+collect:
+  # All routing happens here (Authoring Contract rule 1): the collector captures
+  # `nginx -t`'s exit code + combined stderr, classifies by the rc whitelist
+  # {0,1} (everything else → exit 1 → exception, see header), and `jq -n --arg`
+  # escapes the stderr verdict into a top-level JSON object so parse.format=json
+  # sees a dict with quote/backslash/newline-safe `detail`. The Finding DSL only
+  # threshold-compares the ready scalar `config_valid`.
+  command: |
+    err=$(nginx -t 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+      jq -n '{config_valid:true,detail:""}'
+    elif [ "$rc" -eq 1 ]; then
+      jq -n --arg d "$err" '{config_valid:false,detail:$d}'
+    else
+      echo "nginx -t unexpected rc=$rc" >&2; exit 1
+    fi
+  timeout_seconds: 15
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    config_valid: { type: boolean }
+    detail:       { type: string }
+  required: [config_valid, detail]
+  additionalProperties: false
+
+findings:
+  # Aggregate-mode: a single scalar comparison over the ready field. The DSL
+  # evaluates Python literals (cf. redis.memory_usage `used_pct != None`), so the
+  # boolean false is written `False`, not the JSON-lowercase `false`.
+  - when: "config_valid == False"
+    severity: critical
+    message: "nginx config test failed: {detail}"

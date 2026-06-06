@@ -1,0 +1,39 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "docker_cli",
+    "file_read",
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v docker",
+      "stdout": "/usr/local/bin/docker\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "command -v jq",
+      "stdout": "/usr/bin/jq\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "command -v timeout",
+      "stdout": "/opt/homebrew/bin/timeout\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "ids=$(timeout 20 docker network ls -q) || { echo \"docker network ls failed\" >&2; exit 1; }\nif [ -z \"$ids\" ]; then\n  printf '{\"dangling_networks\":0,\"results\":[]}'\nelse\n  inspect_out=$(timeout 20 docker network inspect $ids) || { echo \"docker network inspect failed\" >&2; exit 1; }\n  printf '%s' \"$inspect_out\" | jq -c '\n    [ .[]\n      | select(.Name != \"bridge\" and .Name != \"host\" and .Name != \"none\" and .Name != \"docker_gwbridge\")\n      | select(.Ingress != true)\n      | select((.Containers | length) == 0)\n      | { name: .Name, driver: .Driver }\n    ] as $dangling\n    | {\n        dangling_networks: ($dangling | length),\n        results: ($dangling[0:50])\n      }\n  ' || { echo \"jq failed\" >&2; exit 1; }\nfi",
+      "stdout": "",
+      "stderr": "Cannot connect to the Docker daemon at tcp://127.0.0.1:1. Is the docker daemon running?\ndocker network ls failed\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

@@ -1,0 +1,112 @@
+name: docker.images.disk_usage
+version: 1.0.0
+description: >-
+  Report reclaimable Docker image disk usage as a percentage. Runs
+  `docker system df` (JSON line output), selects the `Images` row, and parses
+  the percentage Docker itself reports in its `Reclaimable` field (e.g.
+  "4.104GB (59%)") into the numeric `reclaimable_pct` — NO string→byte
+  conversion (the `Size`/`Reclaimable` strings are kept verbatim as
+  informational fields, never numericised). A high reclaimable percentage means
+  dangling/unused image layers are wasting disk.
+
+  PLATFORM DEPENDENCY: this inspector wraps the docker call in coreutils
+  `timeout <N> docker …` to satisfy the "unreachable daemon fails fast"
+  contract (the docker CLI has no `--connect-timeout` flag), so `timeout` is a
+  REQUIRED system binary. Unlike `docker.containers.restart_loop`
+  (requires_binaries `[docker, jq, xargs]`), `timeout` is a NEW system-binary
+  premise for this batch of docker probes — on macOS install GNU coreutils
+  (`brew install coreutils`) so `timeout` is on PATH; most Linux distros ship it
+  in coreutils by default.
+tags: [docker, images, disk, service, coreutils-timeout]
+targets: [local, ssh]
+# Gate on the `docker` binary (preflight-probed), NOT
+# `requires_capabilities: [docker_cli]`. The `docker_cli` capability is added to
+# Local/SSH targets *lazily* (only after the first `exec`), but the runner's
+# preflight checks capabilities (step 2) before any `exec`/binary probe (step 5)
+# — so requiring `docker_cli` makes a Docker-capable host fail preflight with
+# `requires_unmet` and the inspector never runs. See Authoring Contract rule 9
+# and `docker.containers.restart_loop`. `timeout` (coreutils) is a new
+# system-binary premise for this batch; a missing client binary → requires_unmet.
+requires_binaries: [docker, jq, timeout]
+secrets: []
+privilege: none
+
+parameters:
+  type: object
+  properties:
+    # Reclaimable-disk threshold: flag when the Images row's reclaimable share
+    # (as Docker self-reports it) is at or above this percentage. Numeric
+    # parameters need no `| sh` (shell cannot evaluate them as text).
+    warn_reclaimable_pct:
+      type: number
+      default: 80.0
+  additionalProperties: false
+
+collect:
+  # BYTE TRAP AVOIDANCE (design D-7): `docker system df` emits human-readable
+  # strings ("7.261GB" / "4.104GB (59%)"), NOT numeric bytes. We do NOT declare
+  # a `_bytes` field; instead we parse the percentage Docker already computed in
+  # its `Reclaimable` field — zero string→byte conversion, no numfmt/awk.
+  #
+  # JINJA vs GO-TEMPLATE: `collect.command` is rendered by Jinja2, whose `{{ }}`
+  # delimiters collide with Docker's Go-template `--format '{{json .}}'`. We
+  # wrap the literal Go-template braces in `{% raw %}...{% endraw %}` so Jinja
+  # passes them through verbatim (design D-7; the same reason
+  # `docker.containers.restart_loop` avoids `--format '{{}}'` entirely).
+  #
+  # PIPE-EXIT TRAP AVOIDANCE (design D-7): a bare `timeout docker … | jq …`
+  # pipeline only propagates jq's exit code under POSIX sh (the target may be
+  # dash, where `set -o pipefail` is unavailable) — so a dead daemon (docker
+  # exits non-zero, empty stdout) would let jq `exit 0` on empty input and the
+  # runner would bless `status=ok` while the daemon is in fact unreachable,
+  # violating fail-loud. Instead we capture docker's output in a command
+  # substitution and gate it with `|| exit 1` on its OWN line, THEN feed the
+  # captured `$out` to jq on a SEPARATE line (jq gated separately too). A
+  # daemon-down / timed-out docker → exit 1 + empty stdout → parse exception →
+  # status=exception (honest), never a fabricated 0%.
+  #
+  # `// 0` BOUNDARY: when the Images row exists but `Reclaimable` carries no
+  # `(NN%)` (zero reclaimable / some docker versions emit "0B"), `reclaimable_pct`
+  # is 0 — a TRUE value (nothing to reclaim), not a masked failure. But if jq
+  # finds NO `Type=="Images"` row at all that is a collection anomaly: jq
+  # `error(...)` → non-zero exit → empty stdout → status=exception. The `// 0`
+  # must NOT swallow a missing-Images-row into a fake 0%.
+  #
+  # `reclaimable_pct` is a bare aggregate scalar (no array top-level field), so
+  # the output uses a bare scalar key — `results`/`items`/`records` are reserved
+  # for list-shaped outputs (suite spec: list/aggregate distinction by array
+  # field, not by `for_each`). The keys do not shadow any parameter name.
+  command: |
+    out=$(timeout 20 docker system df --format '{% raw %}{{json .}}{% endraw %}') || { echo "docker system df failed" >&2; exit 1; }
+    printf '%s' "$out" | jq -sc '
+      map(select(.Type=="Images")) as $imgs
+      | if ($imgs | length) == 0 then error("no Images row in docker system df") else
+          $imgs[0] as $i
+          | {
+              reclaimable_pct: ($i.Reclaimable | (capture("\\((?<p>[0-9]+)%\\)") | .p | tonumber) // 0),
+              size: $i.Size,
+              reclaimable: $i.Reclaimable
+            }
+        end
+    ' || { echo "jq failed" >&2; exit 1; }
+  timeout_seconds: 30
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    # Numeric derived field — the percentage Docker self-reports as reclaimable.
+    reclaimable_pct: { type: number }
+    # Informational human-readable strings, kept verbatim (never numericised).
+    size:            { type: string }
+    reclaimable:     { type: string }
+  required: [reclaimable_pct]
+  additionalProperties: false
+
+findings:
+  # The DSL only compares the ready scalar against the threshold — no derivation.
+  - when: "reclaimable_pct >= warn_reclaimable_pct"
+    severity: warning
+    message: "reclaimable Docker image disk at {reclaimable_pct}% (size={size}, reclaimable={reclaimable})"

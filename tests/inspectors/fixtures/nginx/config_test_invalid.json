@@ -1,0 +1,30 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v jq",
+      "stdout": "/usr/bin/jq\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "command -v nginx",
+      "stdout": "/usr/sbin/nginx\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "err=$(nginx -t 2>&1); rc=$?\nif [ \"$rc\" -eq 0 ]; then\n  jq -n '{config_valid:true,detail:\"\"}'\nelif [ \"$rc\" -eq 1 ]; then\n  jq -n --arg d \"$err\" '{config_valid:false,detail:$d}'\nelse\n  echo \"nginx -t unexpected rc=$rc\" >&2; exit 1\nfi",
+      "stdout": "{\n  \"config_valid\": false,\n  \"detail\": \"2026/06/05 19:17:30 [emerg] 33#33: unknown directive \\\"bad\\\\directive\\\" in /etc/nginx/nginx.conf:24\\nnginx: [emerg] unknown directive \\\"bad\\\\directive\\\" in /etc/nginx/nginx.conf:24\\nnginx: configuration file /etc/nginx/nginx.conf test failed\"\n}\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

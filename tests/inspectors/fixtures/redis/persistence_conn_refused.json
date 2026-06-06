@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v redis-cli",
+      "stdout": "/usr/local/bin/redis-cli\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "if [ -n \"${HOSTLENS_REDIS_PASSWORD:-}\" ]; then\n  info=$(REDISCLI_AUTH=\"$HOSTLENS_REDIS_PASSWORD\" redis-cli --no-auth-warning -t 5 -h 127.0.0.1 -p 6390 INFO persistence) || { echo \"redis INFO persistence failed\" >&2; exit 1; }\nelse\n  info=$(redis-cli -t 5 -h 127.0.0.1 -p 6390 INFO persistence) || { echo \"redis INFO persistence failed\" >&2; exit 1; }\nfi\naof=$(printf '%s' \"$info\" | awk -F: '/^aof_enabled:/{gsub(/\\r/,\"\",$2);print $2}')\nchanges=$(printf '%s' \"$info\" | awk -F: '/^rdb_changes_since_last_save:/{gsub(/\\r/,\"\",$2);print $2}')\nlast=$(printf '%s' \"$info\" | awk -F: '/^rdb_last_save_time:/{gsub(/\\r/,\"\",$2);print $2}')\ncase \"$aof\"     in ''|*[!0-9]*) echo \"aof_enabled non-numeric: $aof\"        >&2; exit 1;; esac\ncase \"$changes\" in ''|*[!0-9]*) echo \"rdb_changes non-numeric: $changes\"    >&2; exit 1;; esac\ncase \"$last\"    in ''|*[!0-9]*) echo \"rdb_last_save_time non-numeric: $last\" >&2; exit 1;; esac\nprintf '{\"aof_enabled\":%d,\"rdb_changes_since_last_save\":%d,\"rdb_last_save_time\":%d}' \"$aof\" \"$changes\" \"$last\"",
+      "stdout": "",
+      "stderr": "Could not connect to Redis at 127.0.0.1:6390: Connection refused\nredis INFO persistence failed\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

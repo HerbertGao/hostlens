@@ -1,0 +1,85 @@
+name: postgres.connection_usage
+version: 1.0.0
+description: >-
+  PostgreSQL 连接使用率巡检(单实例)。需 psql client;secret 声明
+  HOSTLENS_POSTGRES_PASSWORD(HOSTLENS_ 前缀对齐 ssh-execution-target 契约),
+  collector 内 remap 到 client 原生 PGPASSWORD(从不内联)。只报聚合标量
+  (已用连接数 / max_connections / 派生率)。服务不可达/认证失败 → status=exception;
+  缺 psql → requires_unmet。SSH 上需远端 sshd 配 AcceptEnv HOSTLENS_*。
+tags: [postgres, service, connections]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [psql]
+secrets: [HOSTLENS_POSTGRES_PASSWORD]
+privilege: none
+
+parameters:
+  type: object
+  required: [user]
+  properties:
+    host:
+      type: string
+      pattern: "^[a-zA-Z0-9._-]+$"          # blocks injection in -h value
+      default: "127.0.0.1"
+    port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+      default: 5432
+    user:
+      type: string
+      pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+    dbname:
+      type: string
+      pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+      default: "postgres"
+    warn_used_pct:     { type: number, default: 80.0 }
+    critical_used_pct: { type: number, default: 95.0 }
+  additionalProperties: false
+
+collect:
+  # secret HOSTLENS_POSTGRES_PASSWORD remapped to client-native PGPASSWORD on the
+  # psql invocation (never -W/inline). PGCONNECT_TIMEOUT=5 < timeout_seconds 15 so
+  # an unreachable backend fails fast (orthogonal transport-layer status=timeout
+  # only past 15s). -tA = tuples-only, unaligned; one round-trip returns
+  # "used|max" via the | field sep, awk'd on a SEPARATE line (command-sub, not a
+  # pipe — piping psql|awk would inspect awk's exit and mask a psql failure). The
+  # value is the GLOBAL backend count (pg_stat_activity), not a per-db slice.
+  # fail-loud: non-numeric or psql error → exit 1 + empty stdout → status=exception
+  # (a down backend never fabricates used_pct=0).
+  command: |
+    raw=$(PGPASSWORD="${HOSTLENS_POSTGRES_PASSWORD:-}" PGCONNECT_TIMEOUT=5 \
+      psql -tA -F'|' -h {{ host | sh }} -p {{ port }} -U {{ user | sh }} -d {{ dbname | sh }} \
+      -c "SELECT (SELECT count(*) FROM pg_stat_activity), current_setting('max_connections')::int") \
+      || { echo "psql connection_usage failed" >&2; exit 1; }
+    used=$(printf '%s' "$raw" | awk -F'|' 'NR==1{print $1}')
+    maxc=$(printf '%s' "$raw" | awk -F'|' 'NR==1{print $2}')
+    case "$used" in ''|*[!0-9]*) echo "used non-numeric: $used" >&2; exit 1;; esac
+    case "$maxc" in ''|*[!0-9]*) echo "maxc non-numeric: $maxc" >&2; exit 1;; esac
+    if [ "$maxc" -gt 0 ]; then
+      pct=$(LC_ALL=C awk -v u="$used" -v m="$maxc" 'BEGIN{printf "%.2f", (u/m)*100}')
+      printf '{"used_connections":%d,"max_connections":%d,"used_pct":%s}' "$used" "$maxc" "$pct"
+    else
+      printf '{"used_connections":%d,"max_connections":%d,"used_pct":null}' "$used" "$maxc"
+    fi
+  timeout_seconds: 15
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    used_connections: { type: integer }
+    max_connections:  { type: integer }
+    used_pct:         { type: [number, "null"] }
+  required: [used_connections, max_connections, used_pct]
+  additionalProperties: false
+
+findings:
+  - when: "used_pct != None and used_pct >= critical_used_pct"
+    severity: critical
+    message: "PostgreSQL connections at {used_pct}% ({used_connections}/{max_connections})"
+  - when: "used_pct != None and used_pct >= warn_used_pct and used_pct < critical_used_pct"
+    severity: warning
+    message: "PostgreSQL connections at {used_pct}% ({used_connections}/{max_connections})"

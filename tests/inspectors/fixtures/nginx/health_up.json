@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v curl",
+      "stdout": "/usr/bin/curl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "out=$(curl -fsS --max-time 5 http://127.0.0.1:18080/stub_status) || { echo \"nginx stub_status unreachable\" >&2; exit 1; }\nn=$(printf '%s' \"$out\" | awk '/^Active connections:/{print $3}')\ncase \"$n\" in ''|*[!0-9]*) echo \"active_connections non-numeric: $n\" >&2; exit 1;; esac\nprintf '{\"healthy\":true,\"active_connections\":%d}' \"$n\"",
+      "stdout": "{\"healthy\":true,\"active_connections\":1}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

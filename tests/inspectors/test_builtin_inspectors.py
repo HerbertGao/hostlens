@@ -196,6 +196,52 @@ class TestServiceInspectorContractProbes:
         assert not missing, f"service probes absent from registry: {sorted(missing)}"
 
 
+# --------------------------------------------------------------------------- #
+# add-single-instance-service-inspectors — wave-2a clean registration (§6.1)
+# --------------------------------------------------------------------------- #
+#
+# The 6 wave-2a single-instance read-only service inspectors, keyed by registry
+# `name` → on-disk yaml path (relative to `builtin/`). This is the 归档时冻结的
+# wave-2a 清单 the suite spec §需求:wave-2a 必须覆盖归档时冻结的单实例即时只读服务
+# 单元格 references; it must stay in lockstep with the manifests shipped under
+# builtin/{redis,postgres,docker,nginx}/.
+
+_WAVE2A_INSPECTORS: dict[str, str] = {
+    "redis.persistence": "redis/persistence.yaml",
+    "postgres.connection_usage": "postgres/connection_usage.yaml",
+    "docker.images.disk_usage": "docker/images_disk_usage.yaml",
+    "docker.networks": "docker/networks.yaml",
+    "nginx.health": "nginx/health.yaml",
+    "nginx.config_test": "nginx/config_test.yaml",
+}
+
+
+class TestWave2aSuiteRegistration:
+    """tasks.md §6.1 — every wave-2a inspector loads clean + registers."""
+
+    def test_wave2a_count_is_frozen_at_6(self) -> None:
+        # The suite spec freezes the wave-2a cohort at exactly 6 inspectors. A
+        # drift (someone adds a 7th here without a new change) fails loud.
+        assert len(_WAVE2A_INSPECTORS) == 6
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted(_WAVE2A_INSPECTORS.items()),
+        ids=sorted(_WAVE2A_INSPECTORS),
+    )
+    def test_wave2a_manifest_loads_clean(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        # `name` in the yaml must match the registry key we expect.
+        assert manifest.name == name
+
+    def test_wave2a_inspectors_all_register_with_no_errors(self) -> None:
+        result = build_registry_from_search_paths([], settings=Settings())
+        assert result.errors == []
+        registered = set(result.registry.names())
+        missing = set(_WAVE2A_INSPECTORS) - registered
+        assert not missing, f"wave-2a inspectors absent from registry: {sorted(missing)}"
+
+
 class TestWave1SuiteRegistration:
     """tasks.md §10.1 — every wave-1 inspector loads clean + registers."""
 

@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v curl",
+      "stdout": "/usr/bin/curl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "out=$(curl -fsS --max-time 5 http://127.0.0.1:18099/stub_status) || { echo \"nginx stub_status unreachable\" >&2; exit 1; }\nn=$(printf '%s' \"$out\" | awk '/^Active connections:/{print $3}')\ncase \"$n\" in ''|*[!0-9]*) echo \"active_connections non-numeric: $n\" >&2; exit 1;; esac\nprintf '{\"healthy\":true,\"active_connections\":%d}' \"$n\"",
+      "stdout": "",
+      "stderr": "curl: (7) Failed to connect to 127.0.0.1 port 18099 after 0 ms: Couldn't connect to server\nnginx stub_status unreachable\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

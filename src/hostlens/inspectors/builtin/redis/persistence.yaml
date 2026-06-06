@@ -1,0 +1,97 @@
+name: redis.persistence
+version: 1.0.0
+# Service-inspector-contract probe (PROVEN client redis-cli + single instance +
+# secret env + failure classification). Reports Redis RDB persistence debt as
+# aggregate scalars from `INFO persistence`. Requires Redis 6+ / a redis-cli
+# supporting INFO.
+#
+# AOF PREMISE GATE (design D-8): a high `rdb_changes_since_last_save` does NOT by
+# itself mean data is at persistence risk — if AOF is enabled those changes are
+# already fsync-durable, so alerting on the RDB change count alone is a FALSE
+# POSITIVE. The only finding is therefore gated on `aof_enabled == 0` (AOF off):
+# "only when AOF is disabled, RDB snapshot debt over threshold is a real risk".
+# `aof_enabled` is carried into output_schema as the gate premise field.
+description: >-
+  Redis RDB 持久化债巡检(单实例)。需 Redis 6+ 与 redis-cli;经 HOSTLENS_REDIS_PASSWORD
+  env 注入鉴权(collector 内 remap 到 redis-cli 的 REDISCLI_AUTH,从不进 argv;HOSTLENS_
+  前缀对齐 ssh-execution-target 契约的 AcceptEnv HOSTLENS_* 投递路径)。只报聚合标量
+  (aof_enabled / rdb_changes_since_last_save / rdb_last_save_time),不回吐高基数明细。
+  finding 以 AOF 关闭(aof_enabled==0)为前提门(design D-8,防 AOF 开启时 RDB 变更计数
+  假阳性)。服务不可达/NOAUTH → status=exception(诚实);缺 redis-cli → requires_unmet。
+  SSH 上需远端 sshd 配 AcceptEnv HOSTLENS_*。
+tags: [redis, redis6, service, persistence]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [redis-cli]
+secrets: [HOSTLENS_REDIS_PASSWORD]
+privilege: none
+
+parameters:
+  type: object
+  properties:
+    host:
+      type: string
+      pattern: "^[a-zA-Z0-9._-]+$"   # blocks shell injection in -h value
+      default: "127.0.0.1"
+    port:
+      type: integer
+      minimum: 1
+      maximum: 65535
+      default: 6379
+    # Default bound to the recording-lane量纲 (design D-8 / tasks 2.3): the
+    # healthy fixture writes a handful of keys (rdb_changes < warn_changes) while
+    # the semantic-abnormal fixture writes ~500 keys (rdb_changes >= warn_changes),
+    # so 100 sits strictly inside (healthy.rdb_changes, abnormal.rdb_changes].
+    warn_changes:
+      type: integer
+      default: 100
+  additionalProperties: false
+
+collect:
+  # FAIL-LOUD (Authoring Contract rule 8): redis-cli must succeed AND every
+  # extracted field must be numeric, else exit 1 + empty stdout → status=exception
+  # (a dead/NOAUTH backend never fabricates aof_enabled=0 → "no finding"). The
+  # three INFO persistence fields are folded into ONE top-level JSON object so
+  # parse.format=json sees a dict.
+  #
+  # Secret declared as HOSTLENS_REDIS_PASSWORD (HOSTLENS_ prefix per the
+  # ssh-execution-target contract: only AcceptEnv HOSTLENS_* survives SSH). The
+  # collector REMAPS it to redis-cli's native REDISCLI_AUTH env channel — the
+  # password NEVER reaches argv (can't leak via `ps`, no word-split). It is never
+  # `{{ }}`-interpolated (contract: secret via env only). The no-auth branch
+  # (empty HOSTLENS_REDIS_PASSWORD — exported as "" so preflight's secret-presence
+  # gate passes) omits REDISCLI_AUTH entirely. `host` flows through `| sh`; `port` int.
+  command: |
+    if [ -n "${HOSTLENS_REDIS_PASSWORD:-}" ]; then
+      info=$(REDISCLI_AUTH="$HOSTLENS_REDIS_PASSWORD" redis-cli --no-auth-warning -t 5 -h {{ host | sh }} -p {{ port }} INFO persistence) || { echo "redis INFO persistence failed" >&2; exit 1; }
+    else
+      info=$(redis-cli -t 5 -h {{ host | sh }} -p {{ port }} INFO persistence) || { echo "redis INFO persistence failed" >&2; exit 1; }
+    fi
+    aof=$(printf '%s' "$info" | awk -F: '/^aof_enabled:/{gsub(/\r/,"",$2);print $2}')
+    changes=$(printf '%s' "$info" | awk -F: '/^rdb_changes_since_last_save:/{gsub(/\r/,"",$2);print $2}')
+    last=$(printf '%s' "$info" | awk -F: '/^rdb_last_save_time:/{gsub(/\r/,"",$2);print $2}')
+    case "$aof"     in ''|*[!0-9]*) echo "aof_enabled non-numeric: $aof"        >&2; exit 1;; esac
+    case "$changes" in ''|*[!0-9]*) echo "rdb_changes non-numeric: $changes"    >&2; exit 1;; esac
+    case "$last"    in ''|*[!0-9]*) echo "rdb_last_save_time non-numeric: $last" >&2; exit 1;; esac
+    printf '{"aof_enabled":%d,"rdb_changes_since_last_save":%d,"rdb_last_save_time":%d}' "$aof" "$changes" "$last"
+  timeout_seconds: 15   # client -t 5 < collect timeout (Operational Limits)
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    aof_enabled:                  { type: integer }
+    rdb_changes_since_last_save:  { type: integer }
+    rdb_last_save_time:           { type: integer }
+  required: [aof_enabled, rdb_changes_since_last_save, rdb_last_save_time]
+  additionalProperties: false
+
+findings:
+  # AOF premise gate (design D-8): only when AOF is OFF (aof_enabled == 0) is a
+  # high RDB change count a real persistence risk — with AOF on, those changes
+  # are already fsync-durable, so reporting them would be a false positive.
+  - when: "aof_enabled == 0 and rdb_changes_since_last_save >= warn_changes"
+    severity: warning
+    message: "Redis RDB snapshot debt: {rdb_changes_since_last_save} changes since last save (AOF disabled)"
