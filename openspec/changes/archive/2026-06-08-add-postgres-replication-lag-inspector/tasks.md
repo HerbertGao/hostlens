@@ -52,6 +52,6 @@
 
 - [x] 5.1 确认 `openspec-cn validate add-postgres-replication-lag-inspector --strict` 通过(已通过,实现后复跑)
 - [x] 5.2 实现完成后在 temp 副本实测 `openspec-cn archive` 的 rebuild 校验(MODIFIED 需求标题与主 spec 逐字匹配、中文标题 rebuild 通过),防归档才暴露返工(见 memory `project_openspec_modified_rename_archive`)
-- [ ] 5.2b **录制门证据落 PR**:把 task 1.2 实测的「欠权账户下 `state` / `replay_lag` 列是否 NULL」原始矩阵 + 1.3/1.4 实证(catchup 太瞬态→改 backup recipe、apply_delay lagging 窗口)粘进 PR 描述(人工 gate,类比 mysql `_BACKLOG_DOUBLINGS` 实测注释;防「门未真跑」无证据)
+- [x] 5.2b **录制门证据落 PR**:把 task 1.2 实测的「欠权账户下 `state` / `replay_lag` 列是否 NULL」原始矩阵 + 1.3/1.4 实证(catchup 太瞬态→改 backup recipe、apply_delay lagging 窗口)粘进 PR 描述(人工 gate,类比 mysql `_BACKLOG_DOUBLINGS` 实测注释;防「门未真跑」无证据)
 - [x] 5.3 全套测试绿:`pytest tests/inspectors/ tests/ -q`(双矩阵 py3.11/py3.12,py3.11-only 失败用 pyenv 3.11.15 复现)
 - [x] 5.4 PR 前对抗性 review(`/review-loop-codex`):重点 collector 归约正确性(空集 vacuous-true、NULL guard)、W3-6 防护分支、spec delta 与契约一致性
