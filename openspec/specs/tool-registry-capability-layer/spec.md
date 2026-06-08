@@ -3,9 +3,7 @@
 ## 目的
 
 定义 Hostlens 双层 Capability Registry 的 host-agnostic 层（Layer 1）：`ToolSpec` 数据模型、`ToolRegistry` 索引与查询接口、`ToolContext` 依赖注入容器、`@tool` 纯 spec factory 装饰器、`register_default_tools` 显式装配函数、`ToolError` / `ToolPolicyViolation` 异常层级，以及 M2 首批 3 个 ToolSpec（`run_inspector` / `list_inspectors` / `list_targets`）的元数据约束与 `TargetSummary` 输出脱敏策略。本规范不包含任何 surface adapter（agent / mcp / cli 投影由 surface-specific spec 描述）。
-
 ## 需求
-
 ### 需求:`ToolSpec` 数据模型必须包含完整 policy 元数据
 
 `hostlens.tools.base.ToolSpec` 必须是 Pydantic v2 模型，包含以下字段：
@@ -230,13 +228,15 @@
 
 ### 需求:M2 首批 ToolSpec 必须含 `run_inspector` / `list_inspectors` / `list_targets`
 
-`hostlens.tools.default_tools` 模块必须导出 3 个 ToolSpec，policy 元数据严格按以下取值：
+`hostlens.tools.default_tools` 模块必须导出 3 个 ToolSpec，policy 元数据严格按以下取值（M7 `add-mcp-server-surface` 把三者显式 opt-in `"mcp"` surface，向远程 LLM 暴露只读巡检三件套）：
 
 | ToolSpec | surfaces | side_effects | sensitive_output | requires_approval | timeout |
 |---|---|---|---|---|---|
-| `run_inspector` | `{"agent"}` | `"read"` | `True` | `False` | 30.0 |
-| `list_inspectors` | `{"agent"}` | `"none"` | `False` | `False` | 5.0 |
-| `list_targets` | `{"agent"}` | `"none"` | `True` | `False` | 5.0 |
+| `run_inspector` | `{"agent", "mcp"}` | `"read"` | `True` | `False` | 30.0 |
+| `list_inspectors` | `{"agent", "mcp"}` | `"none"` | `False` | `False` | 5.0 |
+| `list_targets` | `{"agent", "mcp"}` | `"none"` | `True` | `False` | 5.0 |
+
+**mcp surface 暴露的安全前提（M7）**：`list_inspectors` 无敏感数据（`sensitive_output=False`）；`list_targets` 经 `TargetSummary` 既有脱敏（本 spec §需求:`TargetSummary` 输出 schema 必须脱敏，标注 M7-safe，凭据/IP/identity 整条 skip）；`run_inspector` 为 `side_effects="read"` 且 non-CLI surface 强制 `allow_privileged=False`（Agent / MCP 均不能 opt-in 提权），命令面被 Inspector YAML manifest 封死。Diagnostician 内部编排工具（`correlate_findings` / `request_more_inspection`）**不**进 mcp surface。
 
 **handler 实现契约（M1 `add-execution-target-abstraction` 已落地 + 本变更 `add-inspector-plugin-system` 进一步落地后）**：
 
@@ -250,7 +250,7 @@
   1. 从 `ctx.target_registry.get(args.target_name)` 拿 `ExecutionTarget`；未找到 raise `ToolError("target_not_found: <detail>")`（M1.3 范围 `ToolError` 不带结构化 `kind` 字段——message 前缀 `target_not_found:` 是 stable 契约；测试断言 `"target_not_found" in str(exc)`）
   2. 从 `ctx.inspector_registry.get(args.inspector_name)` 拿 `InspectorManifest`；未找到 raise `ToolError("inspector_not_found: <detail>")`（同上 message-prefix 风格）
   3. 构造 `InspectorRunner(target_registry=ctx.target_registry, settings=ctx.config, logger=ctx.logger)`
-  4. `result = await runner.run(manifest, target, parameters=args.parameters, cancel=ctx.cancel)` —— **注意**：`allow_privileged` 在 M2 agent surface 强制 `False`（Agent 不能 opt-in privilege；只有 CLI / human approval 才能）
+  4. `result = await runner.run(manifest, target, parameters=args.parameters, cancel=ctx.cancel)` —— **注意**：`allow_privileged` 在 **non-CLI surface（agent 与 mcp 均）** 强制 `False`（Agent / MCP 远程 LLM 都不能 opt-in privilege；只有 CLI / human approval 才能）。handler 内 surface-无关地硬写 `allow_privileged=False`，M7 把 run_inspector 加入 mcp surface 后此降级对 mcp dispatch 路径同样成立
   5. 投影 `InspectorResult → RunInspectorOutput`：`target_name` ← `result.target_name`；`inspector_name` ← `result.name`；`findings` ← `[FindingSummary(severity=f.severity, message=f.message, evidence=_str_only(f.evidence)) for f in result.findings]`
   6. **重要**：`result.status != "ok"` 时仍然返回 `RunInspectorOutput`，**不**抛异常；`findings` 为空数组即可（M2 Planner Agent 通过 finding 数量为 0 + log 中的 status 字段判断是否补查；不污染 tool_use 的"成功"/"失败"两态）
   7. **修订**：`RunInspectorOutput` schema 已锁定，**不**新增 status 字段；status / error / missing 信息通过 structlog 记录但不进 tool_use 返回值；M3 `add-report-data-model` 才扩展 RunInspectorOutput 暴露 status
@@ -258,17 +258,17 @@
 #### 场景:run_inspector ToolSpec 元数据
 
 - **当** 装配后 `spec = registry.get("run_inspector")`
-- **那么** `spec.surfaces == {"agent"}` / `spec.side_effects == "read"` / `spec.sensitive_output is True` / `spec.requires_approval is False` / `spec.timeout == 30.0`
+- **那么** `spec.surfaces == {"agent", "mcp"}` / `spec.side_effects == "read"` / `spec.sensitive_output is True` / `spec.requires_approval is False` / `spec.timeout == 30.0`
 
 #### 场景:list_inspectors ToolSpec 元数据
 
 - **当** 装配后 `spec = registry.get("list_inspectors")`
-- **那么** `spec.surfaces == {"agent"}` / `spec.side_effects == "none"` / `spec.sensitive_output is False` / `spec.timeout == 5.0`
+- **那么** `spec.surfaces == {"agent", "mcp"}` / `spec.side_effects == "none"` / `spec.sensitive_output is False` / `spec.timeout == 5.0`
 
 #### 场景:list_targets ToolSpec 元数据
 
 - **当** 装配后 `spec = registry.get("list_targets")`
-- **那么** `spec.surfaces == {"agent"}` / `spec.side_effects == "none"` / `spec.sensitive_output is True` / `spec.timeout == 5.0`
+- **那么** `spec.surfaces == {"agent", "mcp"}` / `spec.side_effects == "none"` / `spec.sensitive_output is True` / `spec.timeout == 5.0`
 
 #### 场景:list_targets handler 投影真实 TargetRegistry 数据且应用脱敏 + allowlist
 
@@ -335,6 +335,11 @@
 
 - **当** manifest.privilege="sudo" 的 inspector 被 agent dispatch
 - **那么** 返回 `RunInspectorOutput.findings == []`（runner 内部判定 `requires_unmet`，missing=["privilege_opt_in"]，handler 投影时空 findings）；agent surface 永远不能 opt-in privilege
+
+#### 场景:run_inspector handler 在 mcp surface 同样强制 allow_privileged=False
+
+- **当** manifest.privilege="sudo" 的 inspector 经 **mcp dispatch**（M7 后 run_inspector 已进 mcp surface）
+- **那么** 返回 `RunInspectorOutput.findings == []`（runner 内部判定 `requires_unmet`，missing=["privilege_opt_in"]）；**MCP 远程 LLM 永远不能 opt-in privilege**，与 agent surface 对称 —— 把「Agent / MCP 均不能提权」的安全前提钉成双 surface 回归点
 
 ### 需求:`TargetSummary` 输出 schema 必须脱敏（M2 + M7-safe）
 
