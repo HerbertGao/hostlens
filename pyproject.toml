@@ -58,6 +58,9 @@ dev = [
     "syrupy>=4.6,<6",
     "types-PyYAML",
     "pip-audit>=2.7",
+    # CI (`pip install -e ".[dev]"`) needs the optional mcp SDK to run the
+    # tests/mcp_server suite; self-reference keeps the pin in one place.
+    "hostlens[mcp]",
 ]
 mcp = ["mcp>=1.27"]
 docs = []
