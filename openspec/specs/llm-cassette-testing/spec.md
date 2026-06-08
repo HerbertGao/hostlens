@@ -1,7 +1,9 @@
 # llm-cassette-testing 规范
 
 ## 目的
-待定 - 由归档变更 add-llm-cassette-testing 创建。归档后请更新目的。
+
+定义 LLM cassette 测试基础设施——`HOSTLENS_LLM_MODE` 只在测试 fixture 内分派 backend 禁接生产 `create_backend`、`llm_cassette(name)` 按名映射 cassette + 按 mode 选 backend、`RecordingBackend` 内存收集整 scenario 后原子 overwrite 写盘、检测门禁命中或异常后进 poisoned 状态不写部分 cassette、写盘前对 request 与 response 跑敏感检测门禁命中即 fail、合成 fixture 字节稳定 record→replay 不 miss、防并发覆盖、装配层强制拒绝真实 target。
+
 ## 需求
 ### 需求:`HOSTLENS_LLM_MODE` 必须只在测试 fixture 内分派 backend，禁止接入生产 `create_backend`
 

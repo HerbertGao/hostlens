@@ -1,7 +1,9 @@
 # cli-foundation 规范
 
 ## 目的
-待定 - 由归档变更 bootstrap-project-skeleton 创建。归档后请更新目的。
+
+定义 `hostlens` 全局 entrypoint 与 `doctor` 命令的基础契约(M0 范围)——`hostlens` 作为全局命令注册、`doctor` 检查本地环境健康度、`--json` 输出稳定 schema、doctor 不泄露密钥原值、非交互环境只读命令行为可预测。
+
 ## 需求
 ### 需求:`hostlens` 命令必须作为全局 entrypoint 注册
 

@@ -1,7 +1,9 @@
 # llm-backend-protocol 规范
 
 ## 目的
-待定 - 由归档变更 add-llm-backend-protocol 创建。归档后请更新目的。
+
+定义 `LLMBackend` 模型层抽象(Anthropic-schema-first 薄抽象,非 vendor-agnostic 通用包装)——`BackendCapabilities` 声明 Agent loop 使用的能力开关、`MessageResponse` 为 Pydantic v2 镜像 Anthropic Message、`BackendDiagnostics` 独立可选 duck-type Protocol、`AnthropicAPIBackend`(关 SDK 内部重试)/ `FakeBackend` / `PlaybackBackend`(cassette 回放 miss fail-fast)实现、`cache_control` 与 capability 不一致时 raise `BackendCapabilityViolation`。
+
 ## 需求
 ### 需求:`LLMBackend` Protocol 必须是 Anthropic-schema-first 薄抽象
 

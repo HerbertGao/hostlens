@@ -1,7 +1,9 @@
 # planner-agent 规范
 
 ## 目的
-待定 - 由归档变更 add-planner-agent 创建。归档后请更新目的。
+
+定义 Planner Agent 契约——装配系统提示词、经 ToolRegistry 装配并运行 AgentLoop、收敛 LoopResult 为 PlannerResult、`run` 透传 observer 到 AgentLoop。
+
 ## 需求
 ### 需求:Planner Agent 装配系统提示词
 

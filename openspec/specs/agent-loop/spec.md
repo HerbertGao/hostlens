@@ -1,7 +1,9 @@
 # agent-loop 规范
 
 ## 目的
-待定 - 由归档变更 add-agent-loop-skeleton 创建。归档后请更新目的。
+
+定义 Hostlens 手写 tool-use Agent loop(`AgentLoop`)的契约——backend 作为私有依赖注入构造器(不进 ToolContext)、构造期校验 `settings.agent` 必须存在、按 `stop_reason` 多轮推进 tool-use 循环、同一 turn 内多个 `tool_use` 并行 dispatch、`cache_control` 注入由 backend capability 决定、token 预算为 per-run 硬上限并逐轮收缩 max_tokens 强制收尾、最大 turn 数兜底、backend 限流按 retry-after 重试超限降级。
+
 ## 需求
 ### 需求:`AgentLoop` 构造契约与 backend 私有持有
 

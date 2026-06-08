@@ -1,7 +1,9 @@
 # service-inspector-suite 规范
 
 ## 目的
-待定 - 由归档变更 add-single-instance-service-inspectors 创建。归档后请更新目的。
+
+定义 service inspector 套件契约——采用追加式冻结 cohort 结构、wave-2a 覆盖单实例即时只读服务单元格 / wave-2b 覆盖累积·时间窗口服务单元格、套件内每个 inspector 遵守 service-inspector-contract 与作者契约(输出键区分聚合与列表型)、每个附 ReplayTarget fixture 与可证检出 snapshot、本套件禁止引入新基础设施。
+
 ## 需求
 ### 需求:service-inspector-suite 采用追加式冻结 cohort 结构
 

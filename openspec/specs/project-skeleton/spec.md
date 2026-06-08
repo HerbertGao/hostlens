@@ -1,7 +1,9 @@
 # project-skeleton 规范
 
 ## 目的
-待定 - 由归档变更 bootstrap-project-skeleton 创建。归档后请更新目的。
+
+定义项目脚手架基线(M0)——项目可通过 pip 一行命令安装、代码质量工具链一键运行、测试基线可跑通、CI 在 push 与 pull request 上自动运行、包结构遵循 src/ layout。
+
 ## 需求
 ### 需求:项目可通过 pip 一行命令安装
 

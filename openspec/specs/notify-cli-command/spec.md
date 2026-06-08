@@ -1,7 +1,9 @@
 # notify-cli-command 规范
 
 ## 目的
-待定 - 由归档变更 add-notifier-channels 创建。归档后请更新目的。
+
+定义 `hostlens notify` CLI 契约——`channels` 列出已配置通道且不外发、`render` dry-run 渲染默认不发、`test` 为外发操作非交互缺 `--yes` 退出 1、`doctor --check-channels` 探测通道连通性并进 `--json`。
+
 ## 需求
 ### 需求:`hostlens notify channels` 必须列出已配置通道且不外发
 

@@ -1,7 +1,9 @@
 # schedule-cli-command 规范
 
 ## 目的
-待定 - 由归档变更 add-scheduler 创建。归档后请更新目的。
+
+定义 `hostlens schedule` CLI 契约——注册 run / daemon / list / trigger / status 子命令、`trigger` 与定时 job 走同一执行体、daemon 支持 SIGTERM 优雅停机并通过 backend daemon 安全门、SIGKILL 残留有「无 Run 记录」契约、daemon 日志落文件且脱敏。
+
 ## 需求
 ### 需求:`hostlens schedule` 必须注册 run / daemon / list / trigger / status 子命令
 

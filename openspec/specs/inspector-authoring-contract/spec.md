@@ -1,7 +1,9 @@
 # inspector-authoring-contract 规范
 
 ## 目的
-待定 - 由归档变更 add-inspector-authoring-contract 创建。归档后请更新目的。
+
+定义 Inspector 作者契约——一切抽取与数值派生必须在 collector 命令内完成、collector 输出顶层键使用约定命名防 parameter 遮蔽、命令注入安全三件套必须应用、运行前提文档式声明(schema 不提供机器门)、契约由跨数据形态硬 inspector 证明且不引入新基础设施。
+
 ## 需求
 ### 需求:一切抽取与数值派生必须在 collector 命令内完成
 

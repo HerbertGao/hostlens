@@ -1,7 +1,9 @@
 # inspector-fixture-recorder 规范
 
 ## 目的
-待定 - 由归档变更 add-inspector-authoring-contract 创建。归档后请更新目的。
+
+定义 Inspector fixture 录制器契约——录制器对真实 target 执行完整采集序列并产出 ReplayTarget 兼容 fixture、产物必须脱敏 secret 且冻结非确定性采样、录制器是开发期工具禁止进入 Agent 能力面。
+
 ## 需求
 ### 需求:录制器必须对真实 target 执行完整采集序列并产出 ReplayTarget 兼容 fixture
 
