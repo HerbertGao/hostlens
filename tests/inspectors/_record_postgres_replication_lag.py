@@ -343,7 +343,8 @@ async def _record_fixtures() -> None:
     # 1) idle.json — no apply_delay, primary idle -> replay_lag NULL.
     for sb in STANDBYS:
         _set_apply_delay(sb, "0")
-    time.sleep(3)
+    # poll for the settled (NULL replay_lag) state — no fixed sleep (the reload +
+    # idle catch-up is awaited by the condition poll, keeping the no-fixed-sleep claim true).
     wait_until(lambda: _max_replay_lag_s() is None, timeout=30.0)
     text = await _record("idle.json")
     out = _triple(text)
