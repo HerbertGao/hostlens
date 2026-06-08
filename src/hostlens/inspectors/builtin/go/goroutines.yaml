@@ -1,0 +1,61 @@
+name: go.goroutines
+version: 1.0.0
+description: >
+  Count live goroutines from a Go service's pprof endpoint. Requires the
+  target process to expose net/http/pprof at pprof_endpoint (IPv4 / hostname
+  host:port; IPv6 literals are out of scope). A high or monotonically growing
+  count signals a goroutine leak. If the endpoint is unreachable or does not
+  expose pprof, the collector fails loud (status=exception) rather than
+  fabricating a healthy count.
+tags: [go, runtime]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [curl]
+privilege: none
+
+# parameters 必须是完整 JSON Schema（type: object + properties + additionalProperties:
+# false）——loader 的 `_param_type_lookup` 只从 `properties` 建参数表，缺 wrapper 会让
+# 参数对 loader 不可见、`| sh` 注入门与 pattern 约束双双静默失效。
+parameters:
+  type: object
+  properties:
+    pprof_endpoint:
+      type: string
+      pattern: "^[A-Za-z0-9._-]+:[0-9]{1,5}$"   # host:port, 收紧取值域
+      default: "127.0.0.1:6060"
+    threshold:
+      type: integer
+      default: 10000
+  additionalProperties: false
+
+collect:
+  # debug=1 的 goroutine profile 首行 "goroutine profile: total N" 含计数
+  # （net/http/pprof 实现细节，事实稳定但非版本化 API，按 best-effort 对待）。
+  # pprof_endpoint 是 string 参数，必经 `| sh` 引用（loader 对 string 参数强制，
+  # pattern 不豁免）——charset 已被 pattern 收紧，shlex.quote 对合法值是恒等变换。
+  # FAIL-LOUD（POSIX/dash-safe，沿用既有 builtin 约定——禁 `set -o pipefail`，
+  # 它非 POSIX、dash(/bin/sh on Debian/Ubuntu)会整脚本 abort exit 2 → 健康目标
+  # 也永久假 exception）：先 raw-capture curl 输出并在 curl 上判退出码（管道前），
+  # 再单独喂 awk；末行 `[ -n "$total" ] || exit 1` 二道门兜「curl exit 0 但无
+  # total 行」。只取首行 total，不下整个 profile（Operational Limits）。
+  command: |
+    raw=$(curl -fsS --max-time 5 "http://{{ pprof_endpoint | sh }}/debug/pprof/goroutine?debug=1" 2>/dev/null) || exit 1
+    total=$(printf '%s\n' "$raw" | awk '/^goroutine profile: total/ { print $4; exit }')
+    [ -n "$total" ] || exit 1
+    printf '{"goroutines":%s}' "$total"
+  timeout_seconds: 10
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    goroutines: { type: integer }
+  required: [goroutines]
+  additionalProperties: false
+
+findings:
+  - when: "goroutines > threshold"
+    severity: warning
+    message: "goroutine 数 {goroutines} 超过阈值 {threshold}，疑似泄漏"

@@ -423,6 +423,247 @@ class TestOsShellWave2NoExternalServiceDependency:
         )
 
 
+# --------------------------------------------------------------------------- #
+# add-runtime-inspectors — runtime cohort clean registration (tasks.md §4.1/4.3)
+# --------------------------------------------------------------------------- #
+#
+# The 5 runtime (语言运行时) inspectors — 3 JVM + 2 Go — keyed by registry `name`
+# → on-disk yaml path (relative to `builtin/`). This is the 归档时冻结的 runtime
+# 清单 the runtime-inspector-suite spec §需求:runtime-inspector-suite 必须按运行时
+# 域覆盖 JVM 与 Go references; it must stay in lockstep with the manifests shipped
+# under builtin/{jvm,go}/.
+#
+# IMPORTANT — this `runtime` cohort is a DISTINCT suite from BOTH:
+#   * the service-inspector-suite's `_WAVE2A_INSPECTORS` (==6) /
+#     `_WAVE2B_INSPECTORS` (==3) above, and
+#   * the os-shell-inspector-suite's `_OS_SHELL_WAVE2_SECURITY_PKG_INSPECTORS`
+#     (==6) above and `_WAVE1_INSPECTORS` (==23).
+# Per spec §需求 it is另立 capability 而非塞进 os-shell / service 套件 — its
+# premise is「目标运行时进程/端点在场」, orthogonal to the os-shell「零外部依赖」
+# invariant and the service「单实例 + 连接 secret」shape. A DEDICATED, non-
+# colliding symbol name (`_RUNTIME_INSPECTORS` /
+# `test_runtime_count_is_frozen_at_5`) is used on purpose: reusing a `_WAVE2A_*`
+# / `_OS_SHELL_WAVE2_*` symbol would shadow it within this module and silently
+# swallow another cohort's count guard. These are independent dicts that do NOT
+# touch each other's frozen counts.
+
+_RUNTIME_INSPECTORS: dict[str, str] = {
+    # JVM 域 (builtin/jvm/) — 3 inspector
+    "jvm.heap": "jvm/heap.yaml",
+    "jvm.gc": "jvm/gc.yaml",
+    "jvm.threads": "jvm/threads.yaml",
+    # Go 域 (builtin/go/) — 2 inspector
+    "go.goroutines": "go/goroutines.yaml",
+    "go.heap": "go/heap.yaml",
+}
+
+
+class TestRuntimeSuiteRegistration:
+    """tasks.md §4.1 — every runtime inspector loads clean + registers with
+    errors == []. Distinct suite from the service wave-2a/2b cohorts and the
+    os-shell wave-1 / wave-2 security/pkg cohorts above (independent dict, no
+    cross-cohort count coupling)."""
+
+    def test_runtime_count_is_frozen_at_5(self) -> None:
+        # The runtime-inspector-suite spec freezes the cohort at exactly 5
+        # inspectors (3 JVM + 2 Go — JVM 域 ≥3, Go 域 ≥2). A drift (a 6th added
+        # here without a new change) fails loud. Dedicated symbol — NOT the
+        # service `_WAVE2A_*` / os-shell `_OS_SHELL_WAVE2_*` guards.
+        assert len(_RUNTIME_INSPECTORS) == 5
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted(_RUNTIME_INSPECTORS.items()),
+        ids=sorted(_RUNTIME_INSPECTORS),
+    )
+    def test_runtime_manifest_loads_clean(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        # `name` in the yaml must match the registry key we expect.
+        assert manifest.name == name
+
+    def test_runtime_inspectors_all_register_with_no_errors(self) -> None:
+        result = build_registry_from_search_paths([], settings=Settings())
+        assert result.errors == []
+        registered = set(result.registry.names())
+        missing = set(_RUNTIME_INSPECTORS) - registered
+        assert not missing, f"runtime inspectors absent from registry: {sorted(missing)}"
+
+
+class TestRuntimeCohortIsDistinctFromOtherSuites:
+    """tasks.md §4.3 — the runtime cohort is its own domain (runtime), NOT
+    os-shell wave-2 nor service. Prove the dicts are disjoint so no cohort's
+    frozen count is silently coupled to another's.
+
+    The service crosscheck names are pinned literally here (rather than imported
+    from the sibling test module — CI runs with pythonpath=src and no
+    `tests/__init__.py`, so a `from tests.inspectors...` import would crash). The
+    literal list is the 11 = 2 spike + 6 wave-2a + 3 wave-2b service inspectors
+    enumerated in test_service_contract_crosscheck.py's `_ALL_SERVICE_MANIFESTS`;
+    the disjointness assertion is what matters."""
+
+    _SERVICE_CROSSCHECK_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "redis.memory_usage",
+            "mysql.connection_usage",
+            "redis.persistence",
+            "postgres.connection_usage",
+            "docker.images.disk_usage",
+            "docker.networks",
+            "nginx.health",
+            "nginx.config_test",
+            "mysql.slow_queries",
+            "postgres.long_queries",
+            "nginx.error_rate",
+        }
+    )
+
+    def test_runtime_disjoint_from_service_crosscheck(self) -> None:
+        overlap = set(_RUNTIME_INSPECTORS) & self._SERVICE_CROSSCHECK_NAMES
+        assert not overlap, (
+            f"runtime inspectors leaked into the service crosscheck cohort: {sorted(overlap)}"
+        )
+
+    def test_runtime_disjoint_from_os_shell_wave2_security_pkg(self) -> None:
+        overlap = set(_RUNTIME_INSPECTORS) & set(_OS_SHELL_WAVE2_SECURITY_PKG_INSPECTORS)
+        assert not overlap, (
+            f"runtime inspectors leaked into the os-shell wave-2 security/pkg "
+            f"cohort: {sorted(overlap)}"
+        )
+
+    def test_runtime_disjoint_from_os_shell_wave1(self) -> None:
+        overlap = set(_RUNTIME_INSPECTORS) & set(_WAVE1_INSPECTORS)
+        assert not overlap, (
+            f"runtime inspectors leaked into the os-shell wave-1 cohort: {sorted(overlap)}"
+        )
+
+
+class TestRuntimeParameterisationAndInjectionSafety:
+    """tasks.md §4.3 — spec §需求:套件内每个 inspector 必须参数化目标运行时进程
+    或端点且参数注入安全.
+
+    Per the suite spec:
+      * every manifest's `parameters` is a complete JSON Schema (type: object +
+        properties + additionalProperties: false);
+      * every JVM manifest exposes `pid` (type integer) OR `process_pattern`
+        (type string) to parameterise the target;
+      * every Go manifest exposes `pprof_endpoint` (type string);
+      * every string target param inserted into an executable position flows
+        through `{{ x | sh }}` AND carries a non-empty `pattern` (so the
+        injection面 stays收紧 — a bare `{{ param }}` would re-open it);
+      * `pprof_endpoint`'s pattern is a host:port form (contains `:[0-9]`).
+    Forbidden-tool reasoning uses an EXPLICIT frozenset so the binary assertion
+    is non-vacuous.
+    """
+
+    _JVM_NAMES: ClassVar[frozenset[str]] = frozenset({"jvm.heap", "jvm.gc", "jvm.threads"})
+    _GO_NAMES: ClassVar[frozenset[str]] = frozenset({"go.goroutines", "go.heap"})
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted(_RUNTIME_INSPECTORS.items()),
+        ids=sorted(_RUNTIME_INSPECTORS),
+    )
+    def test_parameters_is_complete_json_schema(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        params = manifest.parameters
+        assert params is not None, name
+        assert params.get("type") == "object", name
+        assert isinstance(params.get("properties"), dict), name
+        # additionalProperties: false —缺 wrapper/松开会让 loader 看不到参数、`| sh`
+        # 门与 pattern 双双静默失效。
+        assert params.get("additionalProperties") is False, name
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted({k: _RUNTIME_INSPECTORS[k] for k in _JVM_NAMES}.items()),
+        ids=sorted(_JVM_NAMES),
+    )
+    def test_jvm_target_parameterised_by_pid_or_process_pattern(
+        self, name: str, rel_path: str
+    ) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        props = manifest.parameters["properties"]  # type: ignore[index]
+        # Contract (spec §参数化目标) is `pid` OR `process_pattern` — require at
+        # least one; do NOT mandate both (a compliant JVM inspector may ship only
+        # one). Validate the type only for the key(s) actually present.
+        has_pid = "pid" in props
+        has_pattern = "process_pattern" in props
+        assert has_pid or has_pattern, (
+            f"{name}: JVM inspector must parameterise the target via pid(int) or "
+            f"process_pattern(str)"
+        )
+        if has_pid:
+            assert props["pid"].get("type") == "integer", f"{name}: pid must be type integer"
+        if has_pattern:
+            assert props["process_pattern"].get("type") == "string", (
+                f"{name}: process_pattern must be type string"
+            )
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted({k: _RUNTIME_INSPECTORS[k] for k in _GO_NAMES}.items()),
+        ids=sorted(_GO_NAMES),
+    )
+    def test_go_target_parameterised_by_pprof_endpoint(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        props = manifest.parameters["properties"]  # type: ignore[index]
+        endpoint = props.get("pprof_endpoint")
+        assert isinstance(endpoint, dict), f"{name}: Go inspector must declare pprof_endpoint"
+        assert endpoint.get("type") == "string", f"{name}: pprof_endpoint must be type string"
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted(_RUNTIME_INSPECTORS.items()),
+        ids=sorted(_RUNTIME_INSPECTORS),
+    )
+    def test_string_target_params_are_sh_quoted_and_pattern_tightened(
+        self, name: str, rel_path: str
+    ) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        props: dict[str, dict[str, object]] = manifest.parameters["properties"]  # type: ignore[index]
+        cmd = manifest.collect.command
+        # The string target params that flow into the executable command. `pid`
+        # is an integer (no shell-injection surface) and is excluded by design.
+        for param in ("process_pattern", "pprof_endpoint"):
+            spec = props.get(param)
+            if spec is None:
+                continue
+            assert spec.get("type") == "string", f"{name}: {param} must be type string"
+            # Tightened value domain — a non-empty `pattern` is mandatory; a bare
+            # interpolation would re-open the injection面.
+            pattern = spec.get("pattern")
+            assert isinstance(pattern, str) and pattern, (
+                f"{name}: {param} must carry a non-empty pattern to收紧取值域"
+            )
+            # If the param is interpolated into the command it MUST go through
+            # `{{ param | sh }}` — never a bare `{{ param }}` in an executable
+            # position. Match an actual Jinja interpolation (whitespace-robust)
+            # rather than a loose substring, and only enforce `| sh` when such an
+            # interpolation is present.
+            interp = re.search(r"\{\{\s*" + re.escape(param) + r"\b", cmd)
+            if interp:
+                assert re.search(r"\{\{\s*" + re.escape(param) + r"\s*\|\s*sh\s*\}\}", cmd), (
+                    f"{name}: {param} must be referenced via {{{{ {param} | sh }}}} "
+                    f"(no bare interpolation into the command)"
+                )
+
+    @pytest.mark.parametrize(
+        "name,rel_path",
+        sorted({k: _RUNTIME_INSPECTORS[k] for k in _GO_NAMES}.items()),
+        ids=sorted(_GO_NAMES),
+    )
+    def test_pprof_endpoint_pattern_is_host_port_form(self, name: str, rel_path: str) -> None:
+        manifest = load_manifest(_builtin_root() / rel_path)
+        props = manifest.parameters["properties"]  # type: ignore[index]
+        pattern = props["pprof_endpoint"]["pattern"]
+        # host:port form — the pattern must constrain a numeric port segment
+        # (`:[0-9]`),杜绝 `;` / 空格 / `$()` 注入字符.
+        assert ":[0-9]" in pattern, (
+            f"{name}: pprof_endpoint pattern must be a host:port form "
+            f"(contain ':[0-9]'); got {pattern!r}"
+        )
+
+
 class TestWave1SuiteRegistration:
     """tasks.md §10.1 — every wave-1 inspector loads clean + registers."""
 

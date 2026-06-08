@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v curl",
+      "stdout": "/usr/bin/curl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "raw=$(curl -fsS --max-time 5 \"http://127.0.0.1:6060/debug/pprof/heap?debug=1\" 2>/dev/null) || exit 1\ninuse=$(printf '%s\\n' \"$raw\" | awk '/^# HeapInuse = / { print $4; exit }')\n[ -n \"$inuse\" ] || exit 1\nalloc=$(printf '%s\\n' \"$raw\" | awk '/^# HeapAlloc = / { print $4; exit }')\nif [ -n \"$alloc\" ]; then\n  printf '{\"heap_inuse_bytes\":%s,\"heap_alloc_bytes\":%s}' \"$inuse\" \"$alloc\"\nelse\n  printf '{\"heap_inuse_bytes\":%s}' \"$inuse\"\nfi",
+      "stdout": "",
+      "stderr": "curl: (7) connection refused\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

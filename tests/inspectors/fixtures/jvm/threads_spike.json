@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v jcmd",
+      "stdout": "/usr/bin/jcmd\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "pid=4242\nif [ \"$pid\" -le 0 ]; then\n  pat=''\n  [ -n \"$pat\" ] || exit 1\n  pid=$(pgrep -f -- \"$pat\" 2>/dev/null | head -n 1)\n  [ -n \"$pid\" ] || exit 1\nfi\nraw=$(jcmd \"$pid\" Thread.print) || exit 1\nout=$(printf '%s\\n' \"$raw\" | awk '\n  /^\"/ { total++ }\n  /java.lang.Thread.State: BLOCKED/ { blocked++ }\n  END { printf \"%d %d\", total+0, blocked+0 }')\ntotal=$(printf '%s' \"$out\" | awk '{print $1}')\nblocked=$(printf '%s' \"$out\" | awk '{print $2}')\n[ -n \"$total\" ] || exit 1\n[ \"$total\" -gt 0 ] || exit 1\nprintf '{\"thread_total\":%s,\"blocked_total\":%s}' \"$total\" \"$blocked\"",
+      "stdout": "{\"thread_total\":700,\"blocked_total\":3}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

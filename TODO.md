@@ -429,7 +429,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **退出条件**：覆盖矩阵下每个域至少有 3 个 Inspector，总计 ≥40 个，每个 Inspector 有 manifest + snapshot 测试 + 在 `examples/` 里有可 replay 的 fixture。
 
-**状态：🚧 进行中（主体已成型）**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **59 个** inspector（总数已过 ≥40 门槛），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/**security/包管理**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`。**剩余域（达退出条件前待补）**：TLS chain validity（`add-tls-chain-validity-inspector` 已提案）、语言运行时 JVM / Go（`add-runtime-inspectors` 已提案）、部分 DB（redis.slowlog 的 seed 漂移迁移）；K8s 域待 **M8** target 就位。
+**状态：🚧 进行中（主体已成型）**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **64 个** inspector（总数已过 ≥40 门槛），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/**security/包管理**/**语言运行时 JVM·Go**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`；运行时 JVM·Go（`add-runtime-inspectors`）已实现待归档。**剩余域（达退出条件前待补）**：TLS chain validity（`add-tls-chain-validity-inspector` 已提案）、部分 DB（redis.slowlog 的 seed 漂移迁移）；K8s 域待 **M8** target 就位。
 
 ### 覆盖矩阵
 
@@ -452,8 +452,8 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 | Redis | memory / persistence / replication / slowlog | — | redis.memory_usage, redis.persistence ✅, redis.replication_lag, redis.slowlog |
 | Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy（由 docker.containers.restart_loop 覆盖、不单列）, docker.containers.restart_loop, docker.images.disk_usage ✅, docker.networks ✅ |
 | K8s（M8 target 就位后） | pod OOM history / evicted / pending / node pressure | — | k8s.pods.oom_history, k8s.pods.evicted, k8s.pods.pending, k8s.nodes.pressure |
-| 运行时（JVM） | heap usage / GC pressure / thread count | — | jvm.heap, jvm.gc, jvm.threads |
-| 运行时（Go） | goroutine count / heap from pprof | — | go.goroutines, go.heap |
+| 运行时（JVM） | heap usage / GC pressure / thread count | — | jvm.heap ✅, jvm.gc ✅, jvm.threads ✅ |
+| 运行时（Go） | goroutine count / heap from pprof | — | go.goroutines ✅, go.heap ✅ |
 | 日志 | error burst / exception 突增 | log.tail.error_burst | log.exception_burst ✅ |
 
 > 说明：「M2 计划基线」列列出 §M2.8 **已交付**的 Inspector（见 `src/hostlens/inspectors/builtin/`，PR #38/#42）；M6 在此基础上按域扩充。每个 Inspector 落地时必须勾上覆盖矩阵对应单元格。
@@ -469,7 +469,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [ ] **6.6 MySQL / PostgreSQL**（含真实 SQL 模板，如 postgres bloat 用 `pg_stat_user_tables` 的具体查询，参考 docs/ARCHITECTURE.md §4 复杂示例 2）
 - [ ] **6.7 Redis**（memory_usage, persistence, replication_lag, slowlog）
 - [ ] **6.8 Docker（SSH 跨）**（containers.unhealthy, containers.restart_loop, images.disk_usage, networks）
-- [ ] **6.9 JVM / Go 运行时**（jvm.heap, jvm.gc, jvm.threads, go.goroutines, go.heap）
+- [x] **6.9 JVM / Go 运行时**（jvm.heap, jvm.gc, jvm.threads, go.goroutines, go.heap）—— 已实现，待归档 `add-runtime-inspectors`
 - [ ] **6.10 进程 + 内核 + 日志**（process.zombies, process.total, process.critical_alive, system.reboot_required, system.kernel_taint, log.exception_burst）
 - [ ] 验收：每个 Inspector 必须有 fixture + snapshot 测试 + 覆盖矩阵里的位置勾上 + 在 `examples/` 里给出至少一个 demo 场景
 
