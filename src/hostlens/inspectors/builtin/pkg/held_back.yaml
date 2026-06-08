@@ -13,7 +13,7 @@ requires_capabilities: [shell]
 # requires_binaries — hardcoding a package-manager tool breaks the other
 # distro family at preflight. Package-manager presence is decided in-collector
 # via `command -v` + fail-loud. Only the always-present text tools are listed.
-requires_binaries: [awk, grep]
+requires_binaries: [awk]
 privilege: none
 
 collect:
@@ -33,6 +33,16 @@ collect:
   # are wrapped in `{"results": [...]}` (`results`, not a parameter name,
   # dodges the output/parameter shadowing trap). awk emits the JSON array; the
   # Finding DSL only iterates the ready `results` array.
+  #
+  # Both `apt-mark showhold` and `dnf versionlock list` emit one hold/lock
+  # entry per line as a SINGLE whitespace-free token (package name, or NVRA
+  # glob like `nginx-0:1.20.1-1.el9.*`). dnf, however, can interleave NON-entry
+  # lines: a "Last metadata expiration check: ..." banner (multi-field, NF>1)
+  # and `#`-prefixed comment lines. So we ONLY emit lines with exactly one
+  # field that is not a `#` comment — this drops dnf banners/comments without
+  # touching the clean apt-mark output. (Exact dnf versionlock output format
+  # varies by dnf4/dnf5 + plugins → precision verified on a real dnf host via
+  # the Demo Path, see tasks.md deviation registry.)
   command: |
     if command -v apt-mark >/dev/null 2>&1; then
       raw=$(apt-mark showhold 2>/dev/null) \
@@ -47,12 +57,9 @@ collect:
     printf '%s\n' "$raw" | awk '
       function esc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s }
       BEGIN{ printf "{\"results\":["; sep="" }
-      {
-        pkg=$1
-        if (pkg != "") {
-          printf "%s{\"package\":\"%s\"}", sep, esc(pkg)
-          sep=","
-        }
+      NF == 1 && $1 !~ /^#/ {
+        printf "%s{\"package\":\"%s\"}", sep, esc($1)
+        sep=","
       }
       END{ printf "]}" }
     '

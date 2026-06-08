@@ -16,7 +16,7 @@ requires_capabilities: [shell]
 # `sh` is the interpreter, not a `command -v`-probed semantic tool, so it is
 # not listed either (wave-1 convention: requires_binaries holds real tools).
 # Package-manager presence is decided in-collector by `command -v` + fail-loud.
-requires_binaries: [awk, grep]
+requires_binaries: [grep]
 privilege: none
 
 parameters:

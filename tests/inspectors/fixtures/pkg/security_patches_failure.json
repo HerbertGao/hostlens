@@ -5,13 +5,6 @@
   ],
   "commands": [
     {
-      "cmd": "command -v awk",
-      "stdout": "/usr/bin/awk\n",
-      "stderr": "",
-      "exit_code": 0,
-      "duration_seconds": 0.0
-    },
-    {
       "cmd": "command -v grep",
       "stdout": "/usr/bin/grep\n",
       "stderr": "",

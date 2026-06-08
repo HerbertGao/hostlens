@@ -399,9 +399,9 @@ _OS_SHELL_WAVE2_BINARY_CASES: list[tuple[str, str, set[str]]] = [
     ("security.failed_logins", "security/failed_logins.yaml", {"journalctl", "grep"}),
     ("security.sudo_history", "security/sudo_history.yaml", {"journalctl", "grep"}),
     ("security.world_writable_dirs", "security/world_writable_dirs.yaml", {"find", "awk"}),
-    ("pkg.pending_updates", "pkg/pending_updates.yaml", {"awk", "grep"}),
-    ("pkg.security_patches", "pkg/security_patches.yaml", {"awk", "grep"}),
-    ("pkg.held_back", "pkg/held_back.yaml", {"awk", "grep"}),
+    ("pkg.pending_updates", "pkg/pending_updates.yaml", {"grep"}),
+    ("pkg.security_patches", "pkg/security_patches.yaml", {"grep"}),
+    ("pkg.held_back", "pkg/held_back.yaml", {"awk"}),
 ]
 
 

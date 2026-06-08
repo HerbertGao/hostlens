@@ -19,7 +19,7 @@ requires_capabilities: [shell]
 # break the other distro family at preflight); `sh` is not a probed tool.
 # Package-manager presence is decided in-collector via `command -v` +
 # fail-loud. Only the always-present text tools are required.
-requires_binaries: [awk, grep]
+requires_binaries: [grep]
 privilege: none
 
 collect:

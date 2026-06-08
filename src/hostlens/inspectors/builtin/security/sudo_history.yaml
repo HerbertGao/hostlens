@@ -42,15 +42,20 @@ collect:
   # `journalctl --since` reads a bare timestamp in the system local timezone,
   # so TZ=UTC realigns the window to the injected UTC value.
   #
-  # The count is the number of journal lines emitted under _COMM=sudo within
-  # the window (sudo logs one "session opened"/"COMMAND=" line per invocation).
-  # `grep -c '' || true` counts non-empty lines; the `|| true` only excuses the
-  # zero-match case — journalctl failure was already caught above.
+  # Count DISTINCT sudo command invocations by matching the `COMMAND=` line
+  # (sudo logs exactly one `... ; COMMAND=/path/...` line per command it runs).
+  # We must NOT `grep -c "sudo"` the raw _COMM=sudo output — a single sudo run
+  # emits several lines (the COMMAND= line PLUS PAM `session opened`/`session
+  # closed` lines), so counting any-line-containing-"sudo" inflates the count
+  # ~2-3x. `grep -c "COMMAND="` is one match per invocation. `|| true` only
+  # excuses the zero-match case — journalctl failure was already caught above.
+  # (dnf/journald output format precision → real-machine Demo Path, see
+  # tasks.md deviation registry.)
   command: |
     raw=$(TZ=UTC journalctl _COMM=sudo \
       --since "{{ window_start }}" --no-pager 2>/dev/null) \
       || { echo "journalctl unavailable" >&2; exit 1; }
-    count=$(printf '%s\n' "$raw" | grep -c "sudo" || true)
+    count=$(printf '%s\n' "$raw" | grep -c "COMMAND=" || true)
     printf '{"invocations":%d}' "$count"
   timeout_seconds: 30
 

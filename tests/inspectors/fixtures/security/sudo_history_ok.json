@@ -19,7 +19,7 @@
       "duration_seconds": 0.0
     },
     {
-      "cmd": "raw=$(TZ=UTC journalctl _COMM=sudo \\\n  --since \"2026-01-02 11:00:00\" --no-pager 2>/dev/null) \\\n  || { echo \"journalctl unavailable\" >&2; exit 1; }\ncount=$(printf '%s\\n' \"$raw\" | grep -c \"sudo\" || true)\nprintf '{\"invocations\":%d}' \"$count\"",
+      "cmd": "raw=$(TZ=UTC journalctl _COMM=sudo \\\n  --since \"2026-01-02 11:00:00\" --no-pager 2>/dev/null) \\\n  || { echo \"journalctl unavailable\" >&2; exit 1; }\ncount=$(printf '%s\\n' \"$raw\" | grep -c \"COMMAND=\" || true)\nprintf '{\"invocations\":%d}' \"$count\"",
       "stdout": "{\"invocations\":5}",
       "stderr": "",
       "exit_code": 0,
