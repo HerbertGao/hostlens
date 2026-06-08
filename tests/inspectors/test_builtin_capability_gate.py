@@ -430,3 +430,81 @@ def test_os_shell_wave2_capability_and_binary_gate(
     binaries = set(manifest.requires_binaries)
     assert binaries == expected_binaries, name
     assert "sh" not in binaries, f"{name}: `sh` must not be a required binary"
+
+
+# --------------------------------------------------------------------------- #
+# add-runtime-inspectors — runtime capability/binary gate (tasks.md §4.2)
+# --------------------------------------------------------------------------- #
+#
+# Spec §需求:套件内每个 inspector 必须在目标进程或端点不在场时 fail-loud + §零对外
+# 契约变更 — every runtime (JVM/Go) inspector must declare `privilege: none`, gate
+# only on the statically-present `{shell}` capability, and list ONLY the real
+# tool(s) its `collect.command` actually invokes in `requires_binaries`. Because
+# `requires_binaries` is a CONJUNCTIVE gate (every listed binary must be present
+# or the runner skips with requires_unmet), each JVM manifest MUST list ONLY the
+# JDK tool it uses — `jvm.heap`/`jvm.gc` invoke `jstat` → [jstat]; `jvm.threads`
+# invokes `jcmd` → [jcmd]; listing BOTH would falsely requires_unmet a JRE-
+# trimmed host that ships only one. Go inspectors invoke `curl` → [curl]. The
+# expected binary sets are pinned literally so a manifest that drops the real
+# tool or smuggles the interpreter `sh` fails loud. The allowed-tool universe is
+# an EXPLICIT frozenset (NOT an open "等" set) so the membership guard is
+# non-vacuous.
+
+# Closed, explicit universe of real runtime tools this cohort may require. Used
+# to assert membership非空且 (a) every required binary is a known runtime tool,
+# (b) `jstat` and `jcmd` are never co-listed on the same manifest.
+_RUNTIME_ALLOWED_BINARIES: frozenset[str] = frozenset({"jstat", "jcmd", "curl"})
+
+# (registry name, yaml rel path, expected requires_binaries set) — only the tool
+# the command actually invokes.
+_RUNTIME_BINARY_CASES: list[tuple[str, str, set[str]]] = [
+    ("jvm.heap", "jvm/heap.yaml", {"jstat"}),
+    ("jvm.gc", "jvm/gc.yaml", {"jstat"}),
+    ("jvm.threads", "jvm/threads.yaml", {"jcmd"}),
+    ("go.goroutines", "go/goroutines.yaml", {"curl"}),
+    ("go.heap", "go/heap.yaml", {"curl"}),
+]
+
+
+@pytest.mark.parametrize(
+    "name,rel_path,expected_binaries",
+    _RUNTIME_BINARY_CASES,
+    ids=[c[0] for c in _RUNTIME_BINARY_CASES],
+)
+def test_runtime_capability_and_binary_gate(
+    name: str, rel_path: str, expected_binaries: set[str]
+) -> None:
+    manifest = load_manifest(_BUILTIN_DIR / rel_path)
+    assert manifest.name == name
+
+    # privilege: none — 禁在 inspector 内自动 sudo attach.
+    assert manifest.privilege == "none", name
+
+    # Gate ONLY on the statically-present {shell} capability (preflight runs
+    # before any exec, so a lazily-probed capability would falsely requires_unmet
+    # on a capable host — Authoring Contract rule 9). This cohort uses只 `shell`.
+    assert set(manifest.requires_capabilities) == {"shell"}, name
+
+    binaries = set(manifest.requires_binaries)
+    # EXACT real tool(s) the command invokes — never the interpreter `sh`.
+    assert binaries == expected_binaries, name
+    assert "sh" not in binaries, f"{name}: `sh` must not be a required binary"
+    # Every required binary is a known runtime tool (non-vacuous, closed set).
+    leaked = binaries - _RUNTIME_ALLOWED_BINARIES
+    assert not leaked, f"{name}: requires_binaries has unexpected tool(s) {sorted(leaked)}"
+
+
+def test_runtime_jvm_never_co_lists_jstat_and_jcmd() -> None:
+    """tasks.md §4.2 — `requires_binaries` is a CONJUNCTIVE gate, so NO JVM
+    manifest may list BOTH `jstat` and `jcmd`: a JRE-trimmed host shipping only
+    one would falsely requires_unmet. Each JVM manifest lists只 the tool its
+    command invokes."""
+
+    for name, rel_path, _ in _RUNTIME_BINARY_CASES:
+        if not name.startswith("jvm."):
+            continue
+        binaries = set(load_manifest(_BUILTIN_DIR / rel_path).requires_binaries)
+        assert not ({"jstat", "jcmd"} <= binaries), (
+            f"{name}: must NOT co-list jstat AND jcmd (conjunctive gate would "
+            f"falsely requires_unmet a host with only one)"
+        )

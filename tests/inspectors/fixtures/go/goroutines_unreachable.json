@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v curl",
+      "stdout": "/usr/bin/curl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "raw=$(curl -fsS --max-time 5 \"http://127.0.0.1:6060/debug/pprof/goroutine?debug=1\" 2>/dev/null) || exit 1\ntotal=$(printf '%s\\n' \"$raw\" | awk '/^goroutine profile: total/ { print $4; exit }')\n[ -n \"$total\" ] || exit 1\nprintf '{\"goroutines\":%s}' \"$total\"",
+      "stdout": "",
+      "stderr": "curl: (7) connection refused\n",
+      "exit_code": 1,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

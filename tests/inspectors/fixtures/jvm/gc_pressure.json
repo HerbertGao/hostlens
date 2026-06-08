@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v jstat",
+      "stdout": "/usr/bin/jstat\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "pid=4242\nif [ \"$pid\" -le 0 ]; then\n  pat=''\n  [ -n \"$pat\" ] || exit 1\n  pid=$(pgrep -f -- \"$pat\" 2>/dev/null | head -n 1)\n  [ -n \"$pid\" ] || exit 1\nfi\ns1=$(jstat -gcutil \"$pid\") || exit 1\nsleep 5\ns2=$(jstat -gcutil \"$pid\") || exit 1\nout=$(printf '%s\\n===\\n%s\\n' \"$s1\" \"$s2\" | awk -v win=5 '\n  function val(name,  i){ return $(col[name]) }\n  /^===$/ { phase=2; next }\n  # Record FGC/GCT presence at HEADER time via a membership test (`in` does\n  # not vivify) BEFORE any data-row val() does `$(col[name])` — that deref\n  # auto-vivifies the key, so a post-hoc `\"FGC\" in col` END check would be a\n  # dead no-op under mawk (the Debian/Ubuntu default awk). hdr_ok captures\n  # the true header state. heap.yaml is immune the same way (gate-before-deref).\n  /FGC/ { for (i=1;i<=NF;i++) col[$i]=i; hdr_ok = ((\"FGC\" in col) && (\"GCT\" in col)); next }\n  {\n    if (phase==2) { fgc2=val(\"FGC\"); gct2=val(\"GCT\") }\n    else          { fgc1=val(\"FGC\"); gct1=val(\"GCT\") }\n  }\n  END {\n    # Fail loud (empty out → exit 1 gate) if the header lacked FGC/GCT\n    # (e.g. JDK column drift) rather than diffing field-0 garbage.\n    if (!hdr_ok) { exit }\n    fgcd = fgc2 - fgc1; if (fgcd < 0) fgcd = 0\n    gctd = gct2 - gct1; if (gctd < 0) gctd = 0\n    pct = (win > 0 ? gctd/win*100 : 0)\n    printf \"%d %.1f\", fgcd, pct\n  }')\nfgc_delta=$(printf '%s' \"$out\" | awk '{print $1}')\ngc_time_pct=$(printf '%s' \"$out\" | awk '{print $2}')\n[ -n \"$fgc_delta\" ] || exit 1\n[ -n \"$gc_time_pct\" ] || exit 1\nprintf '{\"full_gc_delta\":%s,\"gc_time_pct\":%s}' \"$fgc_delta\" \"$gc_time_pct\"",
+      "stdout": "{\"full_gc_delta\":8,\"gc_time_pct\":2.0}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

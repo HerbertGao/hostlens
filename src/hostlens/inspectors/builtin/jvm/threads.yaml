@@ -1,0 +1,98 @@
+name: jvm.threads
+version: 1.0.0
+description: >-
+  Report a JVM's live thread count (the stable primary signal) and BLOCKED
+  thread count (supplemental evidence) from `jcmd <pid> Thread.print`. The
+  target JVM is located by `pid` (integer) or, if pid is unset (0), by
+  `process_pattern` resolved through `pgrep`. The thread total is counted in the
+  collector by matching the per-thread stack-header lines that `Thread.print`
+  emits (lines beginning with a quoted thread name); BLOCKED threads are counted
+  from the `java.lang.Thread.State: BLOCKED` lines. The finding LOCKS on the
+  thread-total-over-threshold signal (stable across JDK versions); the BLOCKED
+  count rides along as additional evidence in the message (its cross-JDK
+  formatting stability is verified at fixture-recording time per design's open
+  question — if unstable it stays best-effort evidence, never a finding gate).
+
+  Run prerequisite (documented, not a schema gate): jcmd can only attach to a
+  JVM owned by the SAME UID as the collector (or root). A cross-user attach is
+  refused → jcmd exits non-zero → status=exception, never a fabricated
+  "threads healthy". The inspector does NOT auto-sudo (privilege: none).
+tags: [jvm, runtime, threads, jcmd]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [jcmd]
+privilege: none
+
+# `parameters` MUST be a complete JSON Schema (type: object + properties +
+# additionalProperties: false) — see jvm.heap for why the wrapper is
+# load-bearing. `pid` is an integer (no shell-injection surface, interpolated
+# bare). `process_pattern` is a string and MUST flow through `{{ x | sh }}`;
+# its `pattern` tightens the value domain.
+parameters:
+  type: object
+  properties:
+    pid:
+      type: integer
+      minimum: 0
+      default: 0
+    process_pattern:
+      type: string
+      pattern: "^[A-Za-z0-9._/-]*$"   # `*` not `+`: empty default ("") is the unset sentinel; collector guards `[ -n "$pat" ]`
+      default: ""
+    max_threads:
+      type: integer
+      default: 500
+  additionalProperties: false
+
+collect:
+  # FAIL-LOUD, double-gate (design D-6 / D-6.0 / D-6.1), identical discipline to
+  # jvm.heap: `set -o pipefail` is FORBIDDEN (dash aborts the whole script);
+  # `jcmd` is raw-captured and its exit code checked ON the jcmd command before
+  # any pipe; an empty `pgrep` result fails loud (not "0 → ok"); and after
+  # counting, the derived total is checked non-empty (`[ -n "$total" ] || exit
+  # 1`) — the exit code alone is NOT trusted. (jcmd that fails to attach can
+  # print an error yet the awk count would be 0/empty; the non-empty gate plus
+  # the exit-code gate together keep "cannot read" → exception.)
+  #
+  # Counting (load-bearing wall 1): each live thread's stack starts with a line
+  # whose first character is a double-quote (the quoted thread name). awk counts
+  # those header lines for the total, and counts the BLOCKED state lines
+  # separately. Both are scalars; the Finding DSL only thresholds the total.
+  command: |
+    pid={{ pid }}
+    if [ "$pid" -le 0 ]; then
+      pat={{ process_pattern | sh }}
+      [ -n "$pat" ] || exit 1
+      pid=$(pgrep -f -- "$pat" 2>/dev/null | head -n 1)
+      [ -n "$pid" ] || exit 1
+    fi
+    raw=$(jcmd "$pid" Thread.print) || exit 1
+    out=$(printf '%s\n' "$raw" | awk '
+      /^"/ { total++ }
+      /java.lang.Thread.State: BLOCKED/ { blocked++ }
+      END { printf "%d %d", total+0, blocked+0 }')
+    total=$(printf '%s' "$out" | awk '{print $1}')
+    blocked=$(printf '%s' "$out" | awk '{print $2}')
+    [ -n "$total" ] || exit 1
+    [ "$total" -gt 0 ] || exit 1
+    printf '{"thread_total":%s,"blocked_total":%s}' "$total" "$blocked"
+  timeout_seconds: 10
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    thread_total:  { type: integer }
+    blocked_total: { type: integer }
+  required: [thread_total, blocked_total]
+  additionalProperties: false
+
+findings:
+  # The DSL only thresholds the ready thread-total scalar (stable signal); the
+  # BLOCKED count is carried as supplemental evidence in the message only — no
+  # derivation in the DSL (load-bearing wall 1).
+  - when: "thread_total >= max_threads"
+    severity: warning
+    message: "JVM has {thread_total} live threads (>= {max_threads}; blocked={blocked_total})"

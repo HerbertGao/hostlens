@@ -1,0 +1,132 @@
+name: jvm.gc
+version: 1.0.0
+description: >-
+  Measure a JVM's garbage-collection pressure over a sampling window by
+  double-sampling `jstat -gcutil <pid>` (read → sleep window_seconds → read) and
+  deriving the in-window Full GC count delta plus the GC-time-spent percent.
+  The target JVM is located by `pid` (integer) or, if pid is unset (0), by
+  `process_pattern` resolved through `pgrep`. The collector parses jstat's
+  table by ANCHORING ON COLUMN NAME (FGC = full-GC count, GCT = total GC time
+  seconds) rather than by fixed column position — jstat's column set / order
+  drift across JDK versions (8 / 11 / 17 / 21), so positional access would
+  silently misread on a different JDK.
+
+  GC pressure is a RATE signal (an instantaneous Full GC count is meaningless),
+  so the window delta is collapsed into a FINAL SCALAR at sample time and frozen
+  into the collector output; ReplayTarget returns that frozen scalar verbatim on
+  replay (no now()-dependent re-aggregation of timestamped detail). The sleep
+  duration MUST be the injected reserved variable `window_seconds` (driven by
+  collect.sampling_window.duration_seconds) — it is NOT a declared parameter, so
+  it is used bare (not through `| sh`). timeout_seconds (10) is set above
+  duration_seconds (5) so the sleep window itself never trips the timeout.
+
+  Run prerequisite (documented, not a schema gate): jstat can only attach to a
+  JVM owned by the SAME UID as the collector (or root). A cross-user attach is
+  refused → jstat exits non-zero → status=exception, never a fabricated
+  "GC healthy". The inspector does NOT auto-sudo (privilege: none).
+tags: [jvm, runtime, gc, jstat]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [jstat]
+privilege: none
+
+# `parameters` MUST be a complete JSON Schema (type: object + properties +
+# additionalProperties: false) — see jvm.heap for why the wrapper is
+# load-bearing. `pid` is an integer (no shell-injection surface, interpolated
+# bare). `process_pattern` is a string and MUST flow through `{{ x | sh }}`;
+# its `pattern` tightens the value domain.
+parameters:
+  type: object
+  properties:
+    pid:
+      type: integer
+      minimum: 0
+      default: 0
+    process_pattern:
+      type: string
+      pattern: "^[A-Za-z0-9._/-]*$"   # `*` not `+`: empty default ("") is the unset sentinel; collector guards `[ -n "$pat" ]`
+      default: ""
+    full_gc_threshold:
+      type: integer
+      default: 5
+    gc_time_pct_threshold:
+      type: number
+      default: 10
+  additionalProperties: false
+
+collect:
+  # FAIL-LOUD, double-gate (design D-6 / D-6.0 / D-6.1), identical discipline to
+  # jvm.heap: `set -o pipefail` is FORBIDDEN (dash aborts the whole script);
+  # each `jstat` read is raw-captured and its exit code checked ON the jstat
+  # command before any pipe; an empty `pgrep` result fails loud (not "0 → ok");
+  # and after extraction the derived scalars are checked non-empty
+  # (`[ -n "$fgc_delta" ] || exit 1`) to defeat the JDK 8 jstat exit-0 false
+  # negative — the exit code alone is NOT trusted.
+  #
+  # Window differencing (design D-5): read FGC/GCT, sleep window_seconds, read
+  # again; awk anchors FGC (full-GC count) and GCT (cumulative GC seconds) by
+  # COLUMN NAME from the header, then computes the in-window Full GC delta and
+  # GC-time-spent percent ((GCT2-GCT1) / window_seconds * 100). Both are
+  # collapsed to final scalars HERE — ReplayTarget replays them frozen.
+  command: |
+    pid={{ pid }}
+    if [ "$pid" -le 0 ]; then
+      pat={{ process_pattern | sh }}
+      [ -n "$pat" ] || exit 1
+      pid=$(pgrep -f -- "$pat" 2>/dev/null | head -n 1)
+      [ -n "$pid" ] || exit 1
+    fi
+    s1=$(jstat -gcutil "$pid") || exit 1
+    sleep {{ window_seconds }}
+    s2=$(jstat -gcutil "$pid") || exit 1
+    out=$(printf '%s\n===\n%s\n' "$s1" "$s2" | awk -v win={{ window_seconds }} '
+      function val(name,  i){ return $(col[name]) }
+      /^===$/ { phase=2; next }
+      # Record FGC/GCT presence at HEADER time via a membership test (`in` does
+      # not vivify) BEFORE any data-row val() does `$(col[name])` — that deref
+      # auto-vivifies the key, so a post-hoc `"FGC" in col` END check would be a
+      # dead no-op under mawk (the Debian/Ubuntu default awk). hdr_ok captures
+      # the true header state. heap.yaml is immune the same way (gate-before-deref).
+      /FGC/ { for (i=1;i<=NF;i++) col[$i]=i; hdr_ok = (("FGC" in col) && ("GCT" in col)); next }
+      {
+        if (phase==2) { fgc2=val("FGC"); gct2=val("GCT") }
+        else          { fgc1=val("FGC"); gct1=val("GCT") }
+      }
+      END {
+        # Fail loud (empty out → exit 1 gate) if the header lacked FGC/GCT
+        # (e.g. JDK column drift) rather than diffing field-0 garbage.
+        if (!hdr_ok) { exit }
+        fgcd = fgc2 - fgc1; if (fgcd < 0) fgcd = 0
+        gctd = gct2 - gct1; if (gctd < 0) gctd = 0
+        pct = (win > 0 ? gctd/win*100 : 0)
+        printf "%d %.1f", fgcd, pct
+      }')
+    fgc_delta=$(printf '%s' "$out" | awk '{print $1}')
+    gc_time_pct=$(printf '%s' "$out" | awk '{print $2}')
+    [ -n "$fgc_delta" ] || exit 1
+    [ -n "$gc_time_pct" ] || exit 1
+    printf '{"full_gc_delta":%s,"gc_time_pct":%s}' "$fgc_delta" "$gc_time_pct"
+  timeout_seconds: 10
+  sampling_window:
+    duration_seconds: 5
+
+parse:
+  format: json
+
+output_schema:
+  type: object
+  properties:
+    full_gc_delta: { type: integer }
+    gc_time_pct:   { type: number }
+  required: [full_gc_delta, gc_time_pct]
+  additionalProperties: false
+
+findings:
+  # The DSL only thresholds the already-frozen window scalars — no differencing,
+  # no derivation (load-bearing wall 1).
+  - when: "full_gc_delta >= full_gc_threshold"
+    severity: warning
+    message: "JVM ran {full_gc_delta} Full GCs in the last {window_seconds}s window"
+  - when: "gc_time_pct >= gc_time_pct_threshold"
+    severity: warning
+    message: "JVM spent {gc_time_pct}% of the last {window_seconds}s in GC"

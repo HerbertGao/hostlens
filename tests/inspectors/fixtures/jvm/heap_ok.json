@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v jstat",
+      "stdout": "/usr/bin/jstat\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "pid=4242\nif [ \"$pid\" -le 0 ]; then\n  pat=''\n  [ -n \"$pat\" ] || exit 1\n  pid=$(pgrep -f -- \"$pat\" 2>/dev/null | head -n 1)\n  [ -n \"$pid\" ] || exit 1\nfi\nraw=$(jstat -gc \"$pid\") || exit 1\nused=$(printf '%s\\n' \"$raw\" | awk '\n  NR==1 { for (i=1;i<=NF;i++) col[$i]=i; next }\n  NR==2 {\n    for (k in needed) if (!(needed[k] in col)) { printf \"\"; exit }\n    u = $(col[\"EU\"]) + $(col[\"OU\"]) + $(col[\"MU\"])\n    c = $(col[\"EC\"]) + $(col[\"OC\"]) + $(col[\"MC\"])\n    if (c > 0) printf \"%.1f\", u/c*100; else printf \"\"\n  }\n  BEGIN { split(\"EU OU MU EC OC MC\", needed, \" \") }')\n[ -n \"$used\" ] || exit 1\nprintf '{\"heap_used_pct\":%s}' \"$used\"",
+      "stdout": "{\"heap_used_pct\":50.0}",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}
