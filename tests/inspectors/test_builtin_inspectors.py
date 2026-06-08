@@ -583,17 +583,21 @@ class TestRuntimeParameterisationAndInjectionSafety:
     ) -> None:
         manifest = load_manifest(_builtin_root() / rel_path)
         props = manifest.parameters["properties"]  # type: ignore[index]
-        # MUST expose `pid` (integer) OR `process_pattern` (string) — 禁硬编码无参数化.
-        has_pid = props.get("pid", {}).get("type") == "integer"
-        has_pattern = props.get("process_pattern", {}).get("type") == "string"
+        # Contract (spec §参数化目标) is `pid` OR `process_pattern` — require at
+        # least one; do NOT mandate both (a compliant JVM inspector may ship only
+        # one). Validate the type only for the key(s) actually present.
+        has_pid = "pid" in props
+        has_pattern = "process_pattern" in props
         assert has_pid or has_pattern, (
             f"{name}: JVM inspector must parameterise the target via pid(int) or "
             f"process_pattern(str)"
         )
-        # These manifests declare BOTH; pin that when present they carry the
-        # right types.
-        assert has_pid, f"{name}: pid must be type integer"
-        assert has_pattern, f"{name}: process_pattern must be type string"
+        if has_pid:
+            assert props["pid"].get("type") == "integer", f"{name}: pid must be type integer"
+        if has_pattern:
+            assert props["process_pattern"].get("type") == "string", (
+                f"{name}: process_pattern must be type string"
+            )
 
     @pytest.mark.parametrize(
         "name,rel_path",
@@ -631,11 +635,14 @@ class TestRuntimeParameterisationAndInjectionSafety:
             assert isinstance(pattern, str) and pattern, (
                 f"{name}: {param} must carry a non-empty pattern to收紧取值域"
             )
-            # If the param is inserted into the command it MUST go through
+            # If the param is interpolated into the command it MUST go through
             # `{{ param | sh }}` — never a bare `{{ param }}` in an executable
-            # position.
-            if f"{{{{ {param}" in cmd or param in cmd:
-                assert f"{{{{ {param} | sh }}}}" in cmd, (
+            # position. Match an actual Jinja interpolation (whitespace-robust)
+            # rather than a loose substring, and only enforce `| sh` when such an
+            # interpolation is present.
+            interp = re.search(r"\{\{\s*" + re.escape(param) + r"\b", cmd)
+            if interp:
+                assert re.search(r"\{\{\s*" + re.escape(param) + r"\s*\|\s*sh\s*\}\}", cmd), (
                     f"{name}: {param} must be referenced via {{{{ {param} | sh }}}} "
                     f"(no bare interpolation into the command)"
                 )

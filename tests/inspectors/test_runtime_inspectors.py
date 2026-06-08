@@ -84,7 +84,13 @@ async def _run(
 
 def _fixture_main_cmd(domain: str, fixture: str, needle: str) -> str:
     data = json.loads((_FIXTURE_ROOT / domain / fixture).read_text(encoding="utf-8"))
-    return next(c["cmd"] for c in data["commands"] if needle in c["cmd"])
+    match = next((c["cmd"] for c in data["commands"] if needle in c["cmd"]), None)
+    assert match is not None, (
+        f"no recorded command containing {needle!r} in {domain}/{fixture} "
+        f"(fixture drift?); available commands: "
+        f"{[c['cmd'][:80] for c in data['commands']]}"
+    )
+    return match
 
 
 # --------------------------------------------------------------------------- #
