@@ -289,6 +289,18 @@ async def test_go_heap_unreachable_is_exception() -> None:
     assert result.findings == []
 
 
+async def test_go_heap_alloc_absent_is_ok_not_exception() -> None:
+    # HeapInuse present, HeapAlloc absent → the optional supplemental key is
+    # omitted and the usable inuse reading still yields status=ok (NOT a
+    # fabricated exception). Locks the graceful-degrade fix from Cursor Bugbot.
+    replay, result = await _run("go", "heap", "heap_inuse_only_ok.json")
+    assert replay.misses == []
+    assert result.status == "ok"
+    assert result.output == {"heap_inuse_bytes": 50000000}
+    assert "heap_alloc_bytes" not in result.output
+    assert result.findings == []
+
+
 # --------------------------------------------------------------------------- #
 # Suite-level false-negative sweep (task 3.3)
 # --------------------------------------------------------------------------- #

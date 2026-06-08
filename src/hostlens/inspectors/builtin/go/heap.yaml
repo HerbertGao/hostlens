@@ -43,15 +43,22 @@ collect:
   # FAIL-LOUD（POSIX/dash-safe，沿用既有 builtin 约定——禁 `set -o pipefail`，
   # 它非 POSIX、dash(/bin/sh on Debian/Ubuntu)会整脚本 abort exit 2 → 健康目标
   # 也永久假 exception）：先 raw-capture curl 输出并在 curl 上判退出码（管道前），
-  # 再单独喂 awk 按字段名抽取；末行 `[ -n "$inuse" ] || exit 1` 二道门兜
-  # 「curl exit 0 但无 HeapInuse 行」（D-6.1 非空二道门，不只信退出码）。
+  # 再单独喂 awk 按字段名抽取。`heap_inuse_bytes` 是 finding 阈值的**主信号**，
+  # 缺失即 `[ -n "$inuse" ] || exit 1` fail-loud（D-6.1 非空二道门，兜「curl
+  # exit 0 但无 HeapInuse 行」）。`heap_alloc_bytes` 是**附加 evidence**（finding
+  # 不阈值它）——故它缺失时**不**拖垮整个采集：只在抓到时附进输出，抓不到则
+  # 省略该键、仍以可用的 inuse 读数产 ok（健康端点不因附加字段缺失被误判
+  # exception）。real Go MemStats 总同时含两字段，此分支是稳健性兜底。
   command: |
     raw=$(curl -fsS --max-time 5 "http://{{ pprof_endpoint | sh }}/debug/pprof/heap?debug=1" 2>/dev/null) || exit 1
     inuse=$(printf '%s\n' "$raw" | awk '/^# HeapInuse = / { print $4; exit }')
-    alloc=$(printf '%s\n' "$raw" | awk '/^# HeapAlloc = / { print $4; exit }')
     [ -n "$inuse" ] || exit 1
-    [ -n "$alloc" ] || exit 1
-    printf '{"heap_inuse_bytes":%s,"heap_alloc_bytes":%s}' "$inuse" "$alloc"
+    alloc=$(printf '%s\n' "$raw" | awk '/^# HeapAlloc = / { print $4; exit }')
+    if [ -n "$alloc" ]; then
+      printf '{"heap_inuse_bytes":%s,"heap_alloc_bytes":%s}' "$inuse" "$alloc"
+    else
+      printf '{"heap_inuse_bytes":%s}' "$inuse"
+    fi
   timeout_seconds: 10
 
 parse:
@@ -62,10 +69,15 @@ output_schema:
   properties:
     heap_inuse_bytes: { type: integer }
     heap_alloc_bytes: { type: integer }
-  required: [heap_inuse_bytes, heap_alloc_bytes]
+  # Only the primary signal is required; heap_alloc_bytes is supplemental
+  # evidence and is omitted (not exception) when pprof doesn't surface it.
+  required: [heap_inuse_bytes]
   additionalProperties: false
 
 findings:
+  # Message thresholds only the primary inuse signal; it must NOT reference
+  # heap_alloc_bytes (which may be absent — `.format` would KeyError). The alloc
+  # evidence, when present, stays in the output JSON for the report/evidence layer.
   - when: "heap_inuse_bytes > threshold_bytes"
     severity: warning
-    message: "Go 堆 inuse {heap_inuse_bytes} 字节超过阈值 {threshold_bytes}（alloc={heap_alloc_bytes}）"
+    message: "Go 堆 inuse {heap_inuse_bytes} 字节超过阈值 {threshold_bytes}"

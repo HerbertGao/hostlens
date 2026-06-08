@@ -304,6 +304,19 @@ _SCENARIOS: tuple[_Scenario, ...] = (
         expect_findings=False,
         expect_status="exception",
     ),
+    # HeapAlloc absent but HeapInuse present: a healthy endpoint with a usable
+    # primary reading must NOT surface status=exception just because the
+    # SUPPLEMENTAL alloc evidence is missing (the collector omits the optional
+    # key; output_schema requires only heap_inuse_bytes). Below threshold → ok,
+    # no finding. (Real Go MemStats always emits both; this locks the graceful
+    # degrade — Cursor Bugbot review on go/heap.yaml.)
+    _Scenario(
+        inspector="heap",
+        domain="go",
+        out_name="heap_inuse_only_ok.json",
+        main_stdout='{"heap_inuse_bytes":50000000}',
+        expect_findings=False,
+    ),
 )
 
 
