@@ -1,7 +1,9 @@
 # schedule-manifest 规范
 
 ## 目的
-待定 - 由归档变更 add-scheduler 创建。归档后请更新目的。
+
+定义调度任务 manifest 契约——`ScheduleManifest` 为 Pydantic v2 强类型 manifest、`schedule` 为 cron / interval 二选一并携带 timezone、加载器扫描 `schedules/*.yaml` 并在加载时 fail-loud 校验、M4 每 manifest 恰好一个 target(多 target fan-out 为非目标)、`notify` 配置在 M5 被消费用于路由发送。
+
 ## 需求
 ### 需求:`ScheduleManifest` 必须是 Pydantic v2 强类型 manifest
 

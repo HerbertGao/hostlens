@@ -1,7 +1,9 @@
 # notifier-lark 规范
 
 ## 目的
-待定 - 由归档变更 add-notifier-channels 创建。归档后请更新目的。
+
+定义飞书 Lark 通知适配器契约——渲染交互卡片 JSON、按飞书规范做 HMAC-SHA256 时间戳签名。
+
 ## 需求
 ### 需求:飞书 Lark 适配器必须渲染交互卡片 JSON
 

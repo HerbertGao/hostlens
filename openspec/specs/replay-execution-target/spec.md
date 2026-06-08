@@ -1,7 +1,9 @@
 # replay-execution-target 规范
 
 ## 目的
-待定 - 由归档变更 add-incident-pack 创建。归档后请更新目的。
+
+定义 `ReplayTarget` 离线回放执行 target 契约——实现 ExecutionTarget 协议、回放命令匹配与未命中语义、miss 记录支持 strict-consumption 断言、配置驱动接线。
+
 ## 需求
 ### 需求:ReplayTarget 实现 ExecutionTarget 协议
 

@@ -1,7 +1,9 @@
 # notifier-protocol 规范
 
 ## 目的
-待定 - 由归档变更 add-notifier-channels 创建。归档后请更新目的。
+
+定义 Notifier 抽象契约——Notifier 为 Protocol + 显式装配的通道类型 registry、`NotifyPayload` / `NotifyResult` 为 Pydantic v2 强类型模型、render 走 Jinja2 模板文件禁硬编码模板字符串、send 有界重试且失败隔离不向调用方冒泡。
+
 ## 需求
 ### 需求:Notifier 必须是 Protocol 抽象 + 显式装配的通道类型 registry
 

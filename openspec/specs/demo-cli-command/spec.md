@@ -1,7 +1,9 @@
 # demo-cli-command 规范
 
 ## 目的
-待定 - 由归档变更 add-demo-cli 创建。归档后请更新目的。
+
+定义 `hostlens demo` 离线零配置演示命令契约——`demo run <scenario>` 离线回放打包场景并渲染报告、`demo list` 列出场景、场景名以 snake_case 为 SOT 并接受 kebab-case 归一、默认流式展示 Agent 进度可关闭、命令完全自包含不读用户配置、场景资产作为 package data 经 `importlib.resources` 访问、复用 inspect 的 4 值退出码契约、`--persist` 把忠实 Report 落盘。
+
 ## 需求
 ### 需求:`hostlens demo run <scenario>` 必须离线回放一个打包场景并渲染报告
 

@@ -1,7 +1,9 @@
 # diagnostician-agent 规范
 
 ## 目的
-待定 - 由归档变更 add-diagnostician-agent 创建。归档后请更新目的。
+
+定义 Diagnostician Agent 契约——复用 `AgentLoop` + 外部系统提示串接于 Planner 之后、findings 进 messages 禁进 system 以命中 prompt cache、`correlate_findings` 为纯结构化输出通道按序号标签引用 finding、`request_more_inspection` 复用 `InspectorRunner` 且不暴露 target 发现、编排层给 Planner findings 盖稳定 id、`DiagnosticianResult` 聚合带 id 的 findings / hypotheses / reconcile 后 status、两个 loop 的 terminal_status reconcile 成单一 `ReportStatus`。
+
 ## 需求
 ### 需求:`DiagnosticianAgent` 必须复用 `AgentLoop` + 外部系统提示，串接于 Planner 之后
 

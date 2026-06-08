@@ -18,9 +18,9 @@
 
 ## 当前状态（必读）
 
-> 🚧 **开发中（M0–M4 已落地，未发 PyPI）** —— `src/` 已有可运行代码，`hostlens` CLI 可装可跑：**M0** 脚手架 + doctor、**M1** ExecutionTarget / Inspector / Report + `hostlens inspect`、**M2** 手写 Agent loop（自然语言意图 → 自选 Inspector → markdown 报告）、**M3** Diagnostician + 根因假设 + regression diff、**M4** Scheduler（cron/interval 定时巡检 + Run 留痕 + daemon 优雅停机 + `hostlens schedule`）。尚未发布 PyPI 包（本地 `pip install -e` 安装）。
+> 🚧 **开发中（M0–M5 已落地，未发 PyPI）** —— `src/` 已有可运行代码，`hostlens` CLI 可装可跑：**M0** 脚手架 + doctor、**M1** ExecutionTarget / Inspector / Report + `hostlens inspect`、**M2** 手写 Agent loop（自然语言意图 → 自选 Inspector → markdown 报告）、**M3** Diagnostician + 根因假设 + regression diff、**M4** Scheduler（cron/interval 定时巡检 + Run 留痕 + daemon 优雅停机 + `hostlens schedule`）、**M5** Notifier（Telegram MarkdownV2 + 飞书 Lark HMAC 签名 + `only_if` 路由 + Scheduler↔Notifier 接线 + `hostlens notify`）。尚未发布 PyPI 包（本地 `pip install -e` 安装）。
 >
-> 下面的 "MCP Server"（M7）、"受控修复"（M9）、Telegram / 飞书 **通知推送**（M5）等章节展示的是 **目标 UX 与规划中的命令形态** —— 这些里程碑尚未实现。已实现并可直接用的命令：`inspect` / `demo` / `schedule` / `doctor` / `reports`（注意：`schedule` 的 `notify` 配置在 M4 仅占位、不发送，发送能力随 M5 落地）。
+> 下面的 "MCP Server"（M7）、"受控修复"（M9）等章节展示的是 **目标 UX 与规划中的命令形态** —— 这些里程碑尚未实现。已实现并可直接用的命令：`inspect` / `demo` / `schedule` / `notify` / `doctor` / `reports`（Telegram / 飞书 **通知推送**随 M5 落地：`schedule` 的 `notify` 路由会在 Report 持久化后实际派发）。
 >
 > 实现进度按 [TODO.md](TODO.md) 的 M0-M10 路线推进（当前进度见其进度总览表），每期开始前先用 [OpenSpec](openspec/) 起 proposal。
 >

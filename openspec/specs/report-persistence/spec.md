@@ -1,7 +1,9 @@
 # report-persistence 规范
 
 ## 目的
-待定 - 由归档变更 add-report-persistence-and-diff 创建。归档后请更新目的。
+
+定义报告持久化契约——`ReportStore` 把报告以脱敏 JSON 持久化到 SQLite、`save` 用 `SaveResult` 明示 orphan 降级、提供 run 查询与基线查询 API(基线排除当前 run)、`reports list/show` CLI 读取 store 并遵循退出码契约、`inspect --persist` 把机械巡检报告落盘。
+
 ## 需求
 ### 需求:`ReportStore` 必须把报告以脱敏 JSON 持久化到 SQLite
 

@@ -1,7 +1,9 @@
 # os-shell-inspector-suite 规范
 
 ## 目的
-待定 - 由归档变更 add-os-shell-inspectors-wave1 创建。归档后请更新目的。
+
+定义 wave-1 OS / Linux shell inspector 套件契约——按域覆盖指定的 OS/Linux 故障域、套件内每个 inspector 为遵守作者契约的纯 YAML、每个附 ReplayTarget fixture 与可证检出的 snapshot 测试、本套件禁止引入新基础设施。
+
 ## 需求
 ### 需求:wave-1 必须按域覆盖指定的 OS/Linux 故障域
 

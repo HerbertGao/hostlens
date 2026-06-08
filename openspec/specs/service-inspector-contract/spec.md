@@ -1,7 +1,9 @@
 # service-inspector-contract 规范
 
 ## 目的
-待定 - 由归档变更 add-service-inspector-contract-spike 创建。归档后请更新目的。
+
+定义 service(单实例服务)inspector 契约——管辖范围与既有 seed 祖父化、采集服务且连接参数注入安全、secret 经 env 注入从不进命令字符串、遵守 service 层失败分类、声明超时并限制输出规模、跨 local 与 SSH target 无分叉(secret 投递有 SSH 前提)、附双轨 fixture 且证检出能力、契约边界止于单实例。
+
 ## 需求
 ### 需求:本契约管辖范围与既有 seed 祖父化
 

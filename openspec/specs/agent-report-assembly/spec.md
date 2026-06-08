@@ -1,7 +1,9 @@
 # agent-report-assembly 规范
 
 ## 目的
-待定 - 由归档变更 add-intent-report-persistence 创建。归档后请更新目的。
+
+定义 `--intent` 路径下从 Inspector 结果到一等 `Report` 的组装契约——per-run `InspectorResultCollector` 经 handler 闭包注入收集完整 `InspectorResult`、FindingStore 诊断前 seed 与权威 Report 诊断后 snapshot 两个时点、`from_inspector_results` 忠实组装、诊断师 hypotheses 投影进持久化 `Report.hypotheses`(id 统一、引用一致)、降级与无结果两种 Report 语义明确。
+
 ## 需求
 ### 需求:per-run `InspectorResultCollector` 必须经 handler 闭包注入收集完整 `InspectorResult`
 

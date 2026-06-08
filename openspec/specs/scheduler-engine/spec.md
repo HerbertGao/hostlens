@@ -1,7 +1,9 @@
 # scheduler-engine 规范
 
 ## 目的
-待定 - 由归档变更 add-scheduler 创建。归档后请更新目的。
+
+定义调度引擎契约——`RunStatus` 为对齐 ARCHITECTURE §7 的八值枚举、`Run` 模型强制 `report_id ⇔ status` 不变量、引擎基于 `AsyncIOScheduler` 每 manifest 一 job 固定积压策略、job 执行复用诊断 pipeline 并按结果映射 RunStatus、Run 记录持久化到独立 store 并可查询、runner 在 Report 持久化后派发 notify 并落地结果。
+
 ## 需求
 ### 需求:`RunStatus` 必须是对齐 ARCHITECTURE §7 的八值枚举
 

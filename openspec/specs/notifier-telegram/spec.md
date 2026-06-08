@@ -1,7 +1,9 @@
 # notifier-telegram 规范
 
 ## 目的
-待定 - 由归档变更 add-notifier-channels 创建。归档后请更新目的。
+
+定义 Telegram 通知适配器契约——渲染 MarkdownV2 并正确转义、经 Bot API `sendMessage` 发送且 token 不入日志。
+
 ## 需求
 ### 需求:Telegram 适配器必须渲染 MarkdownV2 并正确转义
 

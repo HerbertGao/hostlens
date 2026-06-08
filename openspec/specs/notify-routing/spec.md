@@ -1,7 +1,9 @@
 # notify-routing 规范
 
 ## 目的
-待定 - 由归档变更 add-notifier-channels 创建。归档后请更新目的。
+
+定义通知路由契约——通道配置从 `notifiers.yaml` 加载并解析 `${ENV_VAR}`、`only_if` 路由复用硬化 DSL 求值器对 severity 做有序比较、运行期求值异常归类为通道失败且隔离。
+
 ## 需求
 ### 需求:通道配置必须从 `notifiers.yaml` 加载并解析 `${ENV_VAR}`
 

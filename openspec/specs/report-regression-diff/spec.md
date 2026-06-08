@@ -1,7 +1,9 @@
 # report-regression-diff 规范
 
 ## 目的
-待定 - 由归档变更 add-report-persistence-and-diff 创建。归档后请更新目的。
+
+定义报告回归 diff 契约——`RegressionDiff` 建模 added / resolved / changed_severity 与版本对齐、`compute_diff` 以 severity-agnostic 指纹做集合差且防基线污染、`reports diff` CLI 支持显式两 run 与自动基线两种模式、diff 可离线确定性验证(机械 Report 路径)、hypothesis 级 added / resolved / confidence_changed(按 `supporting_findings` 证据键)。
+
 ## 需求
 ### 需求:`RegressionDiff` 模型必须建模 added/resolved/changed_severity 与版本对齐信息
 

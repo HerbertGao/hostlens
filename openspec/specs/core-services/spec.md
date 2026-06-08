@@ -1,7 +1,9 @@
 # core-services 规范
 
 ## 目的
-待定 - 由归档变更 bootstrap-project-skeleton 创建。归档后请更新目的。
+
+定义 Hostlens 核心服务层(M0)——`Settings`(从 env 与 .env 加载强类型校验,支持 `backend` / `agent` 两个独立 namespace)、`Logging`(dev / prod 双渲染模式,不打印环境变量值含嵌套结构兜底)、异常基类层次。
+
 ## 需求
 ### 需求:`Settings` 从 env 与 .env 文件加载配置并强类型校验
 
