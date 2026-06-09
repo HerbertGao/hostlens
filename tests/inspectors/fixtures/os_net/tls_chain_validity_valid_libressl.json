@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v openssl",
+      "stdout": "/usr/bin/openssl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "host=$(printf '%s' example.org:443 | cut -d: -f1)\ncase \"$host\" in\n  *[A-Za-z]*) sni=\"-servername $host\" ;;\n  *)          sni=\"\" ;;\nesac\necho | openssl s_client -connect example.org:443 $sni 2>&1",
+      "stdout": "CONNECTED(00000005)\ndepth=1 /C=US/O=Example/CN=Example Intermediate CA\nverify return:1\ndepth=0 /CN=example.org\nverify return:1\n---\nCertificate chain\n 0 s:/CN=example.org\n   i:/C=US/O=Example/CN=Example Intermediate CA\n---\nServer certificate\n-----BEGIN CERTIFICATE-----\nMIIDdummyBase64CertificateBodyTruncatedForFixturePurposesOnly0000\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----\nsubject=/CN=example.org\nissuer=/C=US/O=Example/CN=Example Intermediate CA\n---\nSSL-Session:\n    Protocol  : TLSv1.3\n---\nVerify return code: 0 (ok)\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

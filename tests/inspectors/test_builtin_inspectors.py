@@ -110,6 +110,24 @@ class TestSystemUptime:
 
 
 # --------------------------------------------------------------------------- #
+# net.tls.chain_validity (add-tls-chain-validity-inspector)
+# --------------------------------------------------------------------------- #
+#
+# Standalone clean-registration assertion: this inspector is a net-domain
+# incremental (a single matrix cell), NOT a member of any frozen cohort, so it
+# is asserted independently and is deliberately absent from every cohort dict /
+# count guard above (append-only freeze discipline).
+
+
+class TestNetTlsChainValidity:
+    def test_registry_contains_net_tls_chain_validity(self) -> None:
+        result = build_registry_from_search_paths([], settings=Settings())
+        manifest = result.registry.get("net.tls.chain_validity")
+        assert manifest.name == "net.tls.chain_validity"
+        assert result.errors == []
+
+
+# --------------------------------------------------------------------------- #
 # add-os-shell-inspectors-wave1 — suite-level acceptance (tasks.md §10)
 # --------------------------------------------------------------------------- #
 #

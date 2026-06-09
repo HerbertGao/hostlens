@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v openssl",
+      "stdout": "/usr/bin/openssl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "host=$(printf '%s' example.com:443 | cut -d: -f1)\ncase \"$host\" in\n  *[A-Za-z]*) sni=\"-servername $host\" ;;\n  *)          sni=\"\" ;;\nesac\necho | openssl s_client -connect example.com:443 $sni 2>&1",
+      "stdout": "CONNECTED(00000003)\ndepth=2 C = US, O = Example Root CA, CN = Example Root CA X1\nverify return:1\ndepth=1 C = US, O = Example, CN = Example Intermediate CA\nverify return:1\ndepth=0 CN = example.com\nverify return:1\n---\nCertificate chain\n 0 s:CN = example.com\n   i:C = US, O = Example, CN = Example Intermediate CA\n---\nServer certificate\n-----BEGIN CERTIFICATE-----\nMIIDdummyBase64CertificateBodyTruncatedForFixturePurposesOnly0000\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----\nsubject=CN = example.com\nissuer=C = US, O = Example, CN = Example Intermediate CA\n---\nSSL handshake has read 4096 bytes and written 412 bytes\nVerification: OK\n---\nVerify return code: 0 (ok)\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}
