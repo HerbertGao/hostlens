@@ -206,3 +206,106 @@ async def test_standalone_read_file_raises_docker_no_entry(
 
     assert exc_info.value.kind == "docker_no_entry"
     assert counter[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# transport-error wrapping (BugBot #2 / #3): docker-py exceptions during
+# exec_run / get_archive must surface as structured TargetError kinds, not
+# escape raw.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingContainer:
+    """Container whose exec_run / get_archive raise a supplied exception."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.status = "running"
+        self._exc = exc
+
+    def exec_run(self, cmd: Any, **kwargs: Any) -> tuple[int, tuple[bytes, bytes]]:
+        raise self._exc
+
+    def get_archive(self, path: str) -> tuple[Any, dict[str, Any]]:
+        raise self._exc
+
+
+def _client_factory(exc: BaseException) -> Any:
+    class _C:
+        def __init__(self) -> None:
+            class _Containers:
+                def get(self, ref: str) -> _RaisingContainer:
+                    return _RaisingContainer(exc)
+
+            self.containers = _Containers()
+
+    return _C()
+
+
+async def test_exec_container_vanished_maps_container_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exec_run raising NotFound (container removed mid-op) → container_not_found.
+
+    NotFound is an APIError subclass; it must be caught before the generic
+    APIError→exec_failed arm so a vanished container is not mislabelled.
+    """
+
+    import docker
+
+    exc = docker.errors.NotFound("No such container")
+    monkeypatch.setattr(docker_mod.docker, "from_env", lambda: _client_factory(exc))
+
+    target = _build_target(entry=_FakeEntry())
+    with pytest.raises(TargetError) as exc_info:
+        await target.exec("echo hi", timeout=5)
+    assert exc_info.value.kind == "container_not_found"
+
+
+async def test_exec_oci_failure_maps_exec_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exec_run raising a generic APIError (OCI exec start fail) → exec_failed."""
+
+    import docker
+
+    exc = docker.errors.APIError("OCI runtime exec failed: /bin/sh: no such file")
+    monkeypatch.setattr(docker_mod.docker, "from_env", lambda: _client_factory(exc))
+
+    target = _build_target(entry=_FakeEntry())
+    with pytest.raises(TargetError) as exc_info:
+        await target.exec("echo hi", timeout=5)
+    assert exc_info.value.kind == "exec_failed"
+
+
+async def test_read_file_daemon_error_maps_docker_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_archive raising a non-NotFound DockerException → docker_unavailable.
+
+    Guards against the raw docker-py exception escaping read_file (BugBot #2).
+    """
+
+    import docker
+
+    exc = docker.errors.DockerException("connection broken")
+    monkeypatch.setattr(docker_mod.docker, "from_env", lambda: _client_factory(exc))
+
+    target = _build_target(entry=_FakeEntry())
+    with pytest.raises(TargetError) as exc_info:
+        await target.read_file("/tmp/x")
+    assert exc_info.value.kind == "docker_unavailable"
+
+
+async def test_read_file_not_found_maps_filenotfound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_archive raising NotFound → stdlib FileNotFoundError (unwrapped)."""
+
+    import docker
+
+    exc = docker.errors.NotFound("Could not find the file")
+    monkeypatch.setattr(docker_mod.docker, "from_env", lambda: _client_factory(exc))
+
+    target = _build_target(entry=_FakeEntry())
+    with pytest.raises(FileNotFoundError):
+        await target.read_file("/tmp/missing")

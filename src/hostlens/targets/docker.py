@@ -349,6 +349,16 @@ class DockerTarget:
                 duration_seconds=time.monotonic() - t0,
                 timed_out=True,
             )
+        except docker.errors.NotFound as exc:
+            # Container removed between ``_resolve_container`` and this
+            # ``exec_run`` — a 404 is ``NotFound`` (an ``APIError`` subclass),
+            # so it must be caught before the generic ``APIError`` arm to
+            # avoid mislabelling a vanished container as ``exec_failed``.
+            raise TargetError(
+                kind="container_not_found",
+                target=self.name,
+                message=_scrub(exc),
+            ) from exc
         except docker.errors.APIError as exc:
             # OCI runtime exec failure (``/bin/sh`` missing on distroless,
             # etc.) — the daemon and container are healthy, only the
@@ -456,6 +466,17 @@ class DockerTarget:
             stream, _stat = await asyncio.to_thread(container.get_archive, normalized)
         except docker.errors.NotFound as exc:
             raise FileNotFoundError(path) from exc
+        except docker.errors.DockerException as exc:
+            # Daemon went away / permission denied / other API error during
+            # the archive fetch — surface as a structured transport error
+            # rather than letting the raw docker-py exception escape
+            # (NotFound is a DockerException subclass, so it is handled by
+            # the arm above first).
+            raise TargetError(
+                kind="docker_unavailable",
+                target=self.name,
+                message=_scrub(exc),
+            ) from exc
 
         # docker-py returns a generator of byte chunks. We wrap it in a
         # lazy ``read``-able adapter and hand that to a streaming
