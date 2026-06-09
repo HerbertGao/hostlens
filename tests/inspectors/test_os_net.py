@@ -298,3 +298,199 @@ async def test_ntp_drift_ok_no_findings() -> None:
     assert replay.misses == []
     assert result.status == "ok"
     assert result.findings == []
+
+
+# --------------------------------------------------------------------------- #
+# net.tls.chain_validity (add-tls-chain-validity-inspector)
+# --------------------------------------------------------------------------- #
+#
+# These fixtures are crafted `openssl s_client` stdout (NOT JSON) — the
+# inspector parses with `format: raw` + a `raw_extract_regex` that requires a
+# `-----BEGIN CERTIFICATE-----` marker BEFORE the "Verify return code:" footer
+# (the B3 false-negative guard, design D9). Because `parse_raw`'s `re.search`
+# runs offline, the B3 guard is *offline-provable*: a no-cert stdout that still
+# carries "Verify return code: 0" misses the regex → null → output_schema
+# rejects → status=exception. Both OpenSSL 3.x and LibreSSL footer wordings are
+# sampled (valid + broken each) to lock the regex's cross-implementation
+# stability (design R1).
+
+
+async def test_tls_chain_validity_valid_openssl_ok() -> None:
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_valid_openssl.json",
+        parameters={"endpoint": "example.com:443"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "ok"
+    assert result.output == {"verify_code": "0", "reason": "ok"}
+    assert result.findings == []
+
+
+async def test_tls_chain_validity_valid_libressl_ok() -> None:
+    """LibreSSL footer wording (macOS local target) parses to the same ok."""
+
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_valid_libressl.json",
+        parameters={"endpoint": "example.org:443"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "ok"
+    assert result.output == {"verify_code": "0", "reason": "ok"}
+    assert result.findings == []
+
+
+async def test_tls_chain_validity_broken_openssl_critical() -> None:
+    """Missing intermediate CA (code 20) → single critical finding."""
+
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_broken_openssl.json",
+        parameters={"endpoint": "incomplete-chain.example:443"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "ok"
+    assert result.output == {
+        "verify_code": "20",
+        "reason": "unable to get local issuer certificate",
+    }
+    assert [(f.severity, f.message) for f in result.findings] == [
+        (
+            "critical",
+            "TLS 证书链验证失败 (code 20: unable to get local issuer certificate)",
+        ),
+    ]
+
+
+async def test_tls_chain_validity_broken_libressl_critical() -> None:
+    """LibreSSL self-signed-in-chain (code 19, hyphenated reason) → critical.
+
+    Locks the `raw_extract_regex` against LibreSSL's reason wording (hyphenated
+    `self-signed certificate ...`) and confirms the str DSL `verify_code != '0'`
+    fires for a non-zero code.
+    """
+
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_broken_libressl.json",
+        parameters={"endpoint": "self-signed.example:443"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "ok"
+    assert result.output == {
+        "verify_code": "19",
+        "reason": "self-signed certificate in certificate chain",
+    }
+    assert [(f.severity, f.message) for f in result.findings] == [
+        (
+            "critical",
+            "TLS 证书链验证失败 (code 19: self-signed certificate in certificate chain)",
+        ),
+    ]
+
+
+async def test_tls_chain_validity_no_cert_exception() -> None:
+    """B3 false-negative guard (offline-provable).
+
+    A non-TLS port / half-handshake produces "Verify return code: 0 (ok)" but
+    NO `-----BEGIN CERTIFICATE-----` marker. The `raw_extract_regex` requires
+    the marker before the Verify line, so it misses → `{verify_code: null}` →
+    `output_schema` (`required` + `type: string`) rejects null → exception.
+    The guard lives in the parser regex, so `parse_raw`'s `re.search` exercises
+    it offline — no real host needed. This proves we never report a non-TLS
+    port as "chain valid".
+    """
+
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_no_cert.json",
+        parameters={"endpoint": "127.0.0.1:22"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "exception"
+    assert result.findings == []
+
+
+async def test_tls_chain_validity_empty_stdout_exception() -> None:
+    """Unreachable endpoint → empty stdout → no PEM, no Verify line → exception.
+
+    We never treat an endpoint we could not reach as "chain valid".
+    """
+
+    replay, result = await _run(
+        "tls_chain_validity",
+        "tls_chain_validity_empty.json",
+        parameters={"endpoint": "10.255.255.1:443"},
+    )
+
+    assert replay.misses == []
+    assert result.status == "exception"
+    assert result.findings == []
+
+
+# --- command-string locks (offline cannot run the collector shell, D-7) ----- #
+
+
+def _tls_main_cmd(fixture: str) -> str:
+    """Return the recorded `openssl s_client` collector command for a fixture.
+
+    ReplayTarget keys commands by SHA256, so we read the fixture JSON directly
+    and pick the main collect command (the one carrying `openssl s_client`).
+    """
+
+    data = json.loads((_FIXTURE_DIR / fixture).read_text(encoding="utf-8"))
+    return next(c["cmd"] for c in data["commands"] if "openssl s_client" in c["cmd"])
+
+
+def test_tls_chain_validity_endpoint_is_sh_quoted() -> None:
+    """`endpoint` flows through `| sh` (shlex.quote) — second defense line.
+
+    Even if the parameter `pattern` were ever loosened, the collector quotes the
+    endpoint via the `| sh` filter. A benign `host:port` needs no quoting, but
+    the rendered command must carry the endpoint exactly where `{{ endpoint | sh }}`
+    interpolates (the `-connect` argument and the `printf '%s'` host extraction).
+    """
+
+    cmd = _tls_main_cmd("tls_chain_validity_valid_openssl.json")
+    assert "-connect example.com:443" in cmd
+    assert "printf '%s' example.com:443" in cmd
+
+
+def test_tls_chain_validity_sni_case_branch_is_locked_in_command() -> None:
+    """SNI selection is a shell `case` branch (design D7), not Jinja.
+
+    `_CaptureTarget` does NOT execute the collector shell, so the recorded
+    command is the full rendered template — both hostname and IPv4 endpoints
+    carry the SAME template text (the `case` arms select `-servername` at shell
+    runtime, which offline never runs). We therefore lock the *structure* of the
+    SNI case branch in the command string:
+
+      * the hostname arm `*[A-Za-z]*) sni="-servername $host"` is present,
+      * the non-hostname (IPv4) arm sets `sni=""` (no SNI),
+      * `$sni` is threaded into the `openssl s_client` invocation.
+
+    The end-to-end correctness of the case branch (an IPv4 endpoint actually
+    skipping SNI yet still validating the default chain) is NOT offline-provable
+    here — it is covered by the real-host Demo Path (tasks.md §2.3 deviation
+    register / §4.2).
+    """
+
+    hostname_cmd = _tls_main_cmd("tls_chain_validity_valid_openssl.json")
+    ipv4_cmd = _tls_main_cmd("tls_chain_validity_valid_ipv4.json")
+
+    for cmd in (hostname_cmd, ipv4_cmd):
+        assert '*[A-Za-z]*) sni="-servername $host"' in cmd
+        assert 'sni=""' in cmd
+        assert "openssl s_client -connect" in cmd
+        assert "$sni" in cmd
+
+    # The only command-level difference between a hostname and an IPv4 endpoint
+    # is the threaded endpoint value (the SNI decision itself is runtime `case`).
+    assert "example.com:443" in hostname_cmd
+    assert "1.1.1.1:443" in ipv4_cmd

@@ -1,0 +1,62 @@
+name: net.tls.chain_validity
+version: 1.0.0
+description: >
+  Verify a TLS endpoint's full certificate chain validates against the
+  system trust store (not just expiry). Surfaces missing intermediate CA,
+  wrong chain order, self-signed, or untrusted-root failures that
+  net.tls.cert_expiry (notAfter-only) cannot see.
+tags: [net, tls, security]
+targets: [local, ssh]
+requires_capabilities: [shell]
+requires_binaries: [openssl]
+
+parameters:
+  type: object
+  required: [endpoint]
+  properties:
+    endpoint:
+      type: string
+      pattern: "^[A-Za-z0-9._-]+:[0-9]{1,5}$"   # host:port, blocks shell injection
+  additionalProperties: false
+
+collect:
+  # s_client 默认验证并打印 server cert PEM + "Verify return code: N (reason)" (不传 -verify 深度)。
+  # SNI 从 endpoint 的 host 切出; 仅 hostname 发 SNI, 纯 IPv4 跳过 (RFC 6066 禁 IP-SNI)。
+  # 安全: endpoint 经 pattern 收值域 + `| sh`; $host/$sni 是 shell 内派生, 其安全
+  #   **仅靠 endpoint pattern** (`| sh` 不覆盖派生变量, 故 pattern 是这条路径的唯一防线)。
+  # collector 只透传 openssl 整段文本, B3 守门下沉到 parser regex (见下)。
+  command: |
+    host=$(printf '%s' {{ endpoint | sh }} | cut -d: -f1)
+    case "$host" in
+      *[A-Za-z]*) sni="-servername $host" ;;
+      *)          sni="" ;;
+    esac
+    echo | openssl s_client -connect {{ endpoint | sh }} $sni 2>&1
+  timeout_seconds: 10
+
+parse:
+  format: raw
+  # raw + raw_extract_regex 必带 columns (schema.py), named group 数 == len(columns)。
+  # raw 捕获恒为 str (parsers/raw.py), 故 output_schema/DSL 按 str 处理。
+  columns: [verify_code, reason]
+  # B3 假阴防护 (核心): openssl 对「无 peer cert / 非 TLS 端口 / 半握手」也打 "Verify return
+  #   code: 0" (verify 0 = 没验出错, 非「验过链」)。故 regex **要求先见证书 PEM 标记再读 verify
+  #   行** —— 无证书文本不匹配 → parse_raw 返 {verify_code: null} → output_schema 拒 null
+  #   → status=exception。守门在 parser (offline re.search 会跑), 故 B3 offline 可证。
+  raw_extract_regex: '-----BEGIN CERTIFICATE-----[\s\S]*?Verify return code:\s*(?P<verify_code>\d+)\s*\((?P<reason>[^)]*)\)'
+
+output_schema:
+  type: object
+  properties:
+    verify_code: { type: string }   # raw 捕获恒为字符串 (非 integer); 非 match 时为 null
+    reason: { type: string }
+  required: [verify_code]            # null 不满足 required+string → 无证书路径落 exception
+  additionalProperties: false
+
+findings:
+  # aggregate 模式: message 只能用裸 {verify_code}/{reason} (schema 禁 {var.attr})。
+  # output_schema 先于 findings 校验, 故 findings 只在 verify_code 为合法 str 时求值;
+  #   字符串比较 "0" = 验证通过 → 不触发 (整数比会让 "0" != 0 == True 误报 critical)。
+  - when: "verify_code != '0'"
+    severity: critical
+    message: "TLS 证书链验证失败 (code {verify_code}: {reason})"

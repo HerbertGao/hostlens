@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v openssl",
+      "stdout": "/usr/bin/openssl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "host=$(printf '%s' incomplete-chain.example:443 | cut -d: -f1)\ncase \"$host\" in\n  *[A-Za-z]*) sni=\"-servername $host\" ;;\n  *)          sni=\"\" ;;\nesac\necho | openssl s_client -connect incomplete-chain.example:443 $sni 2>&1",
+      "stdout": "CONNECTED(00000003)\ndepth=0 CN = incomplete-chain.example\nverify error:num=20:unable to get local issuer certificate\nverify return:1\n---\nCertificate chain\n 0 s:CN = incomplete-chain.example\n   i:C = US, O = Example, CN = Example Intermediate CA\n---\nServer certificate\n-----BEGIN CERTIFICATE-----\nMIIDdummyBase64CertificateBodyTruncatedForFixturePurposesOnly0000\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----\nsubject=CN = incomplete-chain.example\nissuer=C = US, O = Example, CN = Example Intermediate CA\n---\nVerify return code: 20 (unable to get local issuer certificate)\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

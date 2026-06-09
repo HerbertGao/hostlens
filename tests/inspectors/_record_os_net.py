@@ -56,6 +56,129 @@ _PROBE_PREFIX = "command -v "
 _FILE_PROBE_PREFIX = "[ -r "
 
 
+# --------------------------------------------------------------------------- #
+# net.tls.chain_validity — crafted `openssl s_client` stdout samples
+# --------------------------------------------------------------------------- #
+#
+# These are the verbatim text `openssl s_client -connect host:port` prints,
+# authored (NOT captured from a real handshake — `_CaptureTarget` never runs
+# the collector shell, design D-7). The PEM bodies are short placeholders; the
+# parser only needs the `-----BEGIN CERTIFICATE-----` marker to precede the
+# "Verify return code:" footer. OpenSSL 3.x and LibreSSL footers differ in
+# wording/spacing, so both are sampled to lock the regex's portability (R1).
+
+_PEM = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDdummyBase64CertificateBodyTruncatedForFixturePurposesOnly0000\n"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+    "-----END CERTIFICATE-----"
+)
+
+# OpenSSL 3.x valid-chain footer: depth lines + "Verify return code: 0 (ok)".
+_TLS_VALID_OPENSSL = (
+    "CONNECTED(00000003)\n"
+    "depth=2 C = US, O = Example Root CA, CN = Example Root CA X1\n"
+    "verify return:1\n"
+    "depth=1 C = US, O = Example, CN = Example Intermediate CA\n"
+    "verify return:1\n"
+    "depth=0 CN = example.com\n"
+    "verify return:1\n"
+    "---\n"
+    "Certificate chain\n"
+    " 0 s:CN = example.com\n"
+    "   i:C = US, O = Example, CN = Example Intermediate CA\n"
+    "---\n"
+    "Server certificate\n"
+    f"{_PEM}\n"
+    "subject=CN = example.com\n"
+    "issuer=C = US, O = Example, CN = Example Intermediate CA\n"
+    "---\n"
+    "SSL handshake has read 4096 bytes and written 412 bytes\n"
+    "Verification: OK\n"
+    "---\n"
+    "Verify return code: 0 (ok)\n"
+)
+
+# LibreSSL valid-chain footer: same "Verify return code: 0 (ok)" line, slightly
+# different surrounding wording (no "Verification: OK" line on older LibreSSL).
+_TLS_VALID_LIBRESSL = (
+    "CONNECTED(00000005)\n"
+    "depth=1 /C=US/O=Example/CN=Example Intermediate CA\n"
+    "verify return:1\n"
+    "depth=0 /CN=example.org\n"
+    "verify return:1\n"
+    "---\n"
+    "Certificate chain\n"
+    " 0 s:/CN=example.org\n"
+    "   i:/C=US/O=Example/CN=Example Intermediate CA\n"
+    "---\n"
+    "Server certificate\n"
+    f"{_PEM}\n"
+    "subject=/CN=example.org\n"
+    "issuer=/C=US/O=Example/CN=Example Intermediate CA\n"
+    "---\n"
+    "SSL-Session:\n"
+    "    Protocol  : TLSv1.3\n"
+    "---\n"
+    "Verify return code: 0 (ok)\n"
+)
+
+# OpenSSL 3.x broken chain — code 20, missing intermediate CA.
+_TLS_BROKEN_OPENSSL = (
+    "CONNECTED(00000003)\n"
+    "depth=0 CN = incomplete-chain.example\n"
+    "verify error:num=20:unable to get local issuer certificate\n"
+    "verify return:1\n"
+    "---\n"
+    "Certificate chain\n"
+    " 0 s:CN = incomplete-chain.example\n"
+    "   i:C = US, O = Example, CN = Example Intermediate CA\n"
+    "---\n"
+    "Server certificate\n"
+    f"{_PEM}\n"
+    "subject=CN = incomplete-chain.example\n"
+    "issuer=C = US, O = Example, CN = Example Intermediate CA\n"
+    "---\n"
+    "Verify return code: 20 (unable to get local issuer certificate)\n"
+)
+
+# LibreSSL broken chain — code 19, self-signed cert in chain (hyphenated reason
+# variant: "self-signed certificate in certificate chain").
+_TLS_BROKEN_LIBRESSL = (
+    "CONNECTED(00000006)\n"
+    "depth=1 /CN=self-signed.example Root\n"
+    "verify error:num=19:self-signed certificate in certificate chain\n"
+    "verify return:1\n"
+    "depth=0 /CN=self-signed.example\n"
+    "verify return:1\n"
+    "---\n"
+    "Certificate chain\n"
+    " 0 s:/CN=self-signed.example\n"
+    "   i:/CN=self-signed.example Root\n"
+    "---\n"
+    "Server certificate\n"
+    f"{_PEM}\n"
+    "subject=/CN=self-signed.example\n"
+    "issuer=/CN=self-signed.example Root\n"
+    "---\n"
+    "Verify return code: 19 (self-signed certificate in certificate chain)\n"
+)
+
+# B3 guard: non-TLS port / no peer cert. openssl STILL prints code 0, but there
+# is NO PEM marker — the regex requires the marker before the Verify line, so it
+# misses → null → output_schema rejects → status=exception.
+_TLS_NO_CERT = (
+    "CONNECTED(00000003)\n"
+    "no peer certificate available\n"
+    "---\n"
+    "No client certificate CA names sent\n"
+    "---\n"
+    "SSL handshake has read 0 bytes and written 0 bytes\n"
+    "---\n"
+    "Verify return code: 0 (ok)\n"
+)
+
+
 class _CaptureTarget:
     """Generation-only target: returns canned stdout and records every command.
 
@@ -110,9 +233,15 @@ class _CaptureTarget:
 class _Scenario:
     inspector: str  # manifest file stem under builtin/net/
     out_name: str  # fixture basename
-    main_stdout: str  # the JSON object the collector pipeline would emit
+    main_stdout: str  # the JSON object (or raw text) the collector pipeline would emit
     expect_findings: bool  # abnormal scenarios must produce >=1 finding
     parameters: dict[str, Any] = field(default_factory=dict)
+    # net.tls.chain_validity's B3 fail-loud path: a no-cert / non-TLS stdout
+    # carries "Verify return code: 0" but no PEM marker, so `raw_extract_regex`
+    # misses → {verify_code: null} → output_schema rejects null → exception.
+    # Those scenarios MUST record an `exception` status, so `_record` asserts
+    # against this field instead of hard-coding "ok".
+    expect_status: str = "ok"
 
 
 # The crafted JSON objects below are exactly what each inspector's awk/dig
@@ -223,6 +352,81 @@ _SCENARIOS: tuple[_Scenario, ...] = (
         ),
         expect_findings=False,
     ),
+    # ---- net.tls.chain_validity ----------------------------------------- #
+    # The crafted stdout below is the verbatim text `openssl s_client` prints
+    # for each scenario (cert PEM + "Verify return code: N (reason)" footer),
+    # NOT JSON — this inspector parses with `format: raw` + `raw_extract_regex`.
+    # The PEM bodies are truncated placeholders: the parser only needs the
+    # `-----BEGIN CERTIFICATE-----` marker to appear BEFORE the Verify line
+    # (B3 gate). Two openssl implementations are covered (OpenSSL 3.x footer
+    # wording vs LibreSSL) for both valid-chain and broken-chain to lock the
+    # regex's cross-implementation stability (design R1).
+    #
+    # Valid chain — OpenSSL 3.x (hostname endpoint → SNI sent). verify_code "0".
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_valid_openssl.json",
+        main_stdout=_TLS_VALID_OPENSSL,
+        expect_findings=False,
+        parameters={"endpoint": "example.com:443"},
+    ),
+    # Valid chain — LibreSSL footer wording (macOS local target). verify_code "0".
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_valid_libressl.json",
+        main_stdout=_TLS_VALID_LIBRESSL,
+        expect_findings=False,
+        parameters={"endpoint": "example.org:443"},
+    ),
+    # Broken chain — OpenSSL 3.x, code 20 (missing intermediate CA). → critical.
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_broken_openssl.json",
+        main_stdout=_TLS_BROKEN_OPENSSL,
+        expect_findings=True,
+        parameters={"endpoint": "incomplete-chain.example:443"},
+    ),
+    # Broken chain — LibreSSL, code 19 (self-signed cert in chain, hyphenated
+    # reason variant). → critical. Locks the regex against LibreSSL wording.
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_broken_libressl.json",
+        main_stdout=_TLS_BROKEN_LIBRESSL,
+        expect_findings=True,
+        parameters={"endpoint": "self-signed.example:443"},
+    ),
+    # B3 false-negative guard: no peer certificate (non-TLS port / half
+    # handshake) but openssl STILL prints "Verify return code: 0 (ok)" — yet
+    # there is NO `-----BEGIN CERTIFICATE-----` marker, so the regex misses →
+    # null → output_schema rejects → status=exception. offline-provable.
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_no_cert.json",
+        main_stdout=_TLS_NO_CERT,
+        expect_findings=False,
+        expect_status="exception",
+        parameters={"endpoint": "127.0.0.1:22"},
+    ),
+    # Empty stdout (endpoint unreachable) → no PEM, no Verify line → null →
+    # status=exception (we never call an unreachable endpoint "chain valid").
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_empty.json",
+        main_stdout="",
+        expect_findings=False,
+        expect_status="exception",
+        parameters={"endpoint": "10.255.255.1:443"},
+    ),
+    # IPv4 endpoint, valid chain — drives the SNI case-branch command-string
+    # assertion (test asserts the recorded command does NOT carry -servername
+    # for a bare IPv4 endpoint). Behaviourally an ok valid-chain fixture.
+    _Scenario(
+        inspector="tls_chain_validity",
+        out_name="tls_chain_validity_valid_ipv4.json",
+        main_stdout=_TLS_VALID_OPENSSL,
+        expect_findings=False,
+        parameters={"endpoint": "1.1.1.1:443"},
+    ),
 )
 
 
@@ -245,10 +449,13 @@ async def _record(scenario: _Scenario) -> None:
     result = await runner.run(manifest, target, parameters=scenario.parameters or None)
 
     # Generation sanity (mirrors the pilot recorder): the crafted stdout MUST
-    # parse cleanly, and abnormal scenarios MUST produce a finding so we never
-    # commit a no-op fixture.
-    assert result.status == "ok", (
-        f"{scenario.out_name}: status={result.status} error={result.error}"
+    # drive the inspector to the declared status, and abnormal scenarios MUST
+    # produce a finding so we never commit a no-op fixture. Exception scenarios
+    # (net.tls.chain_validity B3: no cert / empty stdout) carry their own
+    # `expect_status` and produce no findings.
+    assert result.status == scenario.expect_status, (
+        f"{scenario.out_name}: status={result.status} (expected "
+        f"{scenario.expect_status}) error={result.error}"
     )
     if scenario.expect_findings:
         assert result.findings, (

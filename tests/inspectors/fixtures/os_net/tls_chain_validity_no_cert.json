@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v openssl",
+      "stdout": "/usr/bin/openssl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "host=$(printf '%s' 127.0.0.1:22 | cut -d: -f1)\ncase \"$host\" in\n  *[A-Za-z]*) sni=\"-servername $host\" ;;\n  *)          sni=\"\" ;;\nesac\necho | openssl s_client -connect 127.0.0.1:22 $sni 2>&1",
+      "stdout": "CONNECTED(00000003)\nno peer certificate available\n---\nNo client certificate CA names sent\n---\nSSL handshake has read 0 bytes and written 0 bytes\n---\nVerify return code: 0 (ok)\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}

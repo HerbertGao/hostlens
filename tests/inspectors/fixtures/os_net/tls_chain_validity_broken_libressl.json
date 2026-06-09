@@ -1,0 +1,23 @@
+{
+  "impersonate": "local",
+  "capabilities": [
+    "shell"
+  ],
+  "commands": [
+    {
+      "cmd": "command -v openssl",
+      "stdout": "/usr/bin/openssl\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    },
+    {
+      "cmd": "host=$(printf '%s' self-signed.example:443 | cut -d: -f1)\ncase \"$host\" in\n  *[A-Za-z]*) sni=\"-servername $host\" ;;\n  *)          sni=\"\" ;;\nesac\necho | openssl s_client -connect self-signed.example:443 $sni 2>&1",
+      "stdout": "CONNECTED(00000006)\ndepth=1 /CN=self-signed.example Root\nverify error:num=19:self-signed certificate in certificate chain\nverify return:1\ndepth=0 /CN=self-signed.example\nverify return:1\n---\nCertificate chain\n 0 s:/CN=self-signed.example\n   i:/CN=self-signed.example Root\n---\nServer certificate\n-----BEGIN CERTIFICATE-----\nMIIDdummyBase64CertificateBodyTruncatedForFixturePurposesOnly0000\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----\nsubject=/CN=self-signed.example\nissuer=/CN=self-signed.example Root\n---\nVerify return code: 19 (self-signed certificate in certificate chain)\n",
+      "stderr": "",
+      "exit_code": 0,
+      "duration_seconds": 0.0
+    }
+  ],
+  "files": {}
+}
