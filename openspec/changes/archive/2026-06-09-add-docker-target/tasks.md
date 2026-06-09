@@ -51,4 +51,4 @@
 - [x] 7.1 `docs/operations/targets.md`（已存在）补 docker target 配置示例 + socket=宿主 root 等价权限安全提示 + `docker_host` 仅本机 socket 说明 + `[docker]` extra 安装说明；docstring 陈述技术事实「容器内 exec_run environment 直达进程环境，不受 sshd AcceptEnv 过滤」（D3，只写事实不写营销式对比）
 - [x] 7.2 `mypy --strict` + `ruff` 全过；跑 `openspec-cn validate --change add-docker-target --strict`
 - [x] 7.3 本机 Demo Path 跑通（proposal §Demo Path）：起 alpine 容器 → 配 targets.yaml → `target test`（容器内真 echo，exit0 + capabilities）/ `doctor --json`（connectivity ok、type docker）两腿验证通过；`inspect` 腿因 inspector manifest `targets` 尚不含 docker 报 `requires_unmet`（已记入 proposal Non-Goals，「inspector 巡检容器」是 follow-up，非本 change 范围）
-- [ ] 7.4 commit 后跑对抗性 review（`/review-loop-codex`，§5.3：含 src/ 运行时行为 + 安全边界，应 review）→ APPROVE 后开 PR `feat/add-docker-target` → CI 绿 + Copilot/BugBot triage → squash merge
+- [x] 7.4 commit 后跑对抗性 review（`/review-loop-codex`，§5.3：含 src/ 运行时行为 + 安全边界，应 review）→ APPROVE 后开 PR `feat/add-docker-target` → CI 绿 + Copilot/BugBot triage → squash merge
