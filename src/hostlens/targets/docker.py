@@ -369,6 +369,18 @@ class DockerTarget:
                 target=self.name,
                 message=_scrub(exc),
             ) from exc
+        except docker.errors.DockerException as exc:
+            # Daemon went away mid-exec / connection dropped — a base
+            # ``DockerException`` that is not an ``APIError``. Surface as a
+            # structured transport error rather than letting the raw
+            # docker-py exception escape (mirrors ``_resolve_container`` /
+            # ``read_file``; NotFound & APIError are subclasses handled by
+            # the arms above first).
+            raise TargetError(
+                kind="docker_unavailable",
+                target=self.name,
+                message=_scrub(exc),
+            ) from exc
 
         duration = time.monotonic() - t0
         stdout_bytes, stderr_bytes = output if output is not None else (None, None)

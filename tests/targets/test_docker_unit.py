@@ -309,3 +309,23 @@ async def test_read_file_not_found_maps_filenotfound(
     target = _build_target(entry=_FakeEntry())
     with pytest.raises(FileNotFoundError):
         await target.read_file("/tmp/missing")
+
+
+async def test_exec_daemon_error_maps_docker_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """exec_run raising a non-APIError DockerException → docker_unavailable.
+
+    Daemon died mid-exec / connection dropped — a base DockerException that
+    is not an APIError must not escape raw (symmetric to read_file).
+    """
+
+    import docker
+
+    exc = docker.errors.DockerException("connection aborted")
+    monkeypatch.setattr(docker_mod.docker, "from_env", lambda: _client_factory(exc))
+
+    target = _build_target(entry=_FakeEntry())
+    with pytest.raises(TargetError) as exc_info:
+        await target.exec("echo hi", timeout=5)
+    assert exc_info.value.kind == "docker_unavailable"
