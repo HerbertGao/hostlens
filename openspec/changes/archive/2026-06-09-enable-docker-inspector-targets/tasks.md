@@ -42,4 +42,4 @@
 - [x] 5.2 跑 `mypy --strict` + 全量 pytest（py3.11 / py3.12 心理预演，本地至少 py3.12）全绿
 - [x] 5.3 `openspec-cn validate enable-docker-inspector-targets --strict` 通过
 - [x] 5.4 对本次变更跑对抗性 review（`/review-loop-codex`），triage + 修复到放行（CLAUDE.md §5.3：含 src/ 运行时行为变更 + 改公开 schema 契约，必须 review）
-- [ ] 5.5 feature branch `feat/enable-docker-inspector-targets` → PR → CI 绿 + Copilot/BugBot triage → squash merge
+- [x] 5.5 feature branch `feat/enable-docker-inspector-targets` → PR → CI 绿 + Copilot/BugBot triage → squash merge
