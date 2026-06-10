@@ -31,8 +31,11 @@ class Capability(enum.Enum):
     lowercase snake_case (``Capability.SSH.value == "ssh"``).
 
     Future milestones extend this enum in their own proposals:
-    - M8 ``add-docker-target`` / ``add-kubernetes-target`` will add
-      ``K8S_EXEC`` (and possibly others).
+    - M8 container targets do **not** introduce new capabilities:
+      ``DockerTarget`` / ``KubernetesTarget`` both provide the existing
+      ``{SHELL, FILE_READ}`` and lazily probe the existing
+      ``SYSTEMD`` / ``DOCKER_CLI`` (inspectors declare target-agnostic
+      capabilities like ``SHELL``, never a ``K8S_EXEC``).
     - M9 ``add-remediation`` will add ``FILE_WRITE`` and write-class
       capabilities.
 

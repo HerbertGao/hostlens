@@ -20,11 +20,14 @@ from hostlens.tools.schemas.list_targets import CAPABILITY_ALLOWLIST
 
 
 def test_capability_has_exactly_m1_minimum_set() -> None:
-    """M1 lock: exactly 5 members; refusing to pre-allocate M8/M9 names.
+    """M1 lock: exactly 5 members; refusing to pre-allocate future names.
 
     Adding a member here is a breaking change for downstream allowlists
-    and Inspector manifest schemas — it must go through its own proposal
-    (M8 ``K8S_EXEC``, M9 ``FILE_WRITE``, etc.).
+    and Inspector manifest schemas — it must go through its own proposal.
+    M8 container targets (Docker / Kubernetes) deliberately add **no** new
+    capability (they reuse ``{SHELL, FILE_READ}`` + lazily-probed
+    ``SYSTEMD`` / ``DOCKER_CLI``), so this set stays at 5; M9
+    ``FILE_WRITE`` etc. would each go through its own proposal.
     """
 
     assert set(Capability.__members__.keys()) == {

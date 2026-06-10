@@ -42,7 +42,6 @@ from __future__ import annotations
 import asyncio
 import posixpath
 import re
-import tarfile
 import time
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -56,6 +55,7 @@ except ImportError:  # docker-py is an optional-dep (``hostlens[docker]``).
     docker = None
 
 from hostlens.core.exceptions import TargetError
+from hostlens.targets._tar import extract_single_regular_file
 from hostlens.targets.base import Capability, ExecResult
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ class _ChunkStreamReader:
     ``get_archive`` yields the tar frame as a sequence of byte chunks. We
     feed those into ``tarfile`` *lazily* (one chunk pulled per shortfall)
     so the full stream is never materialised in memory — the per-member
-    running-byte backstop in ``_read_capped`` then enforces the 10 MiB cap
+    running-byte backstop shared in ``_tar.py`` then enforces the 10 MiB cap
     on the file content while the tar is read on demand. tarfile in
     ``r|*`` mode reads strictly forward, so no seek/tell is needed.
     """
@@ -148,14 +148,7 @@ class _ChunkStreamReader:
 
 _NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_\-]{0,63}$")
 
-# 10 MiB cap for ``read_file`` (mirrors LocalTarget / SSHTarget; boundary
-# is strict ``>`` — exactly 10 MiB is allowed through).
-_READ_FILE_MAX_BYTES: Final[int] = 10 * 1024 * 1024
-
 _PIP_INSTALL_HINT: Final[str] = 'pip install "hostlens[docker]"'
-
-# Chunk size for the running-byte backstop while streaming a tar member.
-_READ_CHUNK_BYTES: Final[int] = 64 * 1024
 
 
 class DockerTarget:
@@ -493,7 +486,7 @@ class DockerTarget:
         # docker-py returns a generator of byte chunks. We wrap it in a
         # lazy ``read``-able adapter and hand that to a streaming
         # (``r|*``) tar reader so the whole archive is never buffered in
-        # memory; the per-member backstop in ``_read_capped`` enforces the
+        # memory; the per-member backstop shared in ``_tar.py`` enforces the
         # 10 MiB cap on the file content as the tar is consumed on demand.
         reader = _ChunkStreamReader(iter(stream))
         return await asyncio.to_thread(self._extract_single_file, reader, path)
@@ -501,12 +494,10 @@ class DockerTarget:
     def _extract_single_file(self, reader: _ChunkStreamReader, path: str) -> bytes:
         """Single forward pass over the tar: enforce single-regular-file + size.
 
-        ``not_a_file`` is decided before ``file_too_large`` (spec
-        §需求:read_file 固定顺序): the first non-regular-file entry, or a
-        second regular-file entry, raises ``not_a_file`` immediately. The
-        size cap uses an unconditional running-byte backstop while reading
-        the member (``> 10 MiB`` aborts), with the tar stat ``size`` as an
-        optional early-exit optimisation — not the sole defence.
+        Delegates the single-regular-file + 10 MiB-backstop semantics to
+        the shared ``extract_single_regular_file`` (kept in sync with
+        ``KubernetesTarget.read_file``); ``not_a_file`` is decided before
+        ``file_too_large``.
 
         Runs inside ``asyncio.to_thread``. The ``reader.close()`` lives in
         a ``finally`` here (not at the ``read_file`` call site) so that the
@@ -521,63 +512,15 @@ class DockerTarget:
         """
 
         try:
-            # typeshed's ``_Fileobj`` Protocol requires write/tell/seek/close,
-            # but the ``r|*`` streaming reader only ever calls ``read``
-            # forward (verified by the integration suite). Our
-            # ``_ChunkStreamReader`` exposes exactly that surface, so the
-            # fileobj is type-narrowed here.
-            with tarfile.open(fileobj=reader, mode="r|*") as tar:  # type: ignore[call-overload]
-                data: bytes | None = None
-                for member in tar:
-                    if not member.isreg():
-                        raise TargetError(kind="not_a_file", target=self.name, path=path)
-                    if data is not None:
-                        # Already saw a regular file; a second one means the
-                        # path was a directory (multi-entry archive).
-                        raise TargetError(kind="not_a_file", target=self.name, path=path)
-                    if member.size > _READ_FILE_MAX_BYTES:
-                        raise TargetError(
-                            kind="file_too_large",
-                            target=self.name,
-                            path=path,
-                            size=member.size,
-                        )
-                    extracted = tar.extractfile(member)
-                    data = b"" if extracted is None else _read_capped(extracted, self.name, path)
-                if data is None:
-                    # No regular file in the archive at all — treat as
-                    # not-a-file (directory-only / empty archive).
-                    raise TargetError(kind="not_a_file", target=self.name, path=path)
-                return data
+            return extract_single_regular_file(
+                reader,
+                not_a_file=lambda: TargetError(kind="not_a_file", target=self.name, path=path),
+                file_too_large=lambda size: TargetError(
+                    kind="file_too_large", target=self.name, path=path, size=size
+                ),
+            )
         finally:
             reader.close()
-
-
-def _read_capped(reader: Any, target_name: str, path: str) -> bytes:
-    """Stream ``reader`` accumulating bytes; abort if total exceeds 10 MiB.
-
-    Unconditional backstop (spec §需求:read_file 固定顺序): we never read
-    the whole stream into memory before checking size — we accumulate
-    chunk by chunk and raise ``file_too_large`` the moment the running
-    total exceeds the cap.
-    """
-
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = reader.read(_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _READ_FILE_MAX_BYTES:
-            raise TargetError(
-                kind="file_too_large",
-                target=target_name,
-                path=path,
-                size=total,
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _decode(value: bytes | None) -> str:

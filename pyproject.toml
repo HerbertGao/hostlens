@@ -62,9 +62,11 @@ dev = [
     # tests/mcp_server suite; self-reference keeps the pin in one place.
     "hostlens[mcp]",
     "hostlens[docker]",
+    "hostlens[k8s]",
 ]
 mcp = ["mcp>=1.27"]
 docker = ["docker>=7"]
+k8s = ["kubernetes-asyncio>=35"]
 docs = []
 
 [project.scripts]
@@ -119,6 +121,15 @@ module = ["mcp.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 
+# `kubernetes_asyncio` is an optional dependency (pip install "hostlens[k8s]");
+# the lint/type CI runs without it. follow_imports=skip forces the SDK to Any
+# in BOTH the installed and missing environments so type-checking is consistent
+# either way (mirrors the `mcp.*` override).
+[[tool.mypy.overrides]]
+module = ["kubernetes_asyncio.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
@@ -132,4 +143,5 @@ markers = [
     "slow: long-running tests",
     "live: tests that hit real Anthropic API (opt-in via -m live)",
     "docker_integration: tests that exercise a real docker daemon (skip when unavailable)",
+    "k8s_integration: tests that exercise a real kubernetes cluster (skip when unavailable)",
 ]
