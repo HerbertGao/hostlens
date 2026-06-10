@@ -418,7 +418,7 @@ APPROVE/CLEAR → git push → gh pr create
 
 ## 9. 当前阶段
 
-**M0–M5、M7 已落地，M6 进行中（主体已成型）**（`src/` 有可运行代码、`hostlens` CLI 可装可跑、未发 PyPI）。已交付：
+**M0–M5、M7、M8 已落地，M6 进行中（主体已成型）**（`src/` 有可运行代码、`hostlens` CLI 可装可跑、未发 PyPI）。已交付：
 
 - **M0** 脚手架 + `hostlens doctor`
 - **M1** ExecutionTarget（local/ssh）/ Inspector 插件系统 / Report 数据模型 + `hostlens inspect` / `target` / `inspectors`
@@ -426,14 +426,14 @@ APPROVE/CLEAR → git push → gh pr create
 - **M3** Diagnostician + 根因假设 + Report 持久化（`reporting/store.py`）+ regression diff（`hostlens reports list/show/diff`）；M3.6 Path 1（容忍 inbound thinking）已落，**Path 2（support-extended-thinking，请求+消费推理 trace）仍待做**
 - **M4** Scheduler：`scheduler/{schema,loader,store,runner}.py` + `orchestration/pipeline.py`（编排函数上提）+ `hostlens schedule list/run/daemon/trigger/status`；cron/interval 定时、Run 留痕（独立 runs.db）、SIGTERM 优雅停机、doctor `checks.schedules`
 - **M5** Notifier：`notifiers/{base,config,routing,telegram,lark}.py` + Jinja2 模板——Notifier Protocol + Channel registry / Telegram（MarkdownV2）+ 飞书 Lark（HMAC 签名）适配器 / `notifiers.yaml`（`${ENV_VAR}` 注入）+ `only_if` 路由（复用硬化 DSL、severity rank 比较）/ Scheduler↔Notifier 接线（runner 在 Report 持久化后按路由派发、结果写 `Run.notify_results`，失败隔离不冒泡）/ `hostlens notify channels/render/test` CLI + `doctor --check-channels`
-- **M6**（🚧 进行中，主体已成型）内置 Inspector 库扩充：`src/hostlens/inspectors/builtin/` 下 **59 个** inspector（已过 ≥40 退出门槛），覆盖计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/security/包管理域；经多个 inspector wave 增量交付（`add-os-shell-inspectors-wave1` / `add-single-instance-service-inspectors` / `add-log-and-fault-service-inspectors` / `add-replication-lag-inspectors` / `add-security-baseline-and-package-inspectors` 等已归档）。**剩余域**：TLS chain（已提案）/ 语言运行时 JVM·Go（已提案）/ redis.slowlog seed 漂移；K8s 域待 M8 target
+- **M6**（🚧 进行中，主体已成型）内置 Inspector 库扩充：`src/hostlens/inspectors/builtin/` 下 **65 个** inspector（已过 ≥40 退出门槛），覆盖计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/security/包管理/TLS chain/语言运行时 JVM·Go 域；经多个 inspector wave 增量交付（`add-os-shell-inspectors-wave1` / `add-single-instance-service-inspectors` / `add-log-and-fault-service-inspectors` / `add-replication-lag-inspectors` / `add-security-baseline-and-package-inspectors` / `add-runtime-inspectors` / `add-tls-chain-validity-inspector` 等已归档）。**剩余域**：redis.slowlog seed 漂移迁移；K8s 域 inspector（kubectl/API 视角，独立提案 —— M8 target 已就位但 pod-exec 视角装不下，见 `enable-k8s-inspector-targets` 非目标）
 - **M7** MCP Server：`mcp_server/{tools_adapter.py, server.py}` —— `McpToolsAdapter` + `build_server` / `run_stdio` stdio server + `hostlens mcp serve` CLI；只读三件套（`list_inspectors` / `list_targets` / `run_inspector`）显式 opt-in `"mcp"` surface；`doctor --json` 的 `checks.mcp`（`ok` / `missing`，非致命）；fail-closed 三处对称（`list_for_mcp` 投影 / `build_server` eager / `dispatch` 门）；**stdio-only**（`mcp` optional-dep：`pip install "hostlens[mcp]"`）
+- **M8** Docker/K8s ExecutionTarget：`targets/docker.py`（docker-py）+ `targets/kubernetes.py`（kubernetes-asyncio，exec 走 WsApiClient、read_file 走 tar-over-ws）两个只读 target（#81/#83）+ inspector 侧放开（#82/#84）——`InspectorManifest.targets` Literal 收口为 `local/ssh/docker/k8s` 全集，容器安全 cohort **INCLUDE 28 / EXCLUDE 37**（按 collector 读取源逐项判定，内容式 meta-guard + docker⇔k8s 奇偶不变量钉死）；target 经 `targets.yaml` 配置（`target add --type docker/k8s` CLI 写入留 follow-up）
 
 **下一步候选**（milestone 编号非严格串行；M6 inspector 库与 M5/M7 时间上交叠，按需推进，参考 [TODO.md](TODO.md) 进度总览）：
-- **补 M6 剩余域** —— security 基线 / 包管理 / TLS chain validity / JVM·Go 运行时 / 部分 DB replication_lag inspector，达到「每域 ≥3、各有 snapshot + replay fixture」退出条件
+- **补 M6 剩余域** —— K8s 域 inspector（kubectl/API 视角独立提案，M8 已解锁）/ redis.slowlog seed 漂移迁移 / wave-2b 推后项（nginx.upstream、mysql.deadlocks），达到「每域 ≥3、各有 snapshot + replay fixture」退出条件
 - **M3.6 Path 2 `support-extended-thinking`** —— Agent loop 主动请求 + 消费推理 trace（Path 1「容忍 inbound thinking」已落 #53；可插队）
-- **M8 Docker/K8s ExecutionTarget** —— `DockerTarget`（docker-py）/ `KubernetesTarget`（kubernetes-asyncio），解锁 K8s inspector 域
-- **M9 受控修复（Remediation）** —— `plan → approve → execute → rollback`，**门控**：先在 M1–M8 验证只读诊断准确性达标才解锁（`src/hostlens/remediation/` 当前仅空 `__init__.py` 占位）
+- **M9 受控修复（Remediation）** —— `plan → approve → execute → rollback`，**门控**：先在 M1–M8 验证只读诊断准确性达标才解锁（`src/hostlens/remediation/` 当前仅空 `__init__.py` 占位；M1–M8 已齐，可评估解锁）
 - **M10 通道扩展 + PyPI 1.0** —— 钉钉 / 企微 / Slack / Email / 通用 Webhook 适配器（Protocol + registry 已预留）+ 发布
 
 **纪律红线**（不变）：每期开始前先用 OpenSpec 起 proposal，**不要跳过 spec 直接写代码**；改已有契约必更新对应 spec；实现完成后归档（change → `openspec/changes/archive/`，delta 合入 `openspec/specs/`）。

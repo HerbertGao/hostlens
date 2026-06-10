@@ -20,7 +20,7 @@
 | M5 | Notifier 抽象 + Telegram + 飞书 | 定时报告自动推送到 TG / 飞书 | ✅ |
 | M6 | 内置 Inspector 库扩充 | 覆盖 Linux/Nginx/MySQL/Redis/Docker 真实场景 | 🚧 进行中 |
 | M7 | MCP Server | Claude Code / Cursor 能直接调用 Hostlens | ✅ |
-| M8 | Docker + K8s ExecutionTarget | 容器与集群场景 | ⬜ |
+| M8 | Docker + K8s ExecutionTarget | 容器与集群场景 | ✅ |
 | M9 | 受控修复（Remediation） | plan → approve → execute → rollback 闭环 | ⬜ |
 | M10 | 通道扩展 + 文档发布 | 钉钉/企微/Slack/Email/Webhook + PyPI 1.0 | ⬜ |
 
@@ -429,7 +429,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **退出条件**：覆盖矩阵下每个域至少有 3 个 Inspector，总计 ≥40 个，每个 Inspector 有 manifest + snapshot 测试 + 在 `examples/` 里有可 replay 的 fixture。
 
-**状态：🚧 进行中（主体已成型）**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **64 个** inspector（总数已过 ≥40 门槛），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/**security/包管理**/**语言运行时 JVM·Go**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`；运行时 JVM·Go（`add-runtime-inspectors`）已实现待归档；TLS chain validity（`add-tls-chain-validity-inspector`）已实现。**剩余域（达退出条件前待补）**：部分 DB（redis.slowlog 的 seed 漂移迁移）；K8s 域待 **M8** target 就位。
+**状态：🚧 进行中（主体已成型）**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **65 个** inspector（总数已过 ≥40 门槛），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/log/系统/**security/包管理**/**语言运行时 JVM·Go**/**TLS chain**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`、`add-runtime-inspectors`、`add-tls-chain-validity-inspector`。**剩余域（达退出条件前待补）**：部分 DB（redis.slowlog 的 seed 漂移迁移）；K8s 域 inspector（**M8** target 已就位，但 pod OOM/evicted/pending 等需 kubectl/API 视角而非 pod-exec 视角，是独立提案 —— 见 `enable-k8s-inspector-targets` 非目标）。
 
 ### 覆盖矩阵
 
@@ -450,8 +450,8 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 | MySQL | conn usage / slow queries / replication lag / deadlocks | — | mysql.connection_usage, mysql.slow_queries ✅, mysql.replication_lag, mysql.deadlocks（wave-2b 推后,待后续批次/spike） |
 | PostgreSQL | conn usage / replication lag / bloat（真实 SQL）/ long queries | — | postgres.connection_usage ✅, postgres.replication_lag, postgres.bloat_tables, postgres.long_queries ✅ |
 | Redis | memory / persistence / replication / slowlog | — | redis.memory_usage, redis.persistence ✅, redis.replication_lag, redis.slowlog |
-| Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy（由 docker.containers.restart_loop 覆盖、不单列）, docker.containers.restart_loop, docker.images.disk_usage ✅, docker.networks ✅ |
-| K8s（M8 target 就位后） | pod OOM history / evicted / pending / node pressure | — | k8s.pods.oom_history, k8s.pods.evicted, k8s.pods.pending, k8s.nodes.pressure |
+| Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy（由 docker.containers.restart_loop 覆盖、不单列）, docker.containers.restart_loop ✅, docker.images.disk_usage ✅, docker.networks ✅ |
+| K8s（M8 target 已就位；域 inspector 需 kubectl/API 视角，独立提案） | pod OOM history / evicted / pending / node pressure | — | k8s.pods.oom_history, k8s.pods.evicted, k8s.pods.pending, k8s.nodes.pressure |
 | 运行时（JVM） | heap usage / GC pressure / thread count | — | jvm.heap ✅, jvm.gc ✅, jvm.threads ✅ |
 | 运行时（Go） | goroutine count / heap from pprof | — | go.goroutines ✅, go.heap ✅ |
 | 日志 | error burst / exception 突增 | log.tail.error_burst | log.exception_burst ✅ |
@@ -464,12 +464,12 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [ ] **6.2 网络 + DNS + NTP**（network.connections, network.listening_ports, dns.resolve, ntp.drift）
 - [ ] **6.3 systemd + cron**（systemd.timer_status, systemd.masked, cron.last_runs, cron.failures）
 - [x] **6.4a 安全基线 + 包管理**（security.failed_logins, security.sudo_history, security.world_writable_dirs, pkg.pending_updates, pkg.security_patches, pkg.held_back）—— 已交付，归档 `add-security-baseline-and-package-inspectors`
-- [x] **6.4b TLS chain validity**（tls.chain_validity）—— 已实现 `add-tls-chain-validity-inspector`
+- [x] **6.4b TLS chain validity**（tls.chain_validity）—— 已交付，归档 `add-tls-chain-validity-inspector`
 - [ ] **6.5 Nginx**（health, config_test, error_rate, upstream）
 - [ ] **6.6 MySQL / PostgreSQL**（含真实 SQL 模板，如 postgres bloat 用 `pg_stat_user_tables` 的具体查询，参考 docs/ARCHITECTURE.md §4 复杂示例 2）
 - [ ] **6.7 Redis**（memory_usage, persistence, replication_lag, slowlog）
 - [ ] **6.8 Docker（SSH 跨）**（containers.unhealthy, containers.restart_loop, images.disk_usage, networks）
-- [x] **6.9 JVM / Go 运行时**（jvm.heap, jvm.gc, jvm.threads, go.goroutines, go.heap）—— 已实现，待归档 `add-runtime-inspectors`
+- [x] **6.9 JVM / Go 运行时**（jvm.heap, jvm.gc, jvm.threads, go.goroutines, go.heap）—— 已交付，归档 `add-runtime-inspectors`
 - [ ] **6.10 进程 + 内核 + 日志**（process.zombies, process.total, process.critical_alive, system.reboot_required, system.kernel_taint, log.exception_burst）
 - [ ] 验收：每个 Inspector 必须有 fixture + snapshot 测试 + 覆盖矩阵里的位置勾上 + 在 `examples/` 里给出至少一个 demo 场景
 
@@ -512,27 +512,30 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **目标**：补全容器与集群场景，验证 `ExecutionTarget` 抽象的真正扩展性。
 
-**对应 OpenSpec proposal**：
-- `add-docker-execution-target`
-- `add-kubernetes-execution-target`
+**对应 OpenSpec change**（4 个 archived）：
+- [`add-docker-target`](openspec/changes/archive/2026-06-09-add-docker-target/)（8.1 — DockerTarget，PR #81）
+- [`enable-docker-inspector-targets`](openspec/changes/archive/2026-06-09-enable-docker-inspector-targets/)（8.3 docker 半边 — inspector 侧放开，PR #82）
+- [`add-kubernetes-target`](openspec/changes/archive/2026-06-10-add-kubernetes-target/)（8.2 — KubernetesTarget，PR #83）
+- [`enable-k8s-inspector-targets`](openspec/changes/archive/2026-06-10-enable-k8s-inspector-targets/)（8.3 k8s 半边 — inspector 侧放开，PR #84）
 
-**退出条件**：Inspector 不修改代码，仅 manifest 的 `targets:` 字段加上 `docker` / `k8s` 就能在容器内/Pod 内跑。
+**退出条件**：Inspector 不修改代码，仅 manifest 的 `targets:` 字段加上 `docker` / `k8s` 就能在容器内/Pod 内跑。✅ 已达成 —— 容器安全 cohort（INCLUDE 28 / EXCLUDE 37，按 collector 实际读取源逐项判定）的 28 个 manifest 仅追加 `targets:` 值、collector 命令零改动；docker⇔k8s 奇偶不变量 + 内容式 meta-guard 钉死 cohort。
+
+**状态：✅ 已落地**。
 
 ### 任务
 
-- [ ] **8.1 DockerTarget**
-  - [ ] `targets/docker.py`：基于 docker-py，`exec_run` 异步包装
-  - [ ] capability 声明（无 systemd / 无 SSH）
-  - [ ] 容器选择：name / id / label selector
-- [ ] **8.2 KubernetesTarget**
-  - [ ] `targets/k8s.py`：基于 kubernetes-asyncio，`pod exec`
-  - [ ] selector：namespace + label / pod name
-  - [ ] 多容器 pod：必须显式指定 container
-- [ ] **8.3 Capability 系统打磨**
-  - [ ] Inspector 加载时根据 manifest `targets:` 与实际 target capabilities 做兼容性匹配
-  - [ ] 不兼容时 CLI 给出清晰错误：哪个 capability 缺失
-- [ ] **8.4 CLI: target add 支持 docker/k8s**
-  - [ ] `hostlens target add my-pod --type k8s --namespace prod --label app=api`
+- [x] **8.1 DockerTarget**
+  - [x] `targets/docker.py`：基于 docker-py，exec 异步包装（只读：`exec` + `read_file`）
+  - [x] capability 声明（`{SHELL, FILE_READ}` + 懒探测 SYSTEMD/DOCKER_CLI；无 SSH）
+  - [x] 容器选择：name / id（经 `targets.yaml` 配置）
+- [x] **8.2 KubernetesTarget**
+  - [x] `targets/kubernetes.py`：基于 kubernetes-asyncio，pod exec 走 `WsApiClient`，`read_file` 走 tar-over-ws
+  - [x] selector：namespace + pod name
+  - [x] 多容器 pod：建议显式指定 `container:`（默认取 `spec.containers[0]`；尊重 `default-container` annotation 登记为未来独立提案）
+- [x] **8.3 Capability 系统打磨**
+  - [x] `InspectorManifest.targets` Literal 收口为 `local/ssh/docker/k8s` 全集；runner preflight 按 manifest `targets:` + capability 匹配（不满足报 `requires_unmet`）
+  - [x] 派发路径 flip-impersonate 回放测试（ReplayTarget `impersonate: docker/k8s`）
+- [ ] **8.4 CLI: target add 支持 docker/k8s**（留 follow-up —— 与 docker/k8s 一致经 `targets.yaml` 配置即可用，CLI 写入非阻塞）
 
 ---
 
