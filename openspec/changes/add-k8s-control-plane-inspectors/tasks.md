@@ -34,7 +34,7 @@
 
 - [x] 5.1 `pre-commit run --all-files` + `mypy --strict src/` + console `pytest` 全绿
 - [x] 5.2 kind 真机 Demo Path 跑通（D-7：fixture 不验证 collector shell 正确性，真机兜底必须 **5/5 覆盖 + namespace 预检两路径**）：`kind create cluster` → 按 proposal Demo Path 用 `kubectl apply` heredoc 造真 OOMKilled pod（memory limit 16Mi + 超限分配；**exit 137 造不出 OOMKilled**）与 unschedulable pod（label key 显式加引号——防御性写法，避免 YAML 1.1 标量歧义，与 proposal Demo Path 注释一致）→ `sleep 90` 等事件积累 → 5 个 inspector 全部 `hostlens inspect` 跑一遍（oom_killed / stuck_pending（`--parameters` 调低阈值）/ events.warnings（`min_count: 2`）出预期 finding；evicted / nodes.conditions 在健康集群断言 `status=ok` 空 findings 作执行证据）→ namespace 预检两路径：`--parameters '{"namespace": "default"}'`（status=ok）与 `'{"namespace": "nosuchns"}'`（断言 status=exception 非空 ok）→ `kind delete cluster`；记录全部输出进 PR 描述
-- [ ] 5.3 commit（分支本地）→ 对抗性 review（`/review-loop-codex` 优先；含 src/ 测试与 manifest 注入面，属「应该跑」类）→ triage 修复 → APPROVE/CLEAR 后 push
+- [x] 5.3 commit（分支本地）→ 对抗性 review（Code Reviewer + Reality Checker 两方，Codex 用户指令跳过；APPROVE，RC 三项复核后全 verified-safe，每个在范围类目强对账锚）→ 无需修复
 - [ ] 5.4 `\gh pr create --base main`，PR 描述含 spec 引用（`openspec/changes/add-k8s-control-plane-inspectors/`）+ Demo Path 全部输出 + 「fixture 不锁 collector 正确性、真机已 5/5 + namespace 预检两路径兜底」声明
 - [ ] 5.5 CI 全绿后拉 Copilot / Cursor BugBot 评论逐条 triage，再 `\gh pr merge --squash --delete-branch`
 - [ ] 5.6 归档：`openspec-cn archive`（delta 合入 `openspec/specs/`，change 目录 mv 到 archive；纯机械步骤经授权可 admin 直推）
