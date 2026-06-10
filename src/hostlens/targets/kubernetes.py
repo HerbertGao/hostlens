@@ -356,6 +356,12 @@ class KubernetesTarget:
                 message=_scrub(exc),
             ) from exc
 
+        if pod.status is None or pod.spec is None:
+            # A Running pod always carries status/spec (apiserver invariant);
+            # converge a theoretical malformed-object AttributeError into the
+            # structured transport-boundary contract (never bare exception).
+            raise TargetError(kind="pod_not_running", target=self.name)
+
         phase = pod.status.phase
         if phase != "Running":
             raise TargetError(
@@ -796,15 +802,12 @@ class KubernetesTarget:
                         stdout_buf.extend(payload)
                         if len(stdout_buf) > _WS_TAR_MAX_BYTES:
                             # Memory-DoS backstop: stop buffering before a
-                            # multi-GB stream exhausts memory. The precise
-                            # 10 MiB cap is still enforced per-member later in
-                            # ``extract_single_regular_file``.
-                            raise TargetError(
-                                kind="file_too_large",
-                                target=self.name,
-                                path=path,
-                                size=len(stdout_buf),
-                            )
+                            # multi-GB stream exhausts memory, then hand the
+                            # ~80 MiB buffer to ``extract_single_regular_file``
+                            # which decides the kind (directory tar -> not_a_file
+                            # on the first DIRTYPE member; single regular file ->
+                            # file_too_large at the 10 MiB per-member cap).
+                            break
                     elif channel == STDERR_CHANNEL:
                         # ``tar``'s diagnostic text (busybox / GNU / locale-
                         # specific) is intentionally not used as a decision

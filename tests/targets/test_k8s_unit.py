@@ -483,6 +483,19 @@ async def test_pod_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
     assert e.value.extra.get("phase") == "Pending"
 
 
+async def test_pod_status_none_is_pod_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Malformed pod with status=None → structured pod_not_running, not AttributeError."""
+
+    class _MalformedPod:
+        spec = _FakePodSpec(["app"])
+        status = None
+
+    target = _build_target_with_pod(monkeypatch, entry=_FakeEntry(), pod=_MalformedPod())
+    with pytest.raises(TargetError) as e:
+        await target.exec("echo hi", timeout=5)
+    assert e.value.kind == "pod_not_running"
+
+
 async def test_named_container_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     """specified container not in spec → container_not_found (with available)."""
 
@@ -1185,22 +1198,49 @@ async def test_read_file_over_10mb_raises(monkeypatch: pytest.MonkeyPatch) -> No
     assert e.value.extra.get("path") == "/tmp/big.bin"
 
 
-async def test_read_file_ws_memory_backstop_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Raw ``tar`` stdout exceeding ``_WS_TAR_MAX_BYTES`` raises file_too_large.
+async def test_read_file_ws_memory_backstop_dir_not_a_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory tar exceeding ``_WS_TAR_MAX_BYTES`` still reports not_a_file.
 
-    Memory-DoS backstop: ``_ws_tar`` aborts buffering before the whole stream
-    is materialised, independent of the per-member 10 MiB extractor cap.
-    ``_WS_TAR_MAX_BYTES`` is patched to a small value so the test feeds a
-    modest stream (not a real 80 MiB archive) that still crosses the
-    high-water mark while accumulating.
+    Memory-DoS backstop: ``_ws_tar`` stops buffering at the high-water mark and
+    hands the truncated buffer to ``extract_single_regular_file``. For a
+    directory archive the first DIRTYPE member decides ``not_a_file`` — the
+    ceiling must not pre-empt that into ``file_too_large``.
+    ``_WS_TAR_MAX_BYTES`` is patched small so the test feeds a modest archive
+    (not a real 80 MiB one) that still crosses the high-water mark.
     """
 
     monkeypatch.setattr(k8s_mod, "_WS_TAR_MAX_BYTES", 4096)
-    # Raw channel-1 bytes well above the patched 4 KiB backstop; the content
-    # need not be a valid tar — the backstop fires during accumulation,
-    # before any tar parsing.
-    raw = b"a" * (4096 * 4)
-    inbound = [*_chunked_frames(1, raw), _frame(3, _success_status())]
+    tar_bytes = _tar_directory_with_member("data/", "data/big.bin", b"a" * (4096 * 4))
+    inbound = [*_chunked_frames(1, tar_bytes), _frame(3, _success_status())]
+    exec_api = _FakeExecApi(inbound=inbound)
+    target = _build_exec_target(
+        monkeypatch, entry=_FakeEntry(container="app"), pod=_running_pod(["app"]), exec_api=exec_api
+    )
+
+    with pytest.raises(TargetError) as e:
+        await target.read_file("/data")
+    assert e.value.kind == "not_a_file"
+
+
+async def test_read_file_ws_memory_backstop_single_file_too_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single regular-file tar over the per-member cap reports file_too_large.
+
+    Both ``_WS_TAR_MAX_BYTES`` and the per-member ``READ_FILE_MAX_BYTES`` are
+    patched small so a modest single-file archive (not a real 80 / 10 MiB one)
+    crosses the high-water mark, is handed to the extractor, and hits the
+    per-member cap first.
+    """
+
+    import hostlens.targets._tar as tar_mod
+
+    monkeypatch.setattr(k8s_mod, "_WS_TAR_MAX_BYTES", 4096)
+    monkeypatch.setattr(tar_mod, "READ_FILE_MAX_BYTES", 1024)
+    tar_bytes = _tar_regular("huge.bin", b"a" * (4096 * 4))
+    inbound = [*_chunked_frames(1, tar_bytes), _frame(3, _success_status())]
     exec_api = _FakeExecApi(inbound=inbound)
     target = _build_exec_target(
         monkeypatch, entry=_FakeEntry(container="app"), pod=_running_pod(["app"]), exec_api=exec_api
