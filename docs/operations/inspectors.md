@@ -36,7 +36,7 @@ user_paths, *, settings)`，返回 `(registry, errors)` 双值：
 | `version` | str | ✓ | SemVer 字符串 `^\d+\.\d+\.\d+$` |
 | `description` | str | ✓ | 一句话说明 |
 | `tags` | list[str] | | 每个 tag 匹配 `^[a-z][a-z0-9_-]*$`；用于 `inspectors list --tag` 筛选 |
-| `targets` | list[`local`\|`ssh`\|`docker`] | ✓ | 至少 1 个；`docker` 仅供容器语义正确的 inspector 声明（见下方「Docker target 上可跑的 inspector」）；`k8s` / `kubernetes` 仍被拒（KubernetesTarget 未实现） |
+| `targets` | list[`local`\|`ssh`\|`docker`\|`k8s`] | ✓ | 至少 1 个；`docker` / `k8s` 仅供容器语义正确的 inspector 声明（容器适用性判据 docker / k8s 共用，见下方「容器类 target 上可跑的 inspector（docker / k8s）」）；取值域已与 `ExecutionTarget.type` 全集对齐，其他字符串（如 `kubernetes` / `replay`）仍被拒 |
 | `requires_capabilities` | list[str] | | 值必须在 `{shell, file_read, ssh, systemd, docker_cli}` 内 |
 | `requires_binaries` | list[str] | | 每个 binary 名匹配 `^[a-zA-Z0-9._-]+$` |
 | `requires_files` | list[str] | | 每个路径匹配严格正则 `^/[A-Za-z0-9._/-]+$` + component 级 `.` / `..` 拒绝 |
@@ -149,20 +149,25 @@ M1 随包发布两个 builtin Inspector，用于验证管线 + Demo Path：
 `system.uptime` 的 finding 表达式用到 `float(load1)`，因此 DSL 引擎在
 `hostlens.inspectors.dsl.evaluate` 已显式注册 `float` / `int` 类型转换函数。
 
-## Docker target 上可跑的 inspector
+## 容器类 target 上可跑的 inspector（docker / k8s）
 
-`DockerTarget`（`type: docker`）让 inspector 的 collector 在**单个容器**的
-PID / mount / net namespace 内执行（`docker exec` 语义）。但 inspector 默认对
-docker target **inert**：只有 manifest 的 `targets` 显式含 `docker` 才会被
-runner preflight 放行（`target.type in manifest.targets`）。哪些 inspector
-声明了 `docker` 是逐项人工评审的结果 —— **能否跑在 docker 上取决于该 collector
-的信号在「容器自身视角」下是否正确且有意义**，而非简单地全量放开。
+`DockerTarget`（`type: docker`）与 `KubernetesTarget`（`type: k8s`）同为
+**容器类 target**：都让 inspector 的 collector 在**单个容器**的 PID / mount /
+net namespace 内执行（`docker exec` / pod exec API 语义）。但 inspector 默认对
+容器类 target **inert**：只有 manifest 的 `targets` 显式含 `docker` / `k8s`
+才会被 runner preflight 放行（`target.type in manifest.targets`）。哪些
+inspector 声明了容器类 target 是逐项人工评审的结果 —— **能否跑在容器内取决于
+该 collector 的信号在「容器自身视角」下是否正确且有意义**，而非简单地全量放开。
+容器适用性判据是 target-agnostic 的（按 collector 实际读取源判定容器隔离性），
+因此 docker 与 k8s 共用同一份 cohort（声明 `docker` ⇔ 声明 `k8s`，由测试的
+奇偶不变量锁定）。
 
 ### 哪些 inspector 可跑（INCLUDE）
 
 仅当采集信号「读取该容器自身的进程 / 应用 / 文件 / 网络状态」时正确，才声明
-`docker`。当前 cohort（按域概述，逐项见提案
-`openspec/changes/enable-docker-inspector-targets/design.md` Decision 4 全表）：
+`docker` 与 `k8s`（两者同集）。当前 cohort（按域概述，逐项见已归档提案
+`openspec/changes/archive/2026-06-09-enable-docker-inspector-targets/design.md`
+Decision 4 全表）：
 
 | 域 | inspector | 容器视角 |
 |---|---|---|
@@ -193,9 +198,10 @@ runner preflight 放行（`target.type in manifest.targets`）。哪些 inspecto
 
 ### 为何一批 inspector 保持 `local`/`ssh`（EXCLUDE）
 
-凡是采集 **host 全局** 硬件 / 内核 / init 状态的 inspector **不**声明 `docker`，
-因为容器内要么**读不到**、要么读到的是 **host 共享值造成静默误归因**（最危险，
-因为不报错）。代表性 EXCLUDE 类与理由：
+凡是采集 **host 全局** 硬件 / 内核 / init 状态的 inspector **既不**声明
+`docker` **也不**声明 `k8s`，因为容器内要么**读不到**、要么读到的是
+**host 共享值造成静默误归因**（最危险，因为不报错；k8s 上读到的是 **node**
+全局值，用户连 node 是哪台都未必知道，误归因更隐蔽）。代表性 EXCLUDE 类与理由：
 
 - **host 全局 sysctl（非 namespace 隔离）**：`linux.process.fd_usage` 读
   `/proc/sys/fs/file-nr`、`linux.process.total` 的分母 `pid_max` 读
@@ -215,11 +221,12 @@ runner preflight 放行（`target.type in manifest.targets`）。哪些 inspecto
   docker-in-docker，非目标）。
 
 > **守门兜底**：capability gate（preflight step 2）能挡掉「要求 `ssh` /
-> `systemd` capability 而 DockerTarget 没有」的 inspector，但**挡不住误归因**
-> （读 `/proc/meminfo` 不报错）。所以容器语义正确性靠作者判据 + 代码 review
-> 双签，并有内容式 meta-guard 机械拦截：凡 collector 命令含 `/proc/sys/` /
-> `/proc/meminfo` / `journalctl` / `/proc/loadavg` / `/proc/uptime` 的 manifest
-> 一律断言 `targets` 不含 `docker`（测试 `test_docker_target_cohort_guard.py`）。
+> `systemd` capability 而 DockerTarget / KubernetesTarget 没有」的 inspector，
+> 但**挡不住误归因**（读 `/proc/meminfo` 不报错）。所以容器语义正确性靠作者
+> 判据 + 代码 review 双签，并有内容式 meta-guard 机械拦截：凡 collector 命令含
+> `/proc/sys/` / `/proc/meminfo` / `journalctl` / `/proc/loadavg` /
+> `/proc/uptime` 的 manifest 一律断言 `targets` **既不含 `docker` 也不含
+> `k8s`**（测试 `test_docker_target_cohort_guard.py`）。
 
 ### 配置 docker target 与实跑
 
@@ -242,6 +249,55 @@ hostlens inspect hl-redis --inspector redis.memory_usage   # 容器内 redis 的
 
 > docker SDK 是 optional extra：`pip install "hostlens[docker]"`。未装时
 > DockerTarget 不可用（`hostlens doctor` 会提示），但不影响 local/ssh/replay。
+
+### 配置 k8s target 与实跑
+
+`KubernetesTarget`（`type: k8s`）经 pod exec API 在 pod 的**单个容器**内执行
+collector，容器 cohort 与 docker 完全同集。同样经
+`~/.config/hostlens/targets.yaml` 手写接入（CLI 写入留作独立 follow-up）：
+
+```yaml
+version: "1"
+targets:
+  - name: hl-redis
+    type: k8s
+    pod: hl-redis
+    namespace: default
+    # container: redis   # 多容器 pod 强烈建议显式配置（见下方注意事项）
+```
+
+```bash
+kubectl run hl-redis --image=redis:7
+hostlens inspect hl-redis --inspector redis.memory_usage   # pod 内 redis 的真实采集
+```
+
+> kubernetes SDK 是 optional extra：`pip install "hostlens[k8s]"`。未装时
+> KubernetesTarget 不可用（报 `k8s_sdk_unavailable`），但不影响其他 target。
+
+### k8s（pod）视角注意事项
+
+上方「容器视角注意事项」对 k8s 同样成立；以下是 pod 语义带来的增量差异：
+
+- **多容器 pod 强烈建议显式配 `container:`**：未配置时 KubernetesTarget 默认
+  exec 进 `spec.containers[0]`（不尊重 `kubectl.kubernetes.io/default-container`
+  annotation）。istio 开启 `holdApplicationUntilProxyStarts` 时 istio-proxy 是
+  首容器 —— collector 会 exec 进 envoy：服务类 / 运行时类 inspector 因缺二进制
+  走 `requires_unmet`（fail-visible），但 `linux.process.critical_alive` 会在
+  envoy 容器自有的 PID namespace 里 `pgrep` 不到目标进程，产生 **critical 级
+  误报**（噪声型假警报）。显式配 `container:` 可根除。
+- **`net.*` 是 pod netns 视角**（比 docker 的容器级 netns 更宽）：pod 内所有
+  容器共享 network namespace，`net.*` 看到的是**整个 pod**（含 sidecar 的
+  socket）。pod IP 即诊断对象，视角更宽不是误归因，但解读 finding 时须意识到
+  sidecar 流量与监听也在其中。
+- **`net.listening_ports`：sidecar 端口须加进 `allowed_ports`**：istio sidecar
+  的 envoy 在 0.0.0.0 上监听 15001 / 15006 / 15090 等端口，会被逐个报
+  warning —— 把这些 sidecar 端口加进该 inspector 的 `allowed_ports` 参数消噪。
+- **`net.connections` 的 close_wait 是 pod 聚合值**：阈值度量的是整个 pod
+  netns 的连接（**含 envoy 连接池**），finding 文案的「application is
+  leaking」归因在 sidecar 场景下含糊 —— 确认泄漏方需进容器内手工排查。
+- **`nginx.error_rate` 分母被 kube-probe 流量稀释**：liveness / readiness
+  探针（每 5-10s 一次）持续命中 access log，把错误率比值往下拉，可能掩盖
+  低频 5xx burst —— 评估阈值时把探针 QPS 计入分母预期。
 
 ## 4 种 parse format 选型指南
 
@@ -433,9 +489,10 @@ fixture JSON 结构：
 
 要点：
 
-- `impersonate`（`local`/`ssh`/`docker`，默认 `local`）决定运行时 `.type`，使 runner preflight
-  的 `target.type in manifest.targets` 透明通过 —— 不新增 target 枚举。`impersonate: docker`
-  用于离线验证 docker 派发路径（见「Docker target 上可跑的 inspector」）。
+- `impersonate`（`local`/`ssh`/`docker`/`k8s`，默认 `local`）决定运行时 `.type`，使 runner preflight
+  的 `target.type in manifest.targets` 透明通过 —— 不新增 target 枚举。`impersonate: docker` /
+  `impersonate: k8s` 用于离线验证容器类派发路径（见「容器类 target 上可跑的
+  inspector（docker / k8s）」）。
 - `commands[]` **必须**预录全部 preflight 探测命令（`command -v <binary>`）与渲染后的
   主命令；命令按「逐行 rstrip 后 SHA256」匹配。
 - 未命中即抛 `ReplayMiss`（继承 `HostlensError` 而非 `TargetError`），并记入

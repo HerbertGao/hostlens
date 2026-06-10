@@ -148,7 +148,7 @@ class TestInspectorManifestTargets:
         with pytest.raises(ValidationError):
             InspectorManifest(**kwargs)  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize("target", ["kubernetes", "k8s", "linux"])
+    @pytest.mark.parametrize("target", ["kubernetes", "linux"])
     def test_unknown_target_kind_rejected(self, target: str) -> None:
         kwargs = _valid_manifest_kwargs()
         kwargs["targets"] = [target]
@@ -168,7 +168,7 @@ class TestInspectorManifestTargets:
         assert m.targets == ["ssh"]
 
     # docker 放开 (enable-docker-inspector-targets 提案): DockerTarget 已实现,
-    # `docker` 进入 Literal 取值域; `k8s`/`kubernetes` 仍被拒 (KubernetesTarget 未实现).
+    # `docker` 进入 Literal 取值域.
     @pytest.mark.parametrize(
         "targets",
         [
@@ -183,8 +183,25 @@ class TestInspectorManifestTargets:
         m = InspectorManifest(**kwargs)  # type: ignore[arg-type]
         assert m.targets == targets
 
-    @pytest.mark.parametrize("targets", [[], ["kubernetes"], ["k8s"]])
-    def test_empty_or_k8s_targets_rejected(self, targets: list[str]) -> None:
+    # k8s 放开 (enable-k8s-inspector-targets 提案): KubernetesTarget 已实现,
+    # `k8s` 进入 Literal 取值域 — 至此与 ExecutionTarget.type 锁定全集对齐;
+    # `kubernetes` / `replay` 等其他字符串仍被拒.
+    @pytest.mark.parametrize(
+        "targets",
+        [
+            ["k8s"],
+            ["local", "k8s"],
+            ["local", "ssh", "docker", "k8s"],
+        ],
+    )
+    def test_k8s_target_kind_accepted(self, targets: list[str]) -> None:
+        kwargs = _valid_manifest_kwargs()
+        kwargs["targets"] = targets
+        m = InspectorManifest(**kwargs)  # type: ignore[arg-type]
+        assert m.targets == targets
+
+    @pytest.mark.parametrize("targets", [[], ["kubernetes"], ["replay"]])
+    def test_empty_or_unknown_targets_rejected(self, targets: list[str]) -> None:
         kwargs = _valid_manifest_kwargs()
         kwargs["targets"] = targets
         with pytest.raises(ValidationError):

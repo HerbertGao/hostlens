@@ -282,11 +282,11 @@ class TestInheritedSingleInstanceContract:
     @pytest.mark.parametrize("name,manifest_path", _REPLICATION_ITEMS, ids=_REPLICATION_IDS)
     def test_targets_local_and_ssh(self, name: str, manifest_path: Path) -> None:
         # local+ssh both present (the inherited single-instance contract); a
-        # replication inspector may additionally declare `docker` (enable-docker-
-        # inspector-targets, cohort frozen in test_docker_target_cohort_guard.py).
+        # replication inspector may additionally declare container-class targets
+        # (`docker` / `k8s`, cohort frozen in test_docker_target_cohort_guard.py).
         manifest = load_manifest(manifest_path)
         assert {"local", "ssh"} <= set(manifest.targets)
-        assert set(manifest.targets) <= {"local", "ssh", "docker"}
+        assert set(manifest.targets) <= {"local", "ssh", "docker", "k8s"}
 
     @pytest.mark.parametrize("name,manifest_path", _REPLICATION_ITEMS, ids=_REPLICATION_IDS)
     def test_string_params_carry_a_pattern(self, name: str, manifest_path: Path) -> None:

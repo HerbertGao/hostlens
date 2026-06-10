@@ -1,7 +1,9 @@
-"""Meta-guards freezing which builtin inspectors may declare a ``docker`` target.
+"""Meta-guards freezing which builtin inspectors may declare container-class
+targets (``docker`` / ``k8s``).
 
-These guards back ``enable-docker-inspector-targets`` (authoring-contract
-§场景:内容式 meta-guard). Two independent layers protect the cohort:
+These guards back the container-applicability requirement of the
+inspector-authoring contract (§场景:内容式 meta-guard, §场景:奇偶不变量). Two
+independent layers protect the cohort:
 
 * **Frozen INCLUDE/EXCLUDE name lists** (``test_include_exclude_*``) — the
   manually-reviewed roster from design Decision 4, with hard count assertions
@@ -10,9 +12,24 @@ These guards back ``enable-docker-inspector-targets`` (authoring-contract
 * **Content-based guard** (``test_host_global_marker_*``) — independent of the
   name list: any manifest whose ``collect.command`` reads a host-global,
   non-namespaced source (``/proc/sys/`` / ``/proc/meminfo`` / ``journalctl`` /
-  ``/proc/loadavg`` / ``/proc/uptime``) MUST NOT declare ``docker``. This
-  mechanically traps the dangerous silent-misattribution class even if a future
-  author adds such an inspector and wrongly lists ``docker`` by domain analogy.
+  ``/proc/loadavg`` / ``/proc/uptime``) MUST NOT declare ``docker`` or ``k8s``.
+  This mechanically traps the dangerous silent-misattribution class even if a
+  future author adds such an inspector and wrongly lists a container target by
+  domain analogy.
+
+On top of both layers a **parity invariant** holds: container safety is one
+property of the collector's read sources, not one per runtime — so every
+builtin manifest must satisfy ``("docker" in targets) == ("k8s" in targets)``.
+
+Escape hatch for the parity invariant: a future inspector with a **k8s-only
+read source** (e.g. checking ``/var/run/secrets/kubernetes.io/serviceaccount/
+token`` expiry — that file does not exist in plain docker containers) may
+legitimately declare ``[k8s]`` without ``[docker]``. Doing so MUST be an
+explicit decision that simultaneously amends the authoring-contract
+container-applicability criterion AND the parity assertion below.
+
+File name kept as-is (renaming would break git blame); this docstring is the
+source of truth for the broadened container-class scope.
 """
 
 from __future__ import annotations
@@ -180,16 +197,35 @@ def test_rosters_partition_all_builtins_with_frozen_counts() -> None:
     }
 
 
-def test_include_roster_declares_docker() -> None:
+def test_include_roster_declares_container_targets() -> None:
     by_name = _load_all_builtin()
-    offenders = sorted(n for n in _INCLUDE if "docker" not in by_name[n].targets)
-    assert not offenders, f"INCLUDE inspectors missing docker target: {offenders}"
+    offenders = sorted(
+        n for n in _INCLUDE if "docker" not in by_name[n].targets or "k8s" not in by_name[n].targets
+    )
+    assert not offenders, f"INCLUDE inspectors missing docker/k8s target: {offenders}"
 
 
-def test_exclude_roster_omits_docker() -> None:
+def test_exclude_roster_omits_container_targets() -> None:
     by_name = _load_all_builtin()
-    offenders = sorted(n for n in _EXCLUDE if "docker" in by_name[n].targets)
-    assert not offenders, f"EXCLUDE inspectors wrongly declaring docker target: {offenders}"
+    offenders = sorted(
+        n for n in _EXCLUDE if "docker" in by_name[n].targets or "k8s" in by_name[n].targets
+    )
+    assert not offenders, f"EXCLUDE inspectors wrongly declaring container target: {offenders}"
+
+
+def test_container_target_parity_invariant() -> None:
+    """Container safety is a property of the read sources, not of the runtime:
+    every builtin must declare ``docker`` and ``k8s`` together or neither.
+    Legitimate breakage (k8s-only read source) requires amending the
+    authoring-contract criterion and this assertion — see module docstring."""
+
+    by_name = _load_all_builtin()
+    offenders = sorted(
+        name
+        for name, manifest in by_name.items()
+        if ("docker" in manifest.targets) != ("k8s" in manifest.targets)
+    )
+    assert not offenders, f"manifests breaking docker⇔k8s parity: {offenders}"
 
 
 # --------------------------------------------------------------------------- #
@@ -197,22 +233,23 @@ def test_exclude_roster_omits_docker() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_host_global_marker_commands_never_declare_docker() -> None:
+def test_host_global_marker_commands_never_declare_container_targets() -> None:
     """Any manifest whose collect.command reads a host-global, non-namespaced
-    source MUST NOT declare ``docker`` — mechanical trap for the silent
-    misattribution class, independent of the hand-maintained roster."""
+    source MUST NOT declare ``docker`` or ``k8s`` — mechanical trap for the
+    silent misattribution class (inside a pod these markers read **node**
+    global values), independent of the hand-maintained roster."""
 
     by_name = _load_all_builtin()
     offenders: list[tuple[str, list[str]]] = []
     for name, manifest in by_name.items():
-        if "docker" not in manifest.targets:
+        if "docker" not in manifest.targets and "k8s" not in manifest.targets:
             continue
         cmd = manifest.collect.command
         hits = [mk for mk in _HOST_GLOBAL_MARKERS if mk in cmd]
         if hits:
             offenders.append((name, hits))
     assert not offenders, (
-        f"manifests reading host-global sources must not declare docker: {offenders}"
+        f"manifests reading host-global sources must not declare docker/k8s: {offenders}"
     )
 
 
