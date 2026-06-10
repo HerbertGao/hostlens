@@ -6,7 +6,7 @@ description: >-
   (`dig` from bind-utils/dnsutils is the only hard dep). All probing happens in
   the collector; the Finding DSL only compares the ready `results` array.
 tags: [linux, network, dns, resolve, dig]
-targets: [local, ssh, docker]
+targets: [local, ssh, docker, k8s]
 requires_capabilities: [shell]
 requires_binaries: [dig, grep]
 privilege: none

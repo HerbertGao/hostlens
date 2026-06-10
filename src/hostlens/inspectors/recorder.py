@@ -115,7 +115,7 @@ class RecordedFixture:
     def __init__(
         self,
         *,
-        impersonate: Literal["local", "ssh", "docker"],
+        impersonate: Literal["local", "ssh", "docker", "k8s"],
         capabilities: list[str],
         commands: list[dict[str, Any]],
         files: dict[str, str],
@@ -289,14 +289,14 @@ async def record_fixture(
             }
         )
 
-    if target.type not in ("local", "ssh", "docker"):
+    if target.type not in ("local", "ssh", "docker", "k8s"):
         raise ConfigError(
             f"recorder cannot impersonate target type {target.type!r}; "
-            "only local/ssh/docker fixtures are supported",
+            "only local/ssh/docker/k8s fixtures are supported",
             kind="recorder_unsupported_target_type",
             target=target.name,
         )
-    impersonate: Literal["local", "ssh", "docker"] = target.type
+    impersonate: Literal["local", "ssh", "docker", "k8s"] = target.type
     capabilities = sorted(cap.value for cap in target.capabilities)
     files = {
         path: _redact(content, secret_values, scrubbers) for path, content in proxy.files.items()

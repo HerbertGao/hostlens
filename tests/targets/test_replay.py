@@ -181,7 +181,16 @@ def test_impersonate_docker_loads_and_type_is_docker(tmp_path: Path) -> None:
     assert target.type == "docker"
 
 
-@pytest.mark.parametrize("impersonate", ["k8s", "kubernetes", "replay"])
+def test_impersonate_k8s_loads_and_type_is_k8s(tmp_path: Path) -> None:
+    # enable-k8s-inspector-targets: `k8s` 进入 impersonate 取值域, 使 k8s
+    # 派发路径可被离线回放 (runner preflight `target.type in manifest.targets` 透明通过).
+    data = {**_BASE_FIXTURE, "impersonate": "k8s"}
+    fixture = _write_fixture(tmp_path, data)
+    target = ReplayTarget(name="replay-host", fixture=fixture)
+    assert target.type == "k8s"
+
+
+@pytest.mark.parametrize("impersonate", ["kubernetes", "replay"])
 def test_impersonate_unimplemented_type_rejected(tmp_path: Path, impersonate: str) -> None:
     # impersonate 只能冒充已实现的 target 类型; 冒充未实现类型造成 preflight 假性通过,
     # 故 fixture 加载期必须 raise (fail-loud).

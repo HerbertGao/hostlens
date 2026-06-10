@@ -411,18 +411,11 @@ async def test_docker_target_impersonates_docker() -> None:
     assert fixture.impersonate == "docker"
 
 
-async def test_unsupported_target_type_raises() -> None:
-    """An unsupported target type (e.g. ``k8s``) fails loud rather than being
-    silently coerced into a mislabelled ``"local"`` fixture.
+async def test_k8s_target_impersonates_k8s() -> None:
+    """A ``type=="k8s"`` target records a fixture with ``impersonate ==
+    "k8s"`` (not silently coerced to ``"local"``)."""
 
-    The manifest declares ``targets=["k8s"]`` via ``model_copy`` (bypassing
-    the ``Literal["local","ssh","docker"]`` validator) so the runner preflight's
-    ``target.type in manifest.targets`` gate passes and execution reaches the
-    recorder's own impersonation guard — the line under test.
-    """
-
-    base = _make_manifest(command="echo '{\"results\": []}'")
-    manifest = base.model_copy(update={"targets": ["k8s"]})
+    manifest = _make_manifest(command="echo '{\"results\": []}'", targets=["k8s"])
     target = _TypedScriptedTarget(
         "rec",
         [
@@ -438,6 +431,41 @@ async def test_unsupported_target_type_raises() -> None:
             )
         ],
         target_type="k8s",
+    )
+
+    fixture = await record_fixture(manifest, target, settings=Settings())
+
+    assert fixture.impersonate == "k8s"
+
+
+async def test_unsupported_target_type_raises() -> None:
+    """An unsupported target type (e.g. ``kubernetes``) fails loud rather than
+    being silently coerced into a mislabelled ``"local"`` fixture.
+
+    The manifest declares ``targets=["kubernetes"]`` via ``model_copy``
+    (bypassing the ``Literal["local","ssh","docker","k8s"]`` validator) so the
+    runner preflight's ``target.type in manifest.targets`` gate passes and
+    execution reaches the recorder's own impersonation guard — the line under
+    test.
+    """
+
+    base = _make_manifest(command="echo '{\"results\": []}'")
+    manifest = base.model_copy(update={"targets": ["kubernetes"]})
+    target = _TypedScriptedTarget(
+        "rec",
+        [
+            (
+                "echo",
+                ExecResult(
+                    exit_code=0,
+                    stdout='{"results": []}\n',
+                    stderr="",
+                    duration_seconds=0.0,
+                    timed_out=False,
+                ),
+            )
+        ],
+        target_type="kubernetes",
     )
 
     with pytest.raises(ConfigError) as exc_info:

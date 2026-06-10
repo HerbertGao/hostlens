@@ -13,9 +13,10 @@ zero SSH, zero real host, and zero API quota.
 Two concepts that look alike but are independent (see design D1):
 
 - The fixture's top-level ``impersonate`` field drives the **runtime** ``.type``
-  property (``"local"`` / ``"ssh"`` / ``"docker"``, default ``"local"``). The
-  runner's preflight checks ``target.type in manifest.targets`` (a
-  ``Literal["local", "ssh", "docker"]``); impersonating an existing type makes
+  property (``"local"`` / ``"ssh"`` / ``"docker"`` / ``"k8s"``, default
+  ``"local"``). The runner's preflight checks
+  ``target.type in manifest.targets`` (a
+  ``Literal["local", "ssh", "docker", "k8s"]``); impersonating an existing type makes
   that check transparent so the ``ExecutionTarget.type`` Literal and
   ``InspectorManifest.targets`` Literal never need a new ``"replay"`` member.
 - The config-layer discriminator value ``type: replay`` (a ``TargetsConfig``
@@ -84,7 +85,7 @@ class _Fixture(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    impersonate: Literal["local", "ssh", "docker"] = "local"
+    impersonate: Literal["local", "ssh", "docker", "k8s"] = "local"
     capabilities: list[str] = Field(default_factory=list)
     commands: list[_RecordedCommand] = Field(default_factory=list)
     files: dict[str, str] = Field(default_factory=dict)
@@ -138,7 +139,7 @@ class ReplayTarget:
 
         # Runtime ``.type`` impersonates an existing target type so runner
         # preflight (``target.type in manifest.targets``) is transparent.
-        self.type: Literal["local", "ssh", "docker"] = data.impersonate
+        self.type: Literal["local", "ssh", "docker", "k8s"] = data.impersonate
 
         # Project the fixture's capability strings onto the Capability enum.
         # An unknown string is a fixture authoring error — fail fast.
