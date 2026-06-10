@@ -18,7 +18,7 @@
 | M3 | Diagnostician + 报告体系 | 跨信号关联 + 根因假设 + regression diff | ✅ |
 | M4 | Scheduler | cron 定时跑 + 历史 run 持久化 | ✅ |
 | M5 | Notifier 抽象 + Telegram + 飞书 | 定时报告自动推送到 TG / 飞书 | ✅ |
-| M6 | 内置 Inspector 库扩充 | 覆盖 Linux/Nginx/MySQL/Redis/Docker 真实场景 | 🚧 进行中 |
+| M6 | 内置 Inspector 库扩充 | 覆盖 Linux/Nginx/MySQL/Redis/Docker 真实场景 | ✅ |
 | M7 | MCP Server | Claude Code / Cursor 能直接调用 Hostlens | ✅ |
 | M8 | Docker + K8s ExecutionTarget | 容器与集群场景 | ✅ |
 | M9 | 受控修复（Remediation） | plan → approve → execute → rollback 闭环 | ⬜ |
@@ -429,7 +429,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **退出条件**：覆盖矩阵下每个域至少有 3 个 Inspector，总计 ≥40 个，每个 Inspector 有 manifest + snapshot 测试 + 在 `examples/` 里有可 replay 的 fixture。
 
-**状态：🚧 进行中（主体已成型）**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **70 个** inspector（总数已过 ≥40 门槛），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/**K8s 控制面**/log/系统/**security/包管理**/**语言运行时 JVM·Go**/**TLS chain**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`、`add-runtime-inspectors`、`add-tls-chain-validity-inspector`、`add-k8s-control-plane-inspectors`。**剩余域（达退出条件前待补）**：部分 DB（redis.slowlog 的 seed 漂移迁移）。K8s 控制面域（pod OOMKilled / evicted / stuck-pending / node conditions / warning events）经 `add-k8s-control-plane-inspectors` 以 kubectl 管理机视角交付（5 个 `k8s.*` inspector，`targets: [local, ssh]`）。
+**状态：✅ 达退出门槛**。已通过多个 inspector wave 增量交付，当前 `src/hostlens/inspectors/builtin/` 下 **70 个** inspector（总数已过 ≥40 门槛，每域 ≥3），核心域（计算/内存/磁盘/网络/进程/systemd/cron/nginx/mysql/postgres/redis/docker/**K8s 控制面**/log/系统/**security/包管理**/**语言运行时 JVM·Go**/**TLS chain**）已覆盖。已归档 change：`add-inspector-authoring-contract`、`add-os-shell-inspectors-wave1`、`add-service-inspector-contract-spike`、`add-single-instance-service-inspectors`、`add-log-and-fault-service-inspectors`、`add-replication-inspector-spike`、`add-replication-lag-inspectors`、`add-postgres-replication-lag-inspector`、`add-security-baseline-and-package-inspectors`、`add-runtime-inspectors`、`add-tls-chain-validity-inspector`、`add-k8s-control-plane-inspectors`、`migrate-redis-slowlog-service-contract`、`migrate-postgres-bloat-tables-service-contract`。seed 漂移迁移已收口（slowlog/bloat_tables 全量合规 service-inspector-contract）。K8s 控制面域（pod OOMKilled / evicted / stuck-pending / node conditions / warning events）经 `add-k8s-control-plane-inspectors` 以 kubectl 管理机视角交付（5 个 `k8s.*` inspector，`targets: [local, ssh]`）。**可选增强（非退出阻塞）**：wave-2b 推后项 nginx.upstream、mysql.deadlocks。
 
 ### 覆盖矩阵
 
@@ -449,7 +449,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 | Web / Nginx | health / config test / 5xx rate / upstream health | — | nginx.health ✅, nginx.config_test ✅, nginx.error_rate ✅, nginx.upstream（wave-2b 推后,待后续批次/spike） |
 | MySQL | conn usage / slow queries / replication lag / deadlocks | — | mysql.connection_usage, mysql.slow_queries ✅, mysql.replication_lag, mysql.deadlocks（wave-2b 推后,待后续批次/spike） |
 | PostgreSQL | conn usage / replication lag / bloat（真实 SQL）/ long queries | — | postgres.connection_usage ✅, postgres.replication_lag, postgres.bloat_tables, postgres.long_queries ✅ |
-| Redis | memory / persistence / replication / slowlog | — | redis.memory_usage, redis.persistence ✅, redis.replication_lag, redis.slowlog |
+| Redis | memory / persistence / replication / slowlog | — | redis.memory_usage ✅, redis.persistence ✅, redis.replication_lag ✅, redis.slowlog ✅ |
 | Docker（SSH 跨） | unhealthy / restart loop / image disk / network | — | docker.containers.unhealthy（由 docker.containers.restart_loop 覆盖、不单列）, docker.containers.restart_loop ✅, docker.images.disk_usage ✅, docker.networks ✅ |
 | K8s（kubectl 控制面视角，跑在配 kubeconfig 的管理机上） | pod OOMKilled / evicted / stuck-pending / node conditions / warning events | — | k8s.pods.oom_killed ✅, k8s.pods.evicted ✅, k8s.pods.stuck_pending ✅, k8s.nodes.conditions ✅, k8s.events.warnings ✅ |
 | 运行时（JVM） | heap usage / GC pressure / thread count | — | jvm.heap ✅, jvm.gc ✅, jvm.threads ✅ |
@@ -465,12 +465,12 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [ ] **6.3 systemd + cron**（systemd.timer_status, systemd.masked, cron.last_runs, cron.failures）
 - [x] **6.4a 安全基线 + 包管理**（security.failed_logins, security.sudo_history, security.world_writable_dirs, pkg.pending_updates, pkg.security_patches, pkg.held_back）—— 已交付，归档 `add-security-baseline-and-package-inspectors`
 - [x] **6.4b TLS chain validity**（tls.chain_validity）—— 已交付，归档 `add-tls-chain-validity-inspector`
-- [ ] **6.5 Nginx**（health, config_test, error_rate, upstream）
-- [ ] **6.6 MySQL / PostgreSQL**（含真实 SQL 模板，如 postgres bloat 用 `pg_stat_user_tables` 的具体查询，参考 docs/ARCHITECTURE.md §4 复杂示例 2）
-- [ ] **6.7 Redis**（memory_usage, persistence, replication_lag, slowlog）
-- [ ] **6.8 Docker（SSH 跨）**（containers.unhealthy, containers.restart_loop, images.disk_usage, networks）
+- [~] **6.5 Nginx**（health ✅, config_test ✅, error_rate ✅；upstream 为 wave-2b 可选增强，非退出阻塞）
+- [~] **6.6 MySQL / PostgreSQL**（mysql.connection_usage/slow_queries/replication_lag ✅、postgres.connection_usage/replication_lag/bloat_tables/long_queries ✅，含真实 SQL 模板；mysql.deadlocks 为 wave-2b 可选增强，非退出阻塞）
+- [x] **6.7 Redis**（memory_usage, persistence, replication_lag, slowlog）—— 全交付，slowlog 已迁移至 service-inspector-contract 全量合规
+- [x] **6.8 Docker（SSH 跨）**（containers.restart_loop, images.disk_usage, networks；unhealthy 由 restart_loop 覆盖不单列）
 - [x] **6.9 JVM / Go 运行时**（jvm.heap, jvm.gc, jvm.threads, go.goroutines, go.heap）—— 已交付，归档 `add-runtime-inspectors`
-- [ ] **6.10 进程 + 内核 + 日志**（process.zombies, process.total, process.critical_alive, system.reboot_required, system.kernel_taint, log.exception_burst）
+- [x] **6.10 进程 + 内核 + 日志**（process.zombies, process.total, process.critical_alive, system.reboot_required, system.kernel_taint, log.exception_burst）
 - [ ] 验收：每个 Inspector 必须有 fixture + snapshot 测试 + 覆盖矩阵里的位置勾上 + 在 `examples/` 里给出至少一个 demo 场景
 
 ---
