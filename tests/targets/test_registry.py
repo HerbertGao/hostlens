@@ -28,11 +28,13 @@ from hostlens.core.exceptions import TargetError
 from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import (
     DockerEntry,
+    K8sEntry,
     LocalEntry,
     SSHEntry,
     load_targets_config,
 )
 from hostlens.targets.docker import DockerTarget
+from hostlens.targets.kubernetes import KubernetesTarget
 from hostlens.targets.local import LocalTarget
 from hostlens.targets.registry import (
     TargetRegistry,
@@ -64,6 +66,15 @@ def _make_docker_entry(name: str = "my-docker", *, enabled: bool = True) -> Dock
         name=name,
         type="docker",
         container="web",
+        enabled=enabled,
+    )
+
+
+def _make_k8s_entry(name: str = "my-k8s", *, enabled: bool = True) -> K8sEntry:
+    return K8sEntry(
+        name=name,
+        type="k8s",
+        pod="web",
         enabled=enabled,
     )
 
@@ -325,6 +336,30 @@ async def test_docker_target_disabled_via_registry_blocks_exec() -> None:
     assert target._client is None
 
 
+@pytest.mark.asyncio
+async def test_k8s_target_disabled_via_registry_blocks_exec() -> None:
+    """Mirror of the Local / SSH / Docker assertions for the k8s branch.
+
+    A disabled ``KubernetesTarget`` is still registered (doctor /
+    list_targets must see it) but ``exec`` raises ``target_disabled`` from
+    the ordered entry guard — *before* any kubeconfig is loaded or API
+    client built, so the assertion needs no live cluster and no ``[k8s]``
+    extra installed.
+    """
+
+    registry = TargetRegistry()
+    target = KubernetesTarget("paused-k8s")
+    registry.register(target, _make_k8s_entry("paused-k8s", enabled=False))
+
+    with pytest.raises(TargetError) as exc:
+        await target.exec("echo nope", timeout=5)
+    assert exc.value.kind == "target_disabled"
+    # Construction is pure — neither lazy client built; the disabled gate
+    # short-circuits before any kubeconfig load / API-server dial.
+    assert target._read_client is None
+    assert target._ws_client is None
+
+
 # ---------------------------------------------------------------------------
 # build_registry_from_config
 # ---------------------------------------------------------------------------
@@ -419,6 +454,42 @@ def test_build_registry_from_config_docker_branch(tmp_path: Path) -> None:
     assert docker_target.type == "docker"
     assert docker_target._entry is not None
     assert docker_target._entry.container == "web"
+
+
+def test_build_registry_from_config_k8s_branch(tmp_path: Path) -> None:
+    """``type: k8s`` routes through the factory to a ``KubernetesTarget``.
+
+    Asserts the factory builds + registers the k8s branch with its entry
+    injected (``_entry`` carries ``pod`` / ``namespace`` / ``container``),
+    that the registered target reports ``type == "k8s"``, and that
+    construction is pure — neither lazy API client is built (no kubeconfig
+    load / API-server dial at registry-assembly time).
+    """
+
+    cfg_path = tmp_path / "targets.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": "1",
+                "targets": [
+                    {"name": "my-k8s", "type": "k8s", "pod": "web"},
+                ],
+            }
+        )
+    )
+    config = load_targets_config(cfg_path)
+    registry = build_registry_from_config(config, Settings())
+
+    assert registry.names() == {"my-k8s"}
+    k8s_target = registry.get("my-k8s")
+    assert isinstance(k8s_target, KubernetesTarget)
+    assert k8s_target.type == "k8s"
+    assert k8s_target._entry is not None
+    assert k8s_target._entry.pod == "web"
+    assert k8s_target._entry.namespace == "default"
+    # Construction did not dial the cluster — both clients are still lazy.
+    assert k8s_target._read_client is None
+    assert k8s_target._ws_client is None
 
 
 def test_build_registry_preserves_disabled_entries(tmp_path: Path) -> None:

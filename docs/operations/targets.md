@@ -53,6 +53,20 @@ targets:
     # (unix:///var/run/docker.sock). Only local unix:// sockets are
     # accepted — see "Docker targets" below.
     docker_host: unix:///var/run/docker.sock
+
+  - name: app-pod
+    type: k8s
+    enabled: true
+    display_name: "App Pod"
+    description: "Read-only inspection of a Running pod's container"
+    tags: [k8s, app]
+    pod: my-app-7d9f                    # pod name (required, non-empty)
+    namespace: default                  # defaults to "default"
+    container: app                      # optional; omit for the pod's first container
+    # kubeconfig / context are optional; omit both to use in-cluster auth
+    # (when running inside the cluster) or the default kubeconfig.
+    kubeconfig: ~/.kube/config
+    context: kind-hostlens
 ```
 
 ### Field reference
@@ -62,7 +76,7 @@ targets:
 | field | type | default | notes |
 |---|---|---|---|
 | `name` | str | — | must match `^[a-z][a-z0-9_\-]{0,63}$`; enforced at load + constructor + register |
-| `type` | `"local"` / `"ssh"` / `"docker"` | — | discriminator |
+| `type` | `"local"` / `"ssh"` / `"docker"` / `"k8s"` | — | discriminator |
 | `enabled` | bool | `true` | when `false`, `exec` / `read_file` raise `TargetError(kind="target_disabled")` without connecting; doctor marks `connectivity: "skipped"`; `list_targets` ToolSpec filters them out unless `include_disabled=true` |
 | `display_name` | str \| null | null | human-friendly label; only surfaced through `list_targets` projection |
 | `description` | str \| null | null | free text; surfaced through `list_targets` |
@@ -86,6 +100,16 @@ targets:
 |---|---|---|---|
 | `container` | str | — | required, non-empty; container name or id of an **existing** container to inspect |
 | `docker_host` | str \| null | null | optional docker endpoint; only local `unix://` sockets are accepted (see "Docker targets"). Omit to use docker-py's `from_env()` default (typically `unix:///var/run/docker.sock`) |
+
+**K8s-only:**
+
+| field | type | default | notes |
+|---|---|---|---|
+| `pod` | str | — | required, non-empty; name of an **existing, Running** pod to inspect |
+| `namespace` | str | `"default"` | namespace of the pod |
+| `container` | str \| null | null | container name within the pod; omit to target the pod's **first** container (`spec.containers[0]`) |
+| `kubeconfig` | str \| null | null | path to a kubeconfig file; omit to use the default kubeconfig or in-cluster auth (see "Kubernetes targets") |
+| `context` | str \| null | null | kubeconfig context name; omit to use the kubeconfig's current-context |
 
 ## Credential best practices
 
@@ -207,6 +231,131 @@ As with SSH, secrets are passed only through the `environment=` parameter
 and are never spliced into the command string (no `export VAR=value; cmd`),
 so they never appear in the container `ps` output or shell history.
 
+## Kubernetes targets
+
+A `type: k8s` target runs Inspector commands **inside an already existing,
+Running pod's container** via `kubernetes-asyncio`. Like the docker target it
+performs **only read-only** operations — no pod lifecycle management (create /
+delete / patch / scale / exec-write). It is the analogue of `kubectl exec` for
+`exec` and of `kubectl cp` (a `tar`-over-exec stream) for `read_file`.
+
+### Installation
+
+kubernetes-asyncio is an optional dependency. Install the extra before using
+a k8s target:
+
+```
+pip install "hostlens[k8s]"
+```
+
+Without it, using a k8s target raises
+`TargetError(kind="k8s_sdk_unavailable")` carrying the same install hint (it
+never lets a bare `ImportError` escape). The module still imports without the
+extra so the registry / type-checker can reference `KubernetesTarget`.
+
+### Authentication: kubeconfig vs in-cluster
+
+The target builds a per-target client configuration from one of two sources:
+
+- **In-cluster** — when Hostlens runs **inside** the cluster (the
+  `KUBERNETES_SERVICE_HOST` env var is set), it uses the mounted service
+  account token (`load_incluster_config`). `kubeconfig` / `context` are
+  ignored in this mode.
+- **Kubeconfig** — otherwise it loads `kubeconfig` (or the default
+  `~/.kube/config` when omitted) and selects `context` (or the
+  current-context when omitted). All five k8s fields (`pod`, `namespace`,
+  `container`, `kubeconfig`, `context`) are **non-secret** path / name values;
+  putting a `${VAR}` placeholder on any of them raises
+  `ConfigError(kind="env_placeholder_not_allowed_here")` at load time
+  (placeholders are reserved for `password` / `passphrase`).
+
+Kubeconfig load failure, an unreachable API server, an auth failure (401),
+or missing RBAC (403) all surface as `TargetError(kind="k8s_unavailable")`
+with the message scrubbed of any incidental bearer token / home path / IP.
+
+### Required RBAC
+
+The identity Hostlens authenticates as needs, in the target namespace:
+
+- `get` on `pods` (to proactively read the pod's phase + container status
+  before any exec — this is how `pod_not_found` / `pod_not_running` /
+  `container_not_found` / `container_not_running` are classified
+  deterministically rather than from locale-fragile exec error text), and
+- `create` on `pods/exec` (the exec websocket backs both `exec` and the
+  `tar`-over-exec `read_file`).
+
+A minimal read-only Role:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hostlens-inspect
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+```
+
+Note `pods/exec` is a powerful grant: anyone who can exec into a pod can run
+arbitrary commands in that container. Scope the Role to the namespaces /
+service account Hostlens actually inspects and treat a `targets.yaml`
+containing a k8s target with the same care as cluster credentials.
+
+### Environment injection (over stdin, never in argv)
+
+Unlike the docker target (which injects `env` via `exec_run(environment=...)`,
+a dict that never touches a shell), the k8s pod exec API has **no
+`environment=` parameter**. The target therefore feeds env over the exec
+**stdin** channel as shell-quoted `export <KEY>=<value>` lines followed by the
+command and a trailing `exit $?`; the exec `command` is strictly `["/bin/sh"]`.
+Consequences:
+
+- Secrets are passed only over stdin and **never appear in the pod's `ps`
+  output / process argv** (the integration test asserts this against a live
+  pod).
+- Because env values go through a shell `export`, each env **key** must be a
+  valid shell identifier (`^[A-Za-z_][A-Za-z0-9_]*$`) or the call raises
+  `TargetError(kind="invalid_env_key")` — a defense-in-depth guard against
+  injection (env keys originate from controlled inspector parameters).
+- **Known limitation (asymmetric with docker / ssh / local):** because `cmd`
+  itself is fed over stdin, the pod-side command **cannot read external input
+  from stdin** (stdin is occupied by the export+cmd script). Inspector
+  collectors almost never read stdin, so the impact is small, but this
+  contract does **not** claim k8s exec stdin semantics match local / ssh.
+
+### `read_file` requires `tar` in the container (known limitation)
+
+K8s has no equivalent of docker's `get_archive`, so `read_file(path)` runs
+`tar cf - <path>` inside the container (the `kubectl cp` mechanism) and parses
+the streamed archive — enforcing the same single-regular-file / `not_a_file` /
+10 MiB-cap semantics as the docker target. This means:
+
+- A **distroless** / minimal container **without a `tar` binary** cannot be
+  read: `read_file` raises `TargetError(kind="exec_failed")` with a hint that
+  `tar` must be present. A `cat`-based fallback is a deliberate non-goal of
+  this milestone (a follow-up) to keep the single-file tar logic unified with
+  the docker target.
+- A container without `/bin/sh` (distroless) likewise cannot run `exec` and
+  raises `TargetError(kind="exec_failed")` — distinct from
+  `k8s_unavailable` (the API + pod are healthy; only the command could not
+  launch).
+- Missing files surface the stdlib `FileNotFoundError` (not a `TargetError`),
+  decided by tar's non-zero exit code + zero stdout bytes — never by parsing
+  locale-specific stderr text.
+
+### doctor
+
+`hostlens doctor` does not special-case k8s targets: the generic `echo` probe
+exercises the full path (kubeconfig + API + pod + container) and reports
+`connectivity: ok` / `failed` / `skipped` (disabled) like any other target. A
+k8s target with no `kubernetes-asyncio` installed reports `failed` with
+`k8s_sdk_unavailable` rather than crashing the doctor run.
+
 ## Connection pool behavior (SSH)
 
 Each `SSHTarget` instance holds **one** asyncssh control connection
@@ -266,8 +415,8 @@ For each configured target, `doctor` reports:
   always skipped)
 - `credential_source`: `env_var` (placeholder expanded), `inline_plaintext`
   (literal in yaml — triggers a warning), `key_only` (SSH key path
-  only, no password), `none` (local / docker targets — they carry no SSH
-  credentials)
+  only, no password), `none` (local / docker / k8s targets — they carry no
+  SSH credentials)
 - `capabilities`: the set probed at last `exec`
 
 If **any** target reports `connectivity: failed`, `doctor` exits 1.

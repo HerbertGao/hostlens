@@ -37,6 +37,7 @@ from hostlens.core.exceptions import ConfigError
 
 __all__ = [
     "DockerEntry",
+    "K8sEntry",
     "LocalEntry",
     "ReplayEntry",
     "SSHEntry",
@@ -193,12 +194,47 @@ class DockerEntry(_CommonEntryFields):
     docker_host: str | None = None
 
 
+class K8sEntry(_CommonEntryFields):
+    """``type: k8s`` target entry — drives a ``KubernetesTarget``.
+
+    K8s-specific field set is **exactly** ``{pod, namespace, container,
+    kubeconfig, context}`` (spec §场景:TargetEntry k8s 字段集严格 enforces this
+    via ``extra="forbid"`` — adding e.g. ``image`` raises a ``ValidationError``
+    at load time).
+
+    ``pod`` is required and **non-empty** (``min_length=1``): an empty pod
+    reference must fail at yaml load rather than surface later as a runtime
+    ``pod_not_found``.
+
+    ``container`` semantics differ from ``DockerEntry.container``: here it is an
+    optional selector inside a multi-container pod (``None`` → the pod's default
+    container, i.e. k8s exec API ``container=None``), whereas
+    ``DockerEntry.container`` is a required container reference.
+
+    No secret fields: credentials live in the kubeconfig file content / the
+    in-cluster ServiceAccount token, never in yaml. ``kubeconfig`` / ``context``
+    are path / name references (the path itself is not a secret). All five
+    fields are non-secret, so a ``${VAR}`` placeholder in any of them is
+    rejected by the existing placeholder walker (field-name allowlist is
+    ``{password, passphrase}``) as ``env_placeholder_not_allowed_here`` — no
+    K8sEntry-specific logic needed.
+    """
+
+    type: Literal["k8s"]
+    pod: Annotated[str, Field(min_length=1)]
+    namespace: str = "default"
+    container: str | None = None
+    kubeconfig: str | None = None
+    context: str | None = None
+
+
 # Discriminator on ``type`` so Pydantic routes ``type: local`` → LocalEntry,
 # ``type: ssh`` → SSHEntry, ``type: replay`` → ReplayEntry, ``type: docker`` →
-# DockerEntry without manual ``model_validate`` branches. Unknown ``type``
-# values raise ``ValidationError`` automatically.
+# DockerEntry, ``type: k8s`` → K8sEntry without manual ``model_validate``
+# branches. Unknown ``type`` values raise ``ValidationError`` automatically.
 TargetEntry = Annotated[
-    LocalEntry | SSHEntry | ReplayEntry | DockerEntry, Field(discriminator="type")
+    LocalEntry | SSHEntry | ReplayEntry | DockerEntry | K8sEntry,
+    Field(discriminator="type"),
 ]
 
 

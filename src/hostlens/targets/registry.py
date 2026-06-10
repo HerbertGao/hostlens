@@ -164,6 +164,7 @@ def build_registry_from_config(
     # caller only needs ``TargetRegistry`` (the class itself is
     # platform-agnostic).
     from hostlens.targets.docker import DockerTarget
+    from hostlens.targets.kubernetes import KubernetesTarget
     from hostlens.targets.local import LocalTarget
     from hostlens.targets.replay import ReplayTarget
     from hostlens.targets.ssh import SSHTarget
@@ -196,6 +197,10 @@ def build_registry_from_config(
             # Read-only docker target. Construction is pure (no docker call /
             # no daemon dial); the client is built lazily on first exec.
             target = cast("ExecutionTarget", DockerTarget(name=entry.name))
+        elif entry.type == "k8s":
+            # Read-only k8s target. Construction is pure (no kubeconfig load /
+            # no API-server dial); both clients are built lazily on first exec.
+            target = cast("ExecutionTarget", KubernetesTarget(name=entry.name))
         else:  # pragma: no cover - Pydantic discriminator excludes other values
             raise ConfigError(
                 kind="unknown_target_type",

@@ -47,9 +47,12 @@ CAPABILITY_ALLOWLIST: Final[frozenset[str]] = frozenset({c.value for c in Capabi
 
 Derived from ``hostlens.targets.base.Capability`` (M1 single source of
 truth). M1 value set is exactly ``{"shell", "file_read", "ssh",
-"systemd", "docker_cli"}``; M8 ``K8S_EXEC`` and M9 ``FILE_WRITE`` will
-expand both the enum and this allowlist together (spec §场景:capabilities
-与 ``CAPABILITY_ALLOWLIST`` 严格相等).
+"systemd", "docker_cli"}``. M8 container targets (``DockerTarget`` /
+``KubernetesTarget``) add **no** new capability — they reuse the existing
+``{SHELL, FILE_READ}`` plus lazily-probed ``SYSTEMD`` / ``DOCKER_CLI``, so
+this set stays at 5. M9 ``FILE_WRITE`` will expand both the enum and this
+allowlist together (spec §场景:capabilities 与 ``CAPABILITY_ALLOWLIST``
+严格相等).
 
 Any token outside this set is silently dropped by
 `list_targets_handler` before reaching the agent — this prevents
