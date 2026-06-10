@@ -3,16 +3,20 @@
 ## 目的
 
 定义 service(单实例服务)inspector 契约——管辖范围与既有 seed 祖父化、采集服务且连接参数注入安全、secret 经 env 注入从不进命令字符串、遵守 service 层失败分类、声明超时并限制输出规模、跨 local 与 SSH target 无分叉(secret 投递有 SSH 前提)、附双轨 fixture 且证检出能力、契约边界止于单实例。
-
 ## 需求
 ### 需求:本契约管辖范围与既有 seed 祖父化
 
-本 `service-inspector-contract` 的**全部需求**(连接注入安全 / secret / 失败分类 / 超时输出 / 跨 target 无分叉 / 双轨 fixture / 单实例边界)**仅管辖本 spike 起新增或迁移**的 service inspector;作为新立(ADDED)契约,它**向前生效**、**不回溯绑定**已归档的 pre-spike inspector。两个 **pre-spike 既有 seed**——`redis.slowlog`、`postgres.bloat_tables`——是**已祖父化的 legacy**:它们在 secret 命名(用非 `HOSTLENS_` 名)、argv 明文密码(`redis.slowlog` 用 `-a "$..."`)、双轨 fixture(仅单轨 finding-trigger、缺 default-阈值 semantic-abnormal)等处与本契约各需求**漂移**,但这是**已登记的已知不合规项**,**必须**由独立 follow-up 迁移使其合规——**不视为本契约的内部矛盾**。
+本 `service-inspector-contract` 的**全部需求**(连接注入安全 / secret / 失败分类 / 超时输出 / 跨 target 无分叉 / 双轨 fixture / 单实例边界)**仅管辖本 spike 起新增或迁移**的 service inspector;作为新立(ADDED)契约,它**向前生效**、**不回溯绑定**已归档的 pre-spike inspector。曾有两个 pre-spike 既有 seed(`redis.slowlog`、`postgres.bloat_tables`)被祖父化;其中 **`redis.slowlog` 已由独立 follow-up 迁移至全合规**(secret 改 `HOSTLENS_REDIS_PASSWORD` + remap 到 `REDISCLI_AUTH`、补 default-阈值 semantic-abnormal fixture 轨),现**受本契约管辖**、不再祖父化。仅剩**一个 pre-spike 既有 seed**——`postgres.bloat_tables`——是**已祖父化的 legacy**:它在 secret 命名(用非 `HOSTLENS_` 名)、双轨 fixture(仅单轨 finding-trigger、缺 default-阈值 semantic-abnormal)等处与本契约各需求**漂移**,但这是**已登记的已知不合规项**,**必须**由独立 follow-up 迁移使其合规——**不视为本契约的内部矛盾**。
 
 #### 场景:契约不回溯绑定既有 seed
 
 - **当** 审计某 inspector 对本契约各需求的合规性
-- **那么** 仅**本 spike 起新增或迁移**的 service inspector 须满足本契约 MUST;两个 pre-spike seed(`redis.slowlog` / `postgres.bloat_tables`)按祖父化处理、其漂移由独立 follow-up 迁移消解,**禁止**据此判本契约自相矛盾
+- **那么** 仅**本 spike 起新增或迁移**的 service inspector 须满足本契约 MUST;已迁移的 `redis.slowlog` 现受本契约管辖须满足 MUST;仅剩的 pre-spike seed(`postgres.bloat_tables`)按祖父化处理、其漂移由独立 follow-up 迁移消解,**禁止**据此判本契约自相矛盾
+
+#### 场景:redis.slowlog 迁移后受契约管辖
+
+- **当** 审计 `redis.slowlog` 对本契约 secret / argv / 双轨 fixture 需求的合规性
+- **那么** 它**必须**满足全部 MUST:secret 声明为 `HOSTLENS_REDIS_PASSWORD` 并在 collector 内 remap 到 `REDISCLI_AUTH`、命令串**禁止**含 `-a ` 明文密码 flag、**必须**附 default-阈值下触发 finding 的 semantic-abnormal fixture;**禁止**再将其按祖父化豁免
 
 ### 需求:service inspector 采集服务且连接参数注入安全
 
@@ -30,7 +34,7 @@ service-dependent inspector(依赖外部服务进程:nginx / mysql / postgres / 
 
 ### 需求:service inspector 的 secret 必须经 env 注入且从不进命令字符串
 
-（适用范围见首条「本契约管辖范围与既有 seed 祖父化」需求:下述 secret 规则对**本契约管辖**的 inspector 为 MUST;pre-spike seed `redis.slowlog`/`postgres.bloat_tables` 的 secret 漂移祖父化、由独立 follow-up 迁移。）
+（适用范围见首条「本契约管辖范围与既有 seed 祖父化」需求:下述 secret 规则对**本契约管辖**的 inspector 为 MUST;已迁移的 `redis.slowlog` 现受本契约管辖;仅剩的 pre-spike seed `postgres.bloat_tables` 的 secret 漂移祖父化、由独立 follow-up 迁移。）
 
 service inspector 的连接凭据(密码 / token)**必须**经 manifest `secrets` 字段声明、由 runner 经 `env=secrets_env` 注入。声明的 secret 名**必须**用 `HOSTLENS_` 前缀(如 `HOSTLENS_REDIS_PASSWORD` / `HOSTLENS_MYSQL_PWD`)——这对齐既有 `ssh-execution-target` 契约(其 spec 规定 SSH secret 投递走 `AcceptEnv HOSTLENS_*` + `HOSTLENS_` 前缀变量名),使 secret 能跨 SSH 到达远端。collector 内**必须**把该 `HOSTLENS_` 变量 **remap** 到 client 原生 env 鉴权通道(`redis-cli` 读 `REDISCLI_AUTH`、`mysql` 读 `MYSQL_PWD`、`psql` 读 `PGPASSWORD`),使凭据**不进** `argv`。**禁止**把凭据经 `{{ }}` 渲染进命令字符串;**禁止**以会进 `argv`(全局 `ps` 可见)的命令行明文密码参数(如 `mysql -p<pwd>` / `redis-cli -a <pwd>`)传递。本 spike **不**引入凭据文件(`--defaults-extra-file` 等)或其它新 secret 机制;client **无**原生 env 鉴权通道(如 `curl` 的 bearer token)的 secret 机制留对应 wave 定(本 spike 两探针的 client 均有原生 env 通道),届时仍**禁** `argv` 明文。
 
@@ -94,7 +98,7 @@ service inspector **必须**在 manifest 显式声明 `collect.timeout_seconds`,
 
 service inspector **必须**对 `local` 与 `ssh` target 用**同一** manifest、**同一** collector 命令文本、**同一** secret 声明,**禁止**在 manifest / collector 内出现按 target 类型分叉的连接参数约定或失败处理逻辑(无 target-specific 旁路)。该「无分叉」是**可经代码检视机械核验**的属性(检 manifest 无 target 条件分支),CI 在 local 上验证非 secret 行为。
 
-**secret 跨 SSH 走既有契约的 `HOSTLENS_` 路径**:runner 的 SSH target 经 AsyncSSH `conn.run(env=)` 传 env(命令字符串绝不改写),该路径受远端 sshd `AcceptEnv` 约束(默认仅 `LANG`/`LC_*`)。既有 `ssh-execution-target` 契约已定 SSH secret 投递路径 = `HOSTLENS_` 前缀变量名 + 远端 `AcceptEnv HOSTLENS_*`;本契约的 secret 需求**遵循**之(secret 声明 `HOSTLENS_*`、collector remap)。故需 secret 的 inspector 在 SSH 上的运行**前提**是远端配 `AcceptEnv HOSTLENS_*`;本契约**不**声称在未配 AcceptEnv 的默认 sshd 下透明跨 SSH。非 secret 行为由 runner 对 target 的统一 dispatch 结构性等价。**注**:既有 seed `redis.slowlog`/`postgres.bloat_tables` 用**非** `HOSTLENS_` 名、与该契约漂移,迁移是独立 follow-up(见 design D-6),不在本 spike 范围。
+**secret 跨 SSH 走既有契约的 `HOSTLENS_` 路径**:runner 的 SSH target 经 AsyncSSH `conn.run(env=)` 传 env(命令字符串绝不改写),该路径受远端 sshd `AcceptEnv` 约束(默认仅 `LANG`/`LC_*`)。既有 `ssh-execution-target` 契约已定 SSH secret 投递路径 = `HOSTLENS_` 前缀变量名 + 远端 `AcceptEnv HOSTLENS_*`;本契约的 secret 需求**遵循**之(secret 声明 `HOSTLENS_*`、collector remap)。故需 secret 的 inspector 在 SSH 上的运行**前提**是远端配 `AcceptEnv HOSTLENS_*`;本契约**不**声称在未配 AcceptEnv 的默认 sshd 下透明跨 SSH。非 secret 行为由 runner 对 target 的统一 dispatch 结构性等价。**注**:已迁移的 `redis.slowlog` 现用 `HOSTLENS_REDIS_PASSWORD`、合规;仅剩的 pre-spike seed `postgres.bloat_tables` 用**非** `HOSTLENS_` 名、与该契约漂移,迁移是独立 follow-up,不在本 spike 范围。
 
 #### 场景:manifest 无 target 分叉逻辑
 
