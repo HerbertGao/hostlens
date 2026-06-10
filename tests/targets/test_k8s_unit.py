@@ -536,6 +536,33 @@ async def test_container_state_running_none_is_not_running(
     assert e.value.kind == "container_not_running"
 
 
+async def test_container_state_none_is_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """matching container status whose ``state`` itself is None → container_not_running.
+
+    A V1ContainerStatus may carry a name but no ``state`` object; accessing
+    ``state.running`` must not raise a bare AttributeError.
+    """
+
+    class _NoStateStatus:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.state = None
+
+    pod = _FakePod(
+        spec=_FakePodSpec(["app"]),
+        status=_FakePodStatus(
+            phase="Running",
+            container_statuses=[_NoStateStatus("app")],  # type: ignore[list-item]
+        ),
+    )
+    target = _build_target_with_pod(monkeypatch, entry=_FakeEntry(container="app"), pod=pod)
+    with pytest.raises(TargetError) as e:
+        await target.exec("echo hi", timeout=5)
+    assert e.value.kind == "container_not_running"
+
+
 # ---------------------------------------------------------------------------
 # env-key validation (injection guard) — happens before any API call
 # ---------------------------------------------------------------------------
@@ -571,6 +598,62 @@ async def test_sdk_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
         await target.exec("echo hi", timeout=5)
     assert e.value.kind == "k8s_sdk_unavailable"
     assert "hostlens[k8s]" in str(e.value.extra.get("hint", ""))
+
+
+async def test_build_clients_partial_failure_closes_and_no_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WsApiClient construction failing after ApiClient succeeds must not leak.
+
+    The already-built ApiClient (aiohttp session) is closed (awaited) and no
+    partial client is left assigned to ``self``; the error surfaces as a
+    structured ``k8s_unavailable``, not a bare exception.
+    """
+
+    closed: dict[str, int] = {}
+
+    class _RecordingApiClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def close(self) -> None:
+            closed["api_client"] = closed.get("api_client", 0) + 1
+
+    class _FailingWsApiClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("ws client boom")
+
+    class _FakeConfiguration:
+        pass
+
+    class _FakeCoreV1Api:
+        def __init__(self, *, api_client: Any) -> None:
+            self.api_client = api_client
+
+    class _FakeClientModule:
+        Configuration = _FakeConfiguration
+        ApiClient = _RecordingApiClient
+        CoreV1Api = _FakeCoreV1Api
+
+    class _FakeConfigModule:
+        @staticmethod
+        async def load_kube_config(**kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr(k8s_mod, "k8s_client", _FakeClientModule)
+    monkeypatch.setattr(k8s_mod, "k8s_config", _FakeConfigModule)
+    monkeypatch.setattr(k8s_mod, "WsApiClient", _FailingWsApiClient)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+    target = _build_target(entry=_FakeEntry(container="app"))
+    with pytest.raises(TargetError) as e:
+        await target.exec("echo hi", timeout=5)
+    assert e.value.kind == "k8s_unavailable"
+    # The already-built ApiClient's close() was awaited.
+    assert closed.get("api_client", 0) == 1
+    # No partial client/api left on self.
+    assert target._read_client is None
+    assert target._read_api is None
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +966,40 @@ async def test_exec_toctou_pod_vanished_pod_not_found(
 
     exc = k8s_mod.ApiException(status=404)
     exc.body = '{"message":"pods \\"my-pod\\" not found"}'
+    exec_api = _FakeExecApi(connect_exc=exc)
+    target = _build_exec_target(
+        monkeypatch, entry=_FakeEntry(container="app"), pod=_running_pod(["app"]), exec_api=exec_api
+    )
+
+    with pytest.raises(TargetError) as e:
+        await target.exec("echo hi", timeout=5)
+    assert e.value.kind == "pod_not_found"
+
+
+async def test_exec_404_container_and_pod_words_prefers_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """404 body naming both container and pod → container_not_found (more specific)."""
+
+    exc = k8s_mod.ApiException(status=404)
+    exc.body = '{"message":"container \\"app\\" not found in pod \\"web\\""}'
+    exec_api = _FakeExecApi(connect_exc=exc)
+    target = _build_exec_target(
+        monkeypatch, entry=_FakeEntry(container="app"), pod=_running_pod(["app"]), exec_api=exec_api
+    )
+
+    with pytest.raises(TargetError) as e:
+        await target.exec("echo hi", timeout=5)
+    assert e.value.kind == "container_not_found"
+
+
+async def test_exec_404_pod_only_word_is_pod_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """404 body naming only the pod (no "container") → pod_not_found."""
+
+    exc = k8s_mod.ApiException(status=404)
+    exc.body = '{"message":"pods \\"web\\" not found"}'
     exec_api = _FakeExecApi(connect_exc=exc)
     target = _build_exec_target(
         monkeypatch, entry=_FakeEntry(container="app"), pod=_running_pod(["app"]), exec_api=exec_api

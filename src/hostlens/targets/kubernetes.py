@@ -290,17 +290,24 @@ class KubernetesTarget:
             )
         entry = self._require_entry()
         cfg = await self._load_configuration(entry)
+        read_client = ws_client = None
         try:
-            self._read_client = k8s_client.ApiClient(cfg)
-            self._ws_client = WsApiClient(configuration=cfg)
-            self._read_api = k8s_client.CoreV1Api(api_client=self._read_client)
-            self._ws_api = k8s_client.CoreV1Api(api_client=self._ws_client)
+            read_client = k8s_client.ApiClient(cfg)
+            ws_client = WsApiClient(configuration=cfg)
+            read_api = k8s_client.CoreV1Api(api_client=read_client)
+            ws_api = k8s_client.CoreV1Api(api_client=ws_client)
         except Exception as exc:
+            for _c in (read_client, ws_client):
+                if _c is not None:
+                    with contextlib.suppress(Exception):
+                        await _c.close()
             raise TargetError(
                 kind="k8s_unavailable",
                 target=self.name,
                 message=_scrub(exc),
             ) from exc
+        self._read_client, self._ws_client = read_client, ws_client
+        self._read_api, self._ws_api = read_api, ws_api
 
     async def _ensure_clients(self) -> None:
         """Build both clients lazily under the lock; reuse on later calls."""
@@ -400,7 +407,7 @@ class KubernetesTarget:
                 container=target_name,
             )
         match = next((s for s in statuses if s.name == target_name), None)
-        if match is None or match.state.running is None:
+        if match is None or match.state is None or match.state.running is None:
             raise TargetError(
                 kind="container_not_running",
                 target=self.name,
@@ -592,7 +599,7 @@ class KubernetesTarget:
         status = getattr(exc, "status", None)
         if status == 404:
             lowered = message.lower()
-            if "container" in lowered and "pod" not in lowered:
+            if "container" in lowered:
                 return TargetError(
                     kind="container_not_found",
                     target=self.name,
