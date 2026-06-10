@@ -98,7 +98,7 @@ Inspector 的运行前提——客户端 / 服务版本下限（如 Redis 6+、M
   - host 时钟：`net.ntp.drift`
   - host 包管理与补丁：`pkg.*`
   - host 认证与安全基线：`security.*`
-  - 容器自身管控类：`docker.*`（需 docker-in-docker / pod 内无 docker socket，非目标；同理未来 K8s 域 inspector——pod restart loop / OOMKilled 等需 kubectl / API 视角，pod 内无 kubectl，属独立提案而非容器 cohort）
+  - 容器自身管控类：`docker.*`（需 docker-in-docker / pod 内无 docker socket，非目标）与 `k8s.*` 控制面管控类（`k8s.pods.{oom_killed,evicted,stuck_pending}` / `k8s.nodes.conditions` / `k8s.events.warnings`——pod OOMKilled / evicted / stuck-pending / node conditions / warning events 是 API server 控制面状态，需 kubectl / API 视角，pod 内无 kubectl；跑在配有 kubeconfig 的管理机上，契约见 `k8s-inspector-suite`）
 
 **capability gate 是兜底而非主防线**：DockerTarget / KubernetesTarget 均不声明 `Capability.SSH`、其 `systemd` capability 靠探测 `systemctl` 是否存在——故要求 `ssh` / `systemd` capability 的 inspector 即便误声明容器类 target 也会被 preflight `requires_unmet` 挡掉。但**误归因类**（如 memory 读 host `/proc/meminfo`、`linux.process.fd_usage` 读 `/proc/sys/fs/file-nr`）capability gate **挡不住**——它们只要 `shell` capability，preflight 不拦，collector 照跑、静默返回 host/node 值。必须靠本判据 + 内容式 meta-guard（见下场景）在作者侧拦住。
 
