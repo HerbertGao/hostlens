@@ -61,5 +61,5 @@
 - [x] 8.4 全量 pytest（py3.11/py3.12 心理预演，本地至少 py3.12）；k8s 集成测试无 cluster 自动 skip 不 fail
 - [ ] 8.5 **exec websocket 最小 spike（实现期首验）**：在真 cluster（kind）上验 stdin-喂脚本→`exit $?`→channel-3 取 exit code 的端到端闭环（含非零退出、env 经 stdin 不进 ps），确认动态协议行为成立——这是 spec 阶段无法验、必须 M8 实现期真跑的部分
 - [x] 8.6 `openspec-cn validate add-kubernetes-target --strict` 通过
-- [ ] 8.7 对本次变更跑对抗性 review（review-loop），triage + 修复到放行（含 src/ 运行时 + 新 target 契约 + 安全边界[stdin env 注入/凭据/只读]，必须 review）
-- [ ] 8.8 feature branch `feat/add-kubernetes-target` → PR → CI 绿 + Copilot/BugBot triage → squash merge → 归档
+- [x] 8.7 对本次变更跑对抗性 review（review-loop），triage + 修复到放行（含 src/ 运行时 + 新 target 契约 + 安全边界[stdin env 注入/凭据/只读]，必须 review）
+- [x] 8.8 feature branch `feat/add-kubernetes-target` → PR → CI 绿 + Copilot/BugBot triage → squash merge → 归档
