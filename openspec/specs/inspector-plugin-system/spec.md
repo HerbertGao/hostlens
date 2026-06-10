@@ -911,15 +911,15 @@ M2 已落地的 `register_default_tools` 与 `RunInspectorOutput.findings: list[
 `hostlens inspectors show <name> [--json]` 必须：
 
 - 找不到 inspector → exit 1 + 错误信息
-- 默认输出：Rich 渲染 manifest 字段；`secrets:` 字段**只**显示名字列表（如 `[PGPASSWORD]`），**禁止**从 `os.environ` 读 secret 值显示
+- 默认输出：Rich 渲染 manifest 字段；`secrets:` 字段**只**显示名字列表（如 `[HOSTLENS_POSTGRES_PASSWORD]`），**禁止**从 `os.environ` 读 secret 值显示
 - `parameters` 字段含 `default: "${ENV_VAR}"` 的 default 值时，只显示占位符，**不**展开 env var
 - `--json`：输出 `InspectorManifest.model_dump()`（含 secrets 字段名列表，**不**含值）；schema 稳定（snapshot 测试覆盖）
 - 命令是只读，允许 root
 
 #### 场景:secrets 字段只显示名字
 
-- **当** manifest.secrets=[PGPASSWORD]，env `PGPASSWORD=literal-secret-do-not-leak`，跑 `hostlens inspectors show postgres.bloat.tables`
-- **那么** 输出含 `PGPASSWORD` 但**不**含 `literal-secret-do-not-leak`
+- **当** manifest.secrets=[HOSTLENS_POSTGRES_PASSWORD]，env `HOSTLENS_POSTGRES_PASSWORD=literal-secret-do-not-leak`，跑 `hostlens inspectors show postgres.bloat_tables`
+- **那么** 输出含 `HOSTLENS_POSTGRES_PASSWORD` 但**不**含 `literal-secret-do-not-leak`
 
 #### 场景:--json schema 稳定
 
