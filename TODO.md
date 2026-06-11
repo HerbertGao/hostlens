@@ -543,31 +543,71 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 **目标**：闭环故事 —— Agent 不光能看出问题，还能提出修复建议，经过人工审批后执行，并预备好回滚路径。
 
-**对应 OpenSpec proposal**：
-- `add-remediation-plan-schema`
-- `add-remediation-execution-workflow`
-
 **退出条件**：对一个典型问题（如 `/var/log` 占满磁盘），Agent 能生成 plan、CLI 展示 diff、`--yes` 后执行、记录 audit log、保留回滚命令。
+
+### 架构不变量（贯穿所有 M9 提案，先于切分确立）
+
+> 这几条是 M9 探索阶段收敛的决定，约束下面每一个提案。改动它们要先回 OpenSpec 起 proposal。
+
+1. **Agent 表面永久只读** —— M2 在 `agent/tools_adapter.py dispatch()` 写死的「`side_effects ∈ {write,destructive}` / `requires_approval=True` → raise」两道 gate **不是临时墙，是永久不变量**。M9 不放开 agent surface；写路径**根本不以 ToolSpec 形式存在**（避免 §7「❌ 给 Agent 暴露危险工具」）。
+2. **Remediation 自成子系统，不进 Tool Registry** —— 类比 Notifier（§4.4）：Executor 是 CLI/Reporter 触发的写通道，不是 Agent 主动调用的能力。Executor **不进 loop、不持 `LLMBackend`、不进 `ToolContext`**。Planner Agent 复用只读 Registry（`run_inspector` 等）核实状态，用 structured output 产出 `RemediationPlan` 数据，**不在 loop 里执行任何 step**。
+3. **审批门与 ToolContext 分离** —— `NoopApprovalService` 在 `ToolContext` 里**永久保留拒绝语义**（agent-surface handler 永不触发审批）；真审批门是 `remediation/` 下独立的 `ApprovalGate`，给 Executor/CLI 用。**绝不把真 ApprovalService 塞进 ToolContext**（否则等于给所有 handler 开写后门）。
+4. **不引入受限写 API / 不加新 Capability** —— 安全边界是「审批 + audit + rollback 的 shell 串」，写走既有 `Capability.SHELL`（`target.exec`）；撤回 `targets/base.py` 里 `FILE_WRITE` 的 M9 承诺（残缺的受限 API 必然逼出 `exec_raw` 逃生舱，反降低审批人警觉）。
+
+### 提案切分（写代码风险单调递增；每片可独立 demo）
+
+> TODO 原本的两个提案（`add-remediation-plan-schema` / `add-remediation-execution-workflow`）切成四片 + 一道客观门控。schema 必须先冻结（P2/P3 都依赖它）；写路径最后才碰、单独碰（§4.5）。
+
+| 片 | 提案 | 写风险 | 可 demo | 门控 |
+|---|---|---|---|---|
+| **P1a** | `add-remediation-plan-schema` | 零（纯 Pydantic 契约） | schema 校验单测 | 无（M9 起点） |
+| **P1b** | `add-remediation-planner` | 零（只读 + LLM） | 喂 finding → 打印 Plan（不执行） | 依赖 P1a 冻结 |
+| 🚪 | — 客观门控 — | — | — | **Planner 对 `/var/log` 占满场景产出人判「可执行」的 Plan（forward/verify/rollback 三元组都对、high-risk step 的 precheck 齐备），录像为证** |
+| **P2** | `add-remediation-execution-workflow` | 写（dry-run→真实） | `hostlens fix` 全闭环 | **真实 `exec` 是 P2 最后一个 task**，前面编排全在 dry-run 下验证 |
+| **P3** | `add-remediation-lark-approval`（experimental） | 写（远程触发） | 飞书点批准 → 执行 | 默认 off，token 校验 |
 
 ### 任务
 
+#### P1a — `add-remediation-plan-schema`（纯契约，零写零 LLM）
+
 - [ ] **9.1 Remediation Plan schema**
-  - [ ] `remediation/models.py`：`RemediationPlan` / `RemediationStep`（含 `forward_cmd` / `rollback_cmd` / `verify_cmd` / `risk_level`）
+  - [ ] `remediation/models.py`：`RemediationPlan` / `RemediationStep`（含 `precheck_cmd` / `forward_cmd` / `rollback_cmd` / `verify_cmd` / `risk_level`）
+  - [ ] **`precheck_cmd: str | None`**（默认 `None`）：执行 `forward_cmd` 前验证假设仍成立（补 `verify_cmd` 的前向对称缺口，挡 TOCTOU / 审批延迟导致的世界漂移，如 PID 复用）
+  - [ ] 校验规则：`risk_level=="high"` ⟹ `precheck_cmd` 不得为 `None`；`rollback_cmd is None` ⟹ `risk_level=="high"`
+  - [ ] 纯单元测试覆盖校验规则；**此提案冻结整个 M9 的契约 SOT**
+
+#### P1b — `add-remediation-planner`（Agent 产 Plan，不执行）
+
 - [ ] **9.2 Plan 生成 Agent**
-  - [ ] `agent/remediation_planner.py`：输入 = finding + target，输出 = RemediationPlan
-  - [ ] 高风险动作（`rm -rf` / `kill -9` / 修改 systemd unit）必须显式标 `risk_level=high` 并要求双重确认
+  - [ ] `agent/remediation_planner.py`：输入 = finding + target，输出 = `RemediationPlan`（structured output，§4.7）；复用只读 Tool Registry 核实状态，**不执行任何 step**
+  - [ ] 高风险动作（`rm -rf` / `kill -9` / 修改 systemd unit）必须显式标 `risk_level=high`（触发 P2 的双重确认 + 强制 precheck）
+  - [ ] LLM 调用走 VCR cassette；demo = 喂 finding → 打印 Plan
+
+#### P2 — `add-remediation-execution-workflow`（写路径；dry-run 先行，真实 exec 最后）
+
 - [ ] **9.3 预览与审批**
-  - [ ] CLI: `hostlens fix <run_id>` → 展示 plan diff → 等待 `--yes` 或交互 y/N
-  - [ ] 非交互无 `--yes` → 退出 1（绝不默默执行）
+  - [ ] `remediation/approval.py`：独立 `ApprovalGate`（**不复用 ToolContext 的 ApprovalService**）
+  - [ ] CLI: `hostlens fix <run_id>` → 展示 plan diff → 等待 `--yes` 或交互 y/N；`risk_level=high` 走双重确认
+  - [ ] 非交互无 `--yes` → 退出 1（绝不默默执行）；默认 `--dry-run`
   - [ ] 拒绝以 root 身份运行（EUID==0）
-- [ ] **9.4 执行与回滚**
-  - [ ] `remediation/executor.py`：顺序执行 steps，每步跑 verify_cmd
-  - [ ] 任一步失败 → 倒序跑前面已执行 step 的 rollback_cmd
+- [ ] **9.4 执行与回滚**（先全链路 dry-run 验证编排，真实 `target.exec` 接通为本片**最后一个 task**）
+  - [ ] `remediation/executor.py`：顺序执行 steps；每步先跑 `precheck_cmd`（失败 = 世界已漂移 → 中止）、再 `forward_cmd`、再 `verify_cmd`
+  - [ ] 任一步未能成功推进（precheck 拒绝 / forward 报错 / verify 失败）→ 倒序跑已成功 step 的 `rollback_cmd`，走统一收尾路径
 - [ ] **9.5 Audit log**
-  - [ ] 每次 fix 写 `~/.local/share/hostlens/audit.log`：who / when / target / plan / outcomes
+  - [ ] 每次 fix 写 `~/.local/share/hostlens/audit.log`（append-only，永不轮转）：who / when / target / plan / outcomes
+  - [ ] 失败区分三态：`precheck-blocked`（前提漂移，没碰）/ `forward-failed`（执行报错）/ `verify-failed`（执行了但结果不对）
+
+#### P3 — `add-remediation-lark-approval`（experimental，默认 off）
+
 - [ ] **9.6 飞书卡片交互按钮**
   - [ ] M5 预留的卡片按钮接通：飞书群里点"批准修复"→ 触发执行（带 token 校验）
   - [ ] 标记为 experimental，开关默认 off
+
+### Follow-up：文档遗留清理（在对应 M9 提案里改，不预先动）
+
+- [ ] P1a/P2 提案需清理 `docs/ARCHITECTURE.md` 两处与「Agent 表面永久只读」矛盾的早期示例：§4.10 图里的 `apply_remediation_step` ToolSpec（spec3）、`docker_prune_images(surfaces={"agent","cli"}, side_effects="destructive")` 实战例子
+- [ ] `agent/tools_adapter.py` dispatch gate 的 reason 字符串去 `_in_m2` 后缀（误示临时），语义升格为不变量
+- [ ] `targets/base.py` Capability 注释撤回 `FILE_WRITE` 的 M9 承诺；`tools/base.py` `NoopApprovalService` / `ToolContext` 注释从「M9 will replace」改为「永久 noop，审批属 Remediation 子系统」
 
 ---
 
