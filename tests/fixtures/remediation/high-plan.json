@@ -1,0 +1,16 @@
+{
+  "finding_id": "mysql-disk-full",
+  "target_name": "db-1",
+  "rationale": "MySQL 数据盘满导致写入失败，需删除旧 binlog（高风险，误删会丢失增量恢复能力）",
+  "estimated_duration_seconds": 60,
+  "steps": [
+    {
+      "description": "确认主从已同步到最新位点后清理 3 天前 binlog",
+      "precheck_cmd": "mysql -e 'SHOW SLAVE STATUS\\G' | grep -q 'Seconds_Behind_Master: 0'",
+      "forward_cmd": "mysql -e \"PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 3 DAY)\"",
+      "rollback_cmd": null,
+      "verify_cmd": "df -h /var/lib/mysql",
+      "risk_level": "high"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+# 🛠 Remediation Runbook — {{ plan.finding_id }}
+
+> ⚠ **本工具未执行任何命令。** 这是一个中/高风险修复方案，请**人工**在目标机
+> `{{ plan.target_name }}` 上按序执行，每步执行后自行验证；出事用对应的 **rollback**
+> 段回退。
+
+- **finding_id**: `{{ plan.finding_id }}`
+- **target**: `{{ plan.target_name }}`
+- **rationale**: {{ plan.rationale }}
+- **steps**: {{ plan.steps | length }}
+- **estimated_duration_seconds**: {{ plan.estimated_duration_seconds }}
+{% for step in plan.steps %}
+## Step {{ loop.index0 }} — {{ step.description }}  `risk={{ step.risk_level }}`
+
+**precheck**（前提检查，不通过则不要继续本步）:
+{% if step.precheck_cmd is none %}
+_无_
+{% else %}
+```sh
+{{ step.precheck_cmd | redact }}
+```
+{% endif %}
+**forward**（执行）:
+```sh
+{{ step.forward_cmd | redact }}
+```
+**verify**（验证）:
+```sh
+{{ step.verify_cmd | redact }}
+```
+**rollback**（出事回退）:
+{% if step.rollback_cmd is none %}
+_无（本步不可自动回退，回退需人工判断）_
+{% else %}
+```sh
+{{ step.rollback_cmd | redact }}
+```
+{% endif %}
+{% endfor %}

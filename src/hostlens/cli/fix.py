@@ -21,6 +21,10 @@ written):
 2. ``RemediationPlan.load_json`` — any failure (malformed JSON / duplicate key
    / schema violation / file absent / unreadable / empty) → single stderr line
    + exit 2, never a traceback.
+2b. **risk-tiered divergence** — a plan with any ``medium``/``high`` step is
+   propose-only: render a human runbook and exit 4 **before** target resolution
+   / preview / approval / execution / audit. Only all-``low`` plans continue.
+   ``--dry-run`` is a no-op for elevated plans (they never execute regardless).
 3. target resolution — ``load_targets_config`` + ``build_registry_from_config``
    + ``registry.get(plan.target_name)`` (same path as ``hostlens inspect``).
    ``local`` is **not** implicitly present. The catch contract covers every
@@ -31,22 +35,28 @@ written):
 4. preview — every step's ``precheck/forward/rollback/verify`` triplet, with
    commands best-effort redacted via ``core/redact.py`` ``redact_text``.
 5. ``ApprovalGate`` — ``assume_yes`` from ``--yes`` and ``is_tty`` from
-   ``sys.stdin.isatty()``. ``--yes`` never bypasses the high-risk double
-   confirm (handled inside ``ApprovalGate``).
+   ``sys.stdin.isatty()``. Only all-low plans reach here (medium/high diverged
+   at step 2b); the gate is a low-only y/N + ``--yes`` decision.
 6. execution — ``DryRunCommandRunner`` (zero exec, no audit) in dry-run;
    ``RealCommandRunner`` + two-phase audit (intent before exec, result after)
    otherwise.
 
-Exit code contract (project-wide ``3 > 2 > 1 > 0``):
+Exit code contract (project-wide ``3 > 2 > 1 > 0``, plus ``4``):
 
 - ``0`` success.
-- ``1`` non-TTY without ``--yes`` / non-interactive high-risk / user declined /
-  execution failure (including incomplete rollback). These share ``1`` but the
-  stderr line carries a machine-parseable prefix: ``approval-rejected:`` for a
-  safety-gate refusal vs ``execution-failed:`` for a runtime failure. The
-  ``audit-*`` prefixes (intent / result write failure, precheck) are also exit
-  1 — they are write-path failures of this command, not a malformed plan.
-- ``2`` illegal plan (schema / duplicate key / malformed JSON / file IO).
+- ``4`` plan contains ``medium``/``high`` steps → runbook rendered, **not
+  executed** (a policy outcome, not an error; non-zero so scripts / Agents can
+  tell "not executed, human must act" from "executed"). Decided at step 2b,
+  before the 1/2/3 conditions of the execute path.
+- ``1`` non-TTY without ``--yes`` / user declined / execution failure
+  (including incomplete rollback) / runbook render fault. These share ``1`` but
+  the stderr line carries a machine-parseable prefix: ``approval-rejected:`` for
+  a safety-gate refusal vs ``execution-failed:`` for a runtime failure vs
+  ``runbook-render-failed:`` for a fail-closed render fault. The ``audit-*``
+  prefixes (intent / result write failure, precheck) are also exit 1 — they are
+  write-path failures of this command, not a malformed plan.
+- ``2`` illegal plan (schema / duplicate key / malformed JSON / plan file IO),
+  or a ``--out`` runbook write failure (prefix ``runbook-write-failed:``).
 - ``3`` configuration / target resolution error (consistent with ``inspect``).
 
 stdout / stderr separation: the preview (which the operator reads to decide
@@ -62,6 +72,7 @@ import os
 import sys
 from pathlib import Path
 
+import jinja2
 import typer
 from pydantic import ValidationError
 
@@ -77,6 +88,7 @@ from hostlens.remediation.executor import (
     RealCommandRunner,
 )
 from hostlens.remediation.models import RemediationPlan
+from hostlens.remediation.runbook import render_runbook
 from hostlens.targets.base import ExecutionTarget
 from hostlens.targets.config import load_targets_config
 from hostlens.targets.registry import build_registry_from_config
@@ -153,6 +165,61 @@ def _load_plan(plan_file: str) -> RemediationPlan:
         # ``_reject_duplicate_keys``; JSONDecodeError covers malformed JSON.
         typer.echo(f"invalid plan: {plan_file} is malformed JSON ({exc})", err=True)
         raise typer.Exit(code=2) from exc
+
+
+# --------------------------------------------------------------------------- #
+# Risk-tiered divergence — medium/high plans are propose-only (runbook, exit 4)
+# --------------------------------------------------------------------------- #
+
+_ELEVATED_RISK = frozenset({"medium", "high"})
+
+
+def _has_elevated_risk(plan: RemediationPlan) -> bool:
+    """True iff any step is `medium`/`high` — plan-level risk = max(step risk).
+
+    A single elevated step routes the whole plan to the runbook: steps have
+    ordering / rollback dependencies, so executing only the `low` steps while
+    skipping an elevated one would break plan semantics. Conservative by design
+    (any elevated → propose-only).
+    """
+
+    return any(step.risk_level in _ELEVATED_RISK for step in plan.steps)
+
+
+def _render_runbook_and_exit(plan: RemediationPlan, *, out: str | None) -> None:
+    """Render `plan` to a human runbook and exit 4 — never execute.
+
+    This is the medium/high branch: zero `ExecutionTarget.exec`, zero audit,
+    no target resolution, no approval gate. The render fault is fail-closed
+    (exit 1, never fall through to execution). Exit 4 is a **policy** outcome
+    (not an error) so scripts / Agents can mechanically tell "not executed,
+    human must act" from "executed".
+    """
+
+    try:
+        rendered = render_runbook(plan)
+    except jinja2.TemplateError as exc:
+        typer.echo(f"runbook-render-failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if out is not None:
+        try:
+            Path(out).write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"runbook-write-failed: cannot write {out}: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(
+            f"runbook for {plan.finding_id} written to {out} (medium/high-risk plan — NOT executed)"
+        )
+    else:
+        typer.echo(rendered)
+
+    typer.echo(
+        "not-executed: this plan contains medium/high-risk steps and is "
+        "propose-only — run the runbook manually on the target after review",
+        err=True,
+    )
+    raise typer.Exit(code=4)
 
 
 # --------------------------------------------------------------------------- #
@@ -363,33 +430,47 @@ def fix_cmd(
     yes: bool = typer.Option(
         False,
         "--yes",
-        help="Approve execution non-interactively (skips the y/N prompt). "
-        "Never bypasses the high-risk double-confirmation; has no effect under "
-        "--dry-run.",
+        help="Approve execution non-interactively (skips the y/N prompt) for a "
+        "low-risk plan. Has no effect under --dry-run, and cannot execute a "
+        "medium/high-risk plan (those are propose-only — rendered as a runbook).",
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="For a medium/high-risk plan, write the runbook to this file "
+        "instead of stdout. Ignored for low-risk plans (which execute).",
     ),
 ) -> None:
     """Execute an approved remediation plan (or preview it with ``--dry-run``).
 
     The command is write-path and safety-sensitive. Orchestration order is
-    fixed: EUID==0 refusal (earliest gate) → load plan → resolve target →
-    preview → approval gate → execute. dry-run and real execution share this
-    orchestration; they diverge only at whether ``ExecutionTarget.exec`` is
-    really called and whether ``audit.log`` is written.
+    fixed: EUID==0 refusal (earliest gate) → load plan → **risk-tiered
+    divergence** (medium/high → runbook, exit 4) → resolve target → preview →
+    approval gate → execute. Only all-low plans reach target resolution and
+    beyond; dry-run and real execution share that tail and diverge only at
+    whether ``ExecutionTarget.exec`` is really called and ``audit.log`` written.
 
-    ``--dry-run`` is a force-preview flag (default off) that overrides
-    everything: pure preview, zero execution, no audit. Without ``--dry-run``
-    the ``ApprovalGate`` decides — TTY prompts y/N (high-risk double-confirm),
-    a non-TTY without ``--yes`` is refused (exit 1), and ``--yes`` authorizes
-    execution.
+    A plan with any ``medium``/``high`` step is **propose-only**: it is rendered
+    as a human runbook (stdout, or ``--out <file>``) and exits 4 — never
+    executed, no approval, no audit. The AI does not perform consequential
+    fixes whose business blast radius it cannot own; a human runs the runbook.
 
-    Exit codes (project-wide ``3 > 2 > 1 > 0``):
+    ``--dry-run`` is a force-preview flag (default off) for the all-low
+    execution path: pure preview, zero execution, no audit. Without ``--dry-run``
+    the ``ApprovalGate`` decides — TTY prompts y/N, a non-TTY without ``--yes``
+    is refused (exit 1), and ``--yes`` authorizes execution.
+
+    Exit codes (project-wide ``3 > 2 > 1 > 0``, plus ``4``):
       0: success (or a completed dry-run preview)
-      1: non-TTY without --yes / non-interactive high-risk / user declined /
-         execution failure (incl. incomplete rollback) / audit write failure.
-         The stderr line carries a machine-parseable prefix: ``approval-rejected:``
-         (safety-gate refusal) vs ``execution-failed:`` (runtime failure) vs
-         ``audit-*:`` (audit write failure).
-      2: illegal plan (schema / duplicate key / malformed JSON / file IO)
+      4: medium/high plan → runbook rendered, NOT executed (policy outcome)
+      1: non-TTY without --yes / user declined / execution failure (incl.
+         incomplete rollback) / audit write failure / runbook render fault.
+         The stderr line carries a machine-parseable prefix:
+         ``approval-rejected:`` (safety-gate refusal) vs ``execution-failed:``
+         (runtime failure) vs ``audit-*:`` (audit write failure) vs
+         ``runbook-render-failed:`` (fail-closed render fault).
+      2: illegal plan (schema / dup key / malformed JSON / plan file IO) or a
+         ``--out`` write failure (prefix ``runbook-write-failed:``)
       3: configuration / target resolution error
     """
 
@@ -399,18 +480,26 @@ def fix_cmd(
     # ---- 2. Load + validate the plan (exit 2 on input error) ------------- #
     plan = _load_plan(plan_file)
 
-    # ---- 3. Resolve target (exit 3 on config / resolution error) --------- #
+    # ---- 3. Risk-tiered divergence: medium/high → runbook (exit 4) ------- #
+    #
+    # A plan with any medium/high step is propose-only: render a runbook and
+    # exit before target resolution / preview / approval / execution / audit.
+    # --dry-run is a no-op here (these never execute regardless).
+    if _has_elevated_risk(plan):
+        _render_runbook_and_exit(plan, out=out)
+
+    # ---- 4. Resolve target (exit 3; only all-low plans reach here) -------- #
     target = _resolve_target(plan.target_name)
 
-    # ---- 4. Preview (stdout; commands best-effort redacted) -------------- #
+    # ---- 5. Preview (stdout; commands best-effort redacted) -------------- #
     _preview(plan, dry_run=dry_run)
 
-    # ---- 5. dry-run overrides --yes: preview only, zero exec, no audit --- #
+    # ---- 6. dry-run overrides --yes: preview only, zero exec, no audit --- #
     if dry_run:
         _execute_dry_run(plan)
         return
 
-    # ---- 6. Approval gate (--yes never bypasses high-risk double-confirm) - #
+    # ---- 7. Approval gate (low-only; --yes skips y/N) -------------------- #
     gate = ApprovalGate(assume_yes=yes, is_tty=sys.stdin.isatty)
     try:
         gate.authorize(plan)
@@ -426,5 +515,5 @@ def fix_cmd(
         typer.echo("approval-rejected: aborted: approval prompt interrupted", err=True)
         raise typer.Exit(code=1) from exc
 
-    # ---- 7. Real execution (two-phase audit + RealCommandRunner) --------- #
+    # ---- 8. Real execution (two-phase audit + RealCommandRunner) --------- #
     _execute_real(plan, target)

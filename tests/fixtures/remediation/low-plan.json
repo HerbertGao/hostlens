@@ -1,0 +1,16 @@
+{
+  "finding_id": "stale-tmp-files",
+  "target_name": "local",
+  "rationale": "/tmp 下有大量过期临时文件，低风险清理",
+  "estimated_duration_seconds": 5,
+  "steps": [
+    {
+      "description": "删除 7 天前的 /tmp 临时文件",
+      "precheck_cmd": null,
+      "forward_cmd": "find /tmp -type f -mtime +7 -delete",
+      "rollback_cmd": "true",
+      "verify_cmd": "true",
+      "risk_level": "low"
+    }
+  ]
+}
