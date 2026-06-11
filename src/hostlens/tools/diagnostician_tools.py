@@ -121,13 +121,28 @@ def _build_correlate_findings_spec(finding_store: FindingStore) -> ToolSpec:
     )(cast(_BroadHandler, correlate_findings_handler))
 
 
-def _build_request_more_inspection_spec(
+_DEFAULT_REQUEST_MORE_INSPECTION_DESCRIPTION = (
+    "Re-run one inspector against the target under diagnosis when the "
+    "evidence in hand is insufficient. Returns the inspector status plus "
+    "any new findings, each with a fresh ordinal label you may reference "
+    "from a LATER turn's correlate_findings."
+)
+
+
+def build_request_more_inspection_spec(
     finding_store: FindingStore,
     target_name: str,
     clock: Callable[[], datetime] | None,
     collector: InspectorResultCollector | None,
+    *,
+    agent_description: str = _DEFAULT_REQUEST_MORE_INSPECTION_DESCRIPTION,
 ) -> ToolSpec:
     """Build the `request_more_inspection` ToolSpec around per-run dependencies.
+
+    ``agent_description`` defaults to the Diagnostician copy (which mentions
+    ``correlate_findings``); the Remediation Planner assembly passes a variant
+    that mentions ``propose_remediation`` instead, so the planner prompt is never
+    told about a tool it lacks (design Decision 4).
 
     The handler is **newly written** (it cannot call `run_inspector_handler`,
     whose `RunInspectorOutput` strips ids), but replicates that handler's full
@@ -226,12 +241,7 @@ def _build_request_more_inspection_spec(
         version="1.0.0",
         input_schema=RequestMoreInspectionInput,
         output_schema=RequestMoreInspectionOutput,
-        agent_description=(
-            "Re-run one inspector against the target under diagnosis when the "
-            "evidence in hand is insufficient. Returns the inspector status plus "
-            "any new findings, each with a fresh ordinal label you may reference "
-            "from a LATER turn's correlate_findings."
-        ),
+        agent_description=agent_description,
         mcp_description=(
             "Run one read-only inspector against the diagnosis target. Output may "
             "contain process / port / connection metadata."
@@ -283,6 +293,6 @@ def register_diagnostician_tools(
     """
     registry.register(_build_correlate_findings_spec(finding_store))
     registry.register(
-        _build_request_more_inspection_spec(finding_store, target_name, clock, collector)
+        build_request_more_inspection_spec(finding_store, target_name, clock, collector)
     )
     registry.register(list_inspectors)
