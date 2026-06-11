@@ -75,6 +75,7 @@ from hostlens.core.exceptions import ConfigError, InspectorError, TargetError
 from hostlens.core.logging import configure_logging
 from hostlens.core.redact import redact_text
 from hostlens.inspectors.registry import build_registry_from_search_paths
+from hostlens.remediation.audit import default_audit_path
 from hostlens.scheduler.loader import load_schedules
 from hostlens.scheduler.schema import ScheduleManifest
 from hostlens.scheduler.store import RunStore
@@ -87,6 +88,7 @@ __all__ = [
     "check_config_dir",
     "check_mcp",
     "check_python_version",
+    "check_remediation",
     "run_doctor",
 ]
 
@@ -865,6 +867,57 @@ def _check_channels(settings: Settings) -> CheckResult:
     return CheckResult(status=status, detail=" ".join(parts))
 
 
+def check_remediation() -> CheckResult:
+    """Remediation readiness for ``hostlens fix`` (M9 P2) — **non-fatal**.
+
+    Lands under ``DoctorReport.checks["remediation"]`` (a new check_id in the
+    existing ``checks`` namespace — add-only, no schema bump). Probes the two
+    write-path preconditions for ``hostlens fix``:
+
+    - the ``audit.log`` directory is creatable + writable (the executor's
+      ``precheck_writable`` gate), and
+    - the current process is not ``EUID==0`` (``hostlens fix`` refuses root).
+
+    Deliberately **non-fatal**: ``_is_ready`` does NOT inspect this check, so a
+    not-yet-writable audit dir or a root doctor run never flips ``ready`` to
+    false. doctor reports the condition (``status`` + ``detail``) so the
+    operator can fix it before the first real ``hostlens fix``, but a fresh
+    install with no remediation activity stays exit 0.
+    """
+
+    is_root = os.geteuid() == 0
+    audit_dir = default_audit_path().parent
+    dir_str = str(audit_dir)
+
+    writable: bool
+    detail_reason: str
+    if audit_dir.exists():
+        if not audit_dir.is_dir():
+            writable = False
+            detail_reason = "audit path exists but is not a directory"
+        elif os.access(audit_dir, os.W_OK):
+            writable = True
+            detail_reason = "audit dir writable"
+        else:
+            writable = False
+            detail_reason = "audit dir not writable"
+    else:
+        # Absent dir is fine — ``precheck_writable`` creates it on first run.
+        # We only confirm the parent is creatable (writable parent).
+        parent = audit_dir.parent
+        if parent.exists() and os.access(parent, os.W_OK):
+            writable = True
+            detail_reason = "audit dir absent (will be created on first run)"
+        else:
+            writable = False
+            detail_reason = "audit dir absent and parent not writable"
+
+    root_note = "running as root (hostlens fix will refuse)" if is_root else "non-root"
+    detail = f"{detail_reason}; {root_note}"
+    status: Literal["ok", "error"] = "ok" if (writable and not is_root) else "error"
+    return CheckResult(status=status, detail=detail, path=dir_str)
+
+
 def _build_report(settings: Settings, *, check_channels: bool = False) -> DoctorReport:
     checks: dict[str, CheckResult] = {
         "python_version": check_python_version(),
@@ -872,6 +925,7 @@ def _build_report(settings: Settings, *, check_channels: bool = False) -> Doctor
         "config_dir": check_config_dir(),
         "mcp": check_mcp(),
         "schedules": _check_schedules(settings),
+        "remediation": check_remediation(),
     }
     if check_channels:
         checks["channels"] = _check_channels(settings)
