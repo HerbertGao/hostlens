@@ -47,7 +47,9 @@
 - `load_json` 抛**任意**异常（`json.JSONDecodeError` malformed / `pydantic.ValidationError` schema 违反 / `ValueError` 重复键）→ 单行 stderr + 退出码 2。
 - `plan.target_name` 未在 `targets.yaml` 注册 / `targets.yaml` 损坏或不可读 → 退出码 **3**（与既有 CLI「config/target 错误=3」一致）。**捕获契约必须覆盖全部 target 解析异常**：`build_registry_from_config(load_targets_config(...))` 对 schema 损坏的 targets.yaml 抛 **`pydantic.ValidationError`**，YAML 语法 / env 占位 / docker host scheme 错抛 **`ConfigError`**，`path.read_text()` 对不可读 / 目录形 targets.yaml 抛 **`OSError`**，`registry.get(name)` 未命中抛 **`KeyError`**——故 CLI 必须 `except (KeyError, TargetError, ConfigError, ValidationError, OSError)` 全部捕获映射为退出码 3、**无 traceback**。注：target 解析仅在全 low plan 路径（④）发生，medium/high plan 在 ③ 已退出，不触发 target 解析错误。
 
-退出码契约（沿用项目 `3 > 2 > 1 > 0` 优先级，新增 **4**）：0 成功（全 low plan 执行成功）；**4** plan 含 `medium`/`high` step → 已渲染 runbook、**未执行**（策略性未执行，**非错误**，但取非 0 以便脚本 / Agent 机械区分「需人工接手」与「已执行」；在编排 ③ 退出，先于 1/2/3 的执行路径判定，但晚于 ① root 拒（1）与 ② load 失败（2））；**1** 非 TTY 无 --yes / 用户拒批 / 执行失败（含回滚不完整）——这几类共享 1，但 **stderr 必须带机器可解析前缀区分**（`approval-rejected:` 安全门拒 vs `execution-failed:` 执行失败）；**2** 非法 plan（schema/重复键/malformed/文件 IO）；**3** 配置 / target 解析错误。
+**runbook 输出去向**：默认渲染到 stdout；给 `--out <file>` 时写入该文件（仍退出码 4、仍不执行）。`--out` **写失败**（目标是目录 / 不可写 / 父目录不存在，`OSError`）→ 退出码 **2**（输出文件 IO，归入 exit 2 的「文件 IO」类），stderr 带机器可解析前缀 `runbook-write-failed:`（与 plan 加载失败的 `invalid plan:` 同码不同前缀，沿用「共享码 + 独立前缀」惯例）。runbook **渲染**失败（`jinja2.TemplateError`）→ 退出码 **1**、前缀 `runbook-render-failed:`、**绝不回退到执行**（fail-closed）。
+
+退出码契约（沿用项目 `3 > 2 > 1 > 0` 优先级，新增 **4**）：0 成功（全 low plan 执行成功）；**4** plan 含 `medium`/`high` step → 已渲染 runbook、**未执行**（策略性未执行，**非错误**，但取非 0 以便脚本 / Agent 机械区分「需人工接手」与「已执行」；在编排 ③ 退出，先于 1/2/3 的执行路径判定，但晚于 ① root 拒（1）与 ② load 失败（2））；**1** 非 TTY 无 --yes / 用户拒批 / 执行失败（含回滚不完整）/ runbook 渲染失败——这几类共享 1，但 **stderr 必须带机器可解析前缀区分**（`approval-rejected:` 安全门拒 / `execution-failed:` 执行失败 / `runbook-render-failed:` 渲染 fail-closed）；**2** 非法 plan（schema/重复键/malformed/plan 文件 IO）/ `--out` 写失败（`runbook-write-failed:`）；**3** 配置 / target 解析错误。
 
 #### 场景:medium plan 渲染 runbook 不执行
 - **当** `hostlens fix` 加载一个含至少一个 `risk_level=="medium"` step 的 plan
@@ -56,6 +58,18 @@
 #### 场景:high plan 渲染 runbook 不走双确认执行
 - **当** `hostlens fix` 加载一个含 `risk_level=="high"` step 的 plan（即便给 `--yes`）
 - **那么** 渲染 runbook、退出码 4，**不再有任何执行路径或双确认短语**（high-risk 由「不代执行」取代旧的「双确认后执行」）
+
+#### 场景:--out 落盘成功仍退出码 4
+- **当** `hostlens fix <medium/high plan> --out <可写文件>`
+- **那么** runbook 写入该文件、退出码 4、不执行、不写 audit；stdout 提示已写入路径
+
+#### 场景:--out 写失败退出码 2 不 traceback
+- **当** `--out` 指向目录 / 不可写路径（`OSError`）
+- **那么** 单行 stderr（前缀 `runbook-write-failed:`）、退出码 2、**无 traceback**，不执行
+
+#### 场景:runbook 渲染失败 fail-closed 退出码 1
+- **当** runbook 模板渲染抛 `jinja2.TemplateError`
+- **那么** 单行 stderr（前缀 `runbook-render-failed:`）、退出码 1、**绝不回退到执行**、不写 audit
 
 #### 场景:medium/high plan 渲染前仍先拒 root
 - **当** 以 `EUID==0` 运行 `hostlens fix` 一个 medium/high plan

@@ -351,6 +351,53 @@ def test_elevated_runbook_written_to_out_file(
     assert f"written to {out_file}" in out
 
 
+def test_runbook_render_failure_fail_closed_exit_1_no_exec(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+    nonroot: None,
+) -> None:
+    # A render fault must fail-closed: exit non-zero, never fall through to the
+    # execution path. Force render_runbook to raise a TemplateError.
+    import jinja2
+
+    flag = tmp_path / "applied"
+
+    def _boom(plan: object) -> str:
+        raise jinja2.TemplateError("boom")
+
+    monkeypatch.setattr(fix_module, "render_runbook", _boom)
+    plan = _write_plan(tmp_path, risk_level="medium", forward=f"touch {flag}", rollback="true")
+    code, _out, err = _run_main(["fix", str(plan), "--yes"], capsys, monkeypatch)
+    assert code == 1
+    assert "runbook-render-failed:" in err
+    assert "Traceback" not in err
+    assert not flag.exists()  # never fell through to execution
+    assert not audit_home.exists()
+
+
+def test_runbook_out_to_directory_exit_2_no_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+    nonroot: None,
+) -> None:
+    # --out pointing at a directory → OSError on write_text → exit 2 with a
+    # distinct runbook-write-failed prefix (shared code, distinct prefix, the
+    # same pattern P2 uses for the exit-1 family), never a traceback.
+    out_dir = tmp_path / "outdir"
+    out_dir.mkdir()
+    plan = _write_plan(tmp_path, risk_level="medium", forward="echo x", rollback="true")
+    code, _out, err = _run_main(["fix", str(plan), "--out", str(out_dir)], capsys, monkeypatch)
+    assert code == 2
+    assert "runbook-write-failed:" in err
+    assert "Traceback" not in err
+
+
 def test_high_risk_root_refused_before_runbook_render(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

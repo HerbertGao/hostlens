@@ -15,6 +15,12 @@ plan authors must inject secrets via `ExecutionTarget.exec`'s `env` rather than
 inline command text. Because a runbook is local-only output (never pushed to
 any channel), this residual surface is strictly smaller than a remote-approval
 card would be.
+
+Only the four command fields are redacted; `rationale` / `description` (LLM-
+authored free text) are rendered verbatim — same as the CLI preview path
+(`cli/fix.py` `_preview`), so this is a consistent, pre-existing residual, not
+a new one. A plan author who pastes a secret into the prose rationale leaks it
+in both surfaces; that is out of scope for this renderer.
 """
 
 from __future__ import annotations

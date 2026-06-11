@@ -35,8 +35,8 @@ written):
 4. preview — every step's ``precheck/forward/rollback/verify`` triplet, with
    commands best-effort redacted via ``core/redact.py`` ``redact_text``.
 5. ``ApprovalGate`` — ``assume_yes`` from ``--yes`` and ``is_tty`` from
-   ``sys.stdin.isatty()``. ``--yes`` never bypasses the high-risk double
-   confirm (handled inside ``ApprovalGate``).
+   ``sys.stdin.isatty()``. Only all-low plans reach here (medium/high diverged
+   at step 2b); the gate is a low-only y/N + ``--yes`` decision.
 6. execution — ``DryRunCommandRunner`` (zero exec, no audit) in dry-run;
    ``RealCommandRunner`` + two-phase audit (intent before exec, result after)
    otherwise.
@@ -49,12 +49,14 @@ Exit code contract (project-wide ``3 > 2 > 1 > 0``, plus ``4``):
   tell "not executed, human must act" from "executed"). Decided at step 2b,
   before the 1/2/3 conditions of the execute path.
 - ``1`` non-TTY without ``--yes`` / user declined / execution failure
-  (including incomplete rollback). These share ``1`` but the
-  stderr line carries a machine-parseable prefix: ``approval-rejected:`` for a
-  safety-gate refusal vs ``execution-failed:`` for a runtime failure. The
-  ``audit-*`` prefixes (intent / result write failure, precheck) are also exit
-  1 — they are write-path failures of this command, not a malformed plan.
-- ``2`` illegal plan (schema / duplicate key / malformed JSON / file IO).
+  (including incomplete rollback) / runbook render fault. These share ``1`` but
+  the stderr line carries a machine-parseable prefix: ``approval-rejected:`` for
+  a safety-gate refusal vs ``execution-failed:`` for a runtime failure vs
+  ``runbook-render-failed:`` for a fail-closed render fault. The ``audit-*``
+  prefixes (intent / result write failure, precheck) are also exit 1 — they are
+  write-path failures of this command, not a malformed plan.
+- ``2`` illegal plan (schema / duplicate key / malformed JSON / plan file IO),
+  or a ``--out`` runbook write failure (prefix ``runbook-write-failed:``).
 - ``3`` configuration / target resolution error (consistent with ``inspect``).
 
 stdout / stderr separation: the preview (which the operator reads to decide
@@ -462,11 +464,13 @@ def fix_cmd(
       0: success (or a completed dry-run preview)
       4: medium/high plan → runbook rendered, NOT executed (policy outcome)
       1: non-TTY without --yes / user declined / execution failure (incl.
-         incomplete rollback) / audit write failure. The stderr line carries a
-         machine-parseable prefix: ``approval-rejected:`` (safety-gate refusal)
-         vs ``execution-failed:`` (runtime failure) vs ``audit-*:`` (audit write
-         failure).
-      2: illegal plan (schema / duplicate key / malformed JSON / file IO)
+         incomplete rollback) / audit write failure / runbook render fault.
+         The stderr line carries a machine-parseable prefix:
+         ``approval-rejected:`` (safety-gate refusal) vs ``execution-failed:``
+         (runtime failure) vs ``audit-*:`` (audit write failure) vs
+         ``runbook-render-failed:`` (fail-closed render fault).
+      2: illegal plan (schema / dup key / malformed JSON / plan file IO) or a
+         ``--out`` write failure (prefix ``runbook-write-failed:``)
       3: configuration / target resolution error
     """
 
@@ -487,15 +491,15 @@ def fix_cmd(
     # ---- 4. Resolve target (exit 3; only all-low plans reach here) -------- #
     target = _resolve_target(plan.target_name)
 
-    # ---- 4. Preview (stdout; commands best-effort redacted) -------------- #
+    # ---- 5. Preview (stdout; commands best-effort redacted) -------------- #
     _preview(plan, dry_run=dry_run)
 
-    # ---- 5. dry-run overrides --yes: preview only, zero exec, no audit --- #
+    # ---- 6. dry-run overrides --yes: preview only, zero exec, no audit --- #
     if dry_run:
         _execute_dry_run(plan)
         return
 
-    # ---- 6. Approval gate (--yes never bypasses high-risk double-confirm) - #
+    # ---- 7. Approval gate (low-only; --yes skips y/N) -------------------- #
     gate = ApprovalGate(assume_yes=yes, is_tty=sys.stdin.isatty)
     try:
         gate.authorize(plan)
@@ -511,5 +515,5 @@ def fix_cmd(
         typer.echo("approval-rejected: aborted: approval prompt interrupted", err=True)
         raise typer.Exit(code=1) from exc
 
-    # ---- 7. Real execution (two-phase audit + RealCommandRunner) --------- #
+    # ---- 8. Real execution (two-phase audit + RealCommandRunner) --------- #
     _execute_real(plan, target)
