@@ -12,12 +12,12 @@ diverge only at the injected ``CommandRunner`` and at whether ``audit.log`` is
 written):
 
 1. **EUID==0 refusal (earliest gate)** — before ``load_json`` / target
-   resolution / any plan-content rendering. A plan command may contain a
-   ``redact_text``-missed flag-form secret (``redis-cli -a <pw>`` /
-   ``mysql -p<pw>`` / ``user:pw@host`` URL userinfo); refusing root only after
-   the preview would already have printed plan content to stdout/stderr. So the
-   very first thing this command does is refuse ``os.geteuid() == 0`` (dry-run
-   included).
+   resolution / any plan-content rendering. ``redact_text`` covers only
+   known-tool flag-forms (best-effort); an unknown tool's flag-form secret
+   still leaks, so a plan command may carry an un-redacted secret. Refusing
+   root only after the preview would already have printed plan content to
+   stdout/stderr. So the very first thing this command does is refuse
+   ``os.geteuid() == 0`` (dry-run included).
 2. ``RemediationPlan.load_json`` — any failure (malformed JSON / duplicate key
    / schema violation / file absent / unreadable / empty) → single stderr line
    + exit 2, never a traceback.
@@ -106,16 +106,19 @@ def _refuse_root() -> None:
 
     Per CLAUDE.md §4.5 (write ops reject root) and the spec's earliest-gate
     requirement: this runs **before** ``load_json`` / target resolution / any
-    plan-content rendering so a flag-form secret (which ``redact_text`` does
-    not cover) can never reach stdout/stderr before the refusal. dry-run is
-    refused too — the preview alone would leak plan commands.
+    plan-content rendering so a flag-form secret can never reach stdout/stderr
+    before the refusal. ``redact_text`` covers only known-tool flag-forms
+    (best-effort); an unknown tool's flag-form secret still leaks, so this
+    refusal is retained as the earliest gate. dry-run is refused too — the
+    preview alone would leak plan commands.
     """
 
     if os.geteuid() == 0:
         typer.echo(
             "approval-rejected: refusing to run as root (EUID=0); run 'hostlens fix' "
             "as a non-privileged user — a sudo run would create root-owned audit "
-            "files and may leak flag-form secrets in plan previews",
+            "files and may leak unknown-tool flag-form secrets in plan previews "
+            "(redact_text covers only known-tool flag-forms, best-effort)",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -280,11 +283,13 @@ def _resolve_target(target_name: str) -> ExecutionTarget:
 def _preview(plan: RemediationPlan, *, dry_run: bool) -> None:
     """Print the plan's per-step triplet to stdout, commands redacted.
 
-    ``redact_text`` masks ``key=value`` / ``Bearer`` / JWT / ``sk-`` forms;
-    CLI flag-form secrets are a known residual leak (documented in the audit /
-    proposal Security sections), which is exactly why the root refusal runs
-    before this preview. ``estimated_duration_seconds`` is shown for reference
-    only — no hard timeout is derived from it.
+    ``redact_text`` masks ``key=value`` / ``Bearer`` / JWT / ``sk-`` forms plus
+    known-tool flag-forms (``mysql -p<pw>`` / ``redis-cli -a`` / ``user:pw@host``
+    URL userinfo / known env names) — best-effort. Unknown-tool flag-form
+    secrets are still a residual leak (documented in the audit / proposal
+    Security sections), which is exactly why the root refusal runs before this
+    preview. ``estimated_duration_seconds`` is shown for reference only — no
+    hard timeout is derived from it.
     """
 
     mode = "dry-run (no commands will be executed)" if dry_run else "execution"

@@ -166,8 +166,12 @@
   - 任何匹配 `(password|secret|token|api[_-]?key|bearer)\s*[:=]\s*\S+` 的串
   - 任何形如 JWT 的 `eyJ...`
   - 任何匹配 `sk-[a-zA-Z0-9-]{20,}` 的 Anthropic / OpenAI key 形式
+  - **[A] 空格分隔长 flag**：`--password <值>` / `--secret <值>` / `--token <值>` / `--api-key <值>`（关键字 casefold 比对，`--password=<值>` 等 `=` 分隔形已由上面 `key=value` 规则覆盖、本条只补空格分隔形；散文中 `--password <普通词>` 会安全侧 over-mask 下一 token，accepted）
+  - **[B] 已知工具粘连 / 空格短 flag**：仅当命令头是白名单客户端时按其特有分隔语义脱敏——`mysql` / `mariadb`（仅粘连 `-p<值>`，`-p <值>` 是库名不脱）、`redis-cli`（`-a <值>` / `-a<值>` / `--pass <值>`）、`mongosh` / `mongo`（`-p <值>` / `-p<值>`）、`sshpass`（`-p <值>` / `-p<值>`）、`curl`（`-u user:<值>` / `--user user:<值>`，按 `:` 拆分脱密码段保留 user）；命令头穿透 `sudo` / `env` / `docker exec` / `ssh` 等 wrapper 前缀，未知工具同形 flag 不脱
+  - **[C] URL userinfo**：`scheme://user:<密码>@host`（脱密码段保留 `scheme://user:`）与单段 `scheme://<token>@host`（无冒号、token 直接接 `@`，覆盖 `https://ghp_xxx@host` 等 PAT 嵌入形）；scheme 大小写不敏感
+  - **[D] 已知 env 名白名单**：`PGPASSWORD` / `MYSQL_PWD` / `REDIS_PASSWORD` / `REDISCLI_AUTH` / `MONGODB_PASSWORD` 等精确名 `=`-锚定赋值；天然排除 `MYSQL_PASSWORD_FILE=/path`（`_FILE` 路径形）与 `PWD=`（工作目录、不在白名单），不放宽到通用 `*PWD*` / `*PASSWORD*`
   - 配置可附加自定义正则
-- 脱敏后保留前 4 + 后 4 字符（`sk-xxxx...xxxx`），方便排错
+- 脱敏后保留前 4 + 后 4 字符（`sk-xxxx...xxxx`），方便排错。**新增 A/B/C/D 规则同样保留前 4 后 4**（mask 强度分级——凭据类改全 `****`——留独立 follow-up，不在此变更范围）
 
 ### 7.3 Notifier 中的脱敏
 

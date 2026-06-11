@@ -250,7 +250,8 @@ def test_who_falls_back_to_uid_when_no_passwd_entry(monkeypatch: pytest.MonkeyPa
 
 
 # --------------------------------------------------------------------------- #
-# best-effort redaction (flag-form is a known residual passthrough)
+# best-effort redaction (key=value / Bearer / JWT / sk- plus known-tool
+# flag-form; unknown-tool flag-form is still a residual passthrough)
 # --------------------------------------------------------------------------- #
 
 
@@ -327,14 +328,25 @@ def test_audit_redacts_transport_error_secret_form(audit_path: Path) -> None:
     assert "..." in phase["transport_error"]
 
 
-def test_audit_flag_form_secret_is_known_residual_passthrough(audit_path: Path) -> None:
-    # Documents the known residual leak: redact_text does NOT cover flag-form
-    # secrets (`mysql -p<pw>`), so they pass through to the permanent audit log.
+def test_audit_redacts_transport_error_known_tool_flag_form(audit_path: Path) -> None:
+    # A known-tool glued-flag secret echoed inside a transport_error message
+    # (when the tool is the command head of the quoted segment) must be masked
+    # before it reaches the append-only audit log, just like the cmd field.
     log = AuditLog()
     log.precheck_writable()
     result = PlanExecutionResult(
         steps=[
-            _step_outcome("forward-failed", [_phase("forward", "mysql -psupersecretpw", _ok(1))])
+            _step_outcome(
+                "forward-failed",
+                [
+                    _phase(
+                        "forward",
+                        "mysql ping",
+                        None,
+                        transport="mysql -psupersecretpw connect failed",
+                    )
+                ],
+            )
         ],
         rollbacks=[],
         succeeded=False,
@@ -342,7 +354,34 @@ def test_audit_flag_form_secret_is_known_residual_passthrough(audit_path: Path) 
     )
     log.write_result(_plan(), result)
     raw = audit_path.read_text()
-    assert "supersecretpw" in raw  # known residual — flag-form is NOT redacted
+    assert "supersecretpw" not in raw
+
+
+def test_audit_redacts_known_tool_flag_form_but_unknown_is_residual(
+    audit_path: Path,
+) -> None:
+    # redact_text covers known-client flag-form secrets (`mysql -p<pw>`), so they
+    # are masked before reaching the permanent audit log. Unknown tools
+    # (`myhack -p<pw>`) remain a known residual passthrough — best-effort, not a
+    # security boundary (the EUID==0 gate + env injection still cover them).
+    log = AuditLog()
+    log.precheck_writable()
+    result = PlanExecutionResult(
+        steps=[
+            _step_outcome("forward-failed", [_phase("forward", "mysql -psupersecretpw", _ok(1))]),
+            _step_outcome("forward-failed", [_phase("forward", "myhack -psupersecretpw", _ok(1))]),
+        ],
+        rollbacks=[],
+        succeeded=False,
+        rollback_complete=True,
+    )
+    log.write_result(_plan(), result)
+    raw = audit_path.read_text()
+    # known tool: the glued `-p` password is masked, no full secret survives.
+    assert "mysql -psupersecretpw" not in raw
+    assert "supe...etpw" in raw
+    # unknown tool: still a residual passthrough.
+    assert "myhack -psupersecretpw" in raw
 
 
 # --------------------------------------------------------------------------- #
