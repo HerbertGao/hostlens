@@ -132,7 +132,7 @@
 
 **audit 不可写不静默，且区分时序**：执行前预检目录可写。**intent 写失败**（exec 尚未开始、零副作用）→ **中止执行**、stderr 报错、非零退出（损失为零）。**result 写失败**（exec 已完成、副作用已发生）→ stderr 明确告知「副作用已发生但审计未完整落盘」+ 已执行 step 摘要、非零退出，**不**静默吞掉。
 
-**已知残留泄漏面（显著声明）**：`redact_text` 不覆盖 **shell flag 形密钥**（`redis-cli -a <pw>` / `mysql -p<pw>` / `https://user:pw@host` URL userinfo）——这些会原样进 audit.log，而 audit.log **永不删除 → 永久留痕**。Plan 作者**必须**通过 `ExecutionTarget.exec` 的 `env` 参数注入密钥、禁止明文写进 `forward_cmd`。
+**脱敏覆盖面与已知残留（显著声明）**：`redact_text` 覆盖 `key=value` / `Bearer` / JWT / `sk-` 形，**并覆盖已知客户端工具的 shell flag 形密钥**（`redis-cli -a <pw>` / `mysql -p<pw>` / `sshpass -p <pw>` / `curl -u user:<pw>` / `https://user:pw@host` URL userinfo 等，best-effort）。**残留泄漏面**：**未知工具**的 flag 形密钥（如 `customcli -p<pw>`）仍不被覆盖、会原样进 audit.log，而 audit.log **永不删除 → 永久留痕**。Plan 作者**仍必须**通过 `ExecutionTarget.exec` 的 `env` 参数注入密钥、禁止明文写进 `forward_cmd`（脱敏是 best-effort 不是安全边界，未知工具仍漏）。
 
 #### 场景:成功执行两段式写 audit
 - **当** 一个 plan 成功执行
@@ -143,8 +143,8 @@
 - **那么** audit result 对应记 `precheck-blocked` / `forward-failed`（含 `exit_code` 可 null **+ `timed_out` 字段：`true`=超时 / `false`=断连，消费方据此机械区分两种 `exit_code is None`**）/ `verify-failed`，可机械区分
 
 #### 场景:audit 命令 best-effort 脱敏
-- **当** plan 的 `forward_cmd` 含 `core/redact.py` 可识别形态的敏感串（`key=value` / `Bearer` / JWT / `sk-`）
-- **那么** audit 写入与 CLI 预览展示均对该串脱敏；**注**：CLI flag 形密钥（如 `-a <pw>` / `mysql -p<pw>` / `user:pw@host` URL）`redact_text` 不覆盖，属已知残留泄漏面（见 Security）
+- **当** plan 的 `forward_cmd` 含 `core/redact.py` 可识别形态的敏感串（`key=value` / `Bearer` / JWT / `sk-`，或**已知工具 flag 形**如 `mysql -p<pw>` / `redis-cli -a <pw>`）
+- **那么** audit 写入与 CLI 预览展示均对该串脱敏；**注**：**未知工具**的 flag 形密钥（如 `customcli -p<pw>`）`redact_text` 不覆盖，属已知残留泄漏面（见 Security）
 
 #### 场景:audit 不可写不静默且区分时序
 - **当** audit.log 所在目录不可写
