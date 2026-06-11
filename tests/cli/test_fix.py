@@ -268,7 +268,12 @@ def test_non_tty_without_yes_rejected_exit_1(
     assert not audit_home.exists()
 
 
-def test_non_tty_yes_high_risk_rejected_exit_1(
+# --------------------------------------------------------------------------- #
+# Risk-tiered divergence — medium/high plans are propose-only (runbook, exit 4)
+# --------------------------------------------------------------------------- #
+
+
+def test_high_risk_renders_runbook_exit_4_no_exec_no_audit(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -276,13 +281,97 @@ def test_non_tty_yes_high_risk_rejected_exit_1(
     audit_home: Path,
     nonroot: None,
 ) -> None:
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    plan = _write_plan(tmp_path, risk_level="high", precheck="true", rollback=None, forward="true")
-    code, _out, err = _run_main(["fix", str(plan), "--yes"], capsys, monkeypatch)
-    assert code == 1
-    assert "approval-rejected:" in err
-    assert "high_risk_non_interactive" in err
+    # A high-risk plan is propose-only: even with --yes it renders a runbook and
+    # exits 4 — never executes, never writes audit, no double-confirm path.
+    flag = tmp_path / "applied"
+    plan = _write_plan(
+        tmp_path,
+        risk_level="high",
+        precheck="true",
+        rollback=None,
+        forward=f"touch {flag}",
+    )
+    code, out, err = _run_main(["fix", str(plan), "--yes"], capsys, monkeypatch)
+    assert code == 4
+    assert "Remediation Runbook" in out
+    assert "本工具未执行任何命令" in out
+    assert "not-executed:" in err
+    assert not flag.exists()  # zero execution
+    assert not audit_home.exists()  # zero audit
+
+
+def test_medium_risk_renders_runbook_exit_4(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+    nonroot: None,
+) -> None:
+    flag = tmp_path / "applied"
+    plan = _write_plan(tmp_path, risk_level="medium", forward=f"touch {flag}", rollback="true")
+    code, out, _err = _run_main(["fix", str(plan), "--yes"], capsys, monkeypatch)
+    assert code == 4
+    assert "risk=medium" in out
+    assert not flag.exists()
     assert not audit_home.exists()
+
+
+def test_medium_dry_run_is_noop_still_runbook(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+    nonroot: None,
+) -> None:
+    # --dry-run is a no-op for elevated plans: they never execute regardless, so
+    # the divergence (exit 4 + runbook) wins over the dry-run branch.
+    plan = _write_plan(tmp_path, risk_level="medium", forward="echo x", rollback="true")
+    code, out, _err = _run_main(["fix", str(plan), "--dry-run"], capsys, monkeypatch)
+    assert code == 4
+    assert "Remediation Runbook" in out
+    assert "dry-run complete" not in out  # the all-low dry-run path was never taken
+
+
+def test_elevated_runbook_written_to_out_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+    nonroot: None,
+) -> None:
+    out_file = tmp_path / "runbook.md"
+    plan = _write_plan(tmp_path, risk_level="medium", forward="echo x", rollback="true")
+    code, out, _err = _run_main(["fix", str(plan), "--out", str(out_file)], capsys, monkeypatch)
+    assert code == 4
+    assert out_file.exists()
+    assert "Remediation Runbook" in out_file.read_text()
+    assert f"written to {out_file}" in out
+
+
+def test_high_risk_root_refused_before_runbook_render(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    targets_yaml: Path,
+    audit_home: Path,
+) -> None:
+    # EUID==0 is the earliest gate — it must fire before the runbook (which
+    # renders plan commands) for an elevated plan too.
+    plan = _write_plan(
+        tmp_path,
+        risk_level="high",
+        precheck="true",
+        rollback=None,
+        forward="SECRET_FORWARD_CMD",
+    )
+    monkeypatch.setattr(fix_module.os, "geteuid", lambda: 0)
+    code, out, err = _run_main(["fix", str(plan)], capsys, monkeypatch)
+    assert code == 1
+    assert "SECRET_FORWARD_CMD" not in out and "SECRET_FORWARD_CMD" not in err
+    assert "root" in err.lower()
 
 
 def test_execution_failure_prefixed_distinct_from_rejection(

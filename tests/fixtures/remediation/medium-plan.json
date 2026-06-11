@@ -1,0 +1,24 @@
+{
+  "finding_id": "nginx-worker-connections-low",
+  "target_name": "web-1",
+  "rationale": "nginx worker_connections 偏低导致高峰期连接拒绝，调高并重载（中风险，影响在线服务）",
+  "estimated_duration_seconds": 20,
+  "steps": [
+    {
+      "description": "调高 worker_connections 到 4096",
+      "precheck_cmd": "nginx -t",
+      "forward_cmd": "sed -i 's/worker_connections .*/worker_connections 4096;/' /etc/nginx/nginx.conf",
+      "rollback_cmd": "sed -i 's/worker_connections .*/worker_connections 1024;/' /etc/nginx/nginx.conf",
+      "verify_cmd": "nginx -t",
+      "risk_level": "medium"
+    },
+    {
+      "description": "热重载 nginx",
+      "precheck_cmd": "nginx -t",
+      "forward_cmd": "nginx -s reload",
+      "rollback_cmd": "nginx -s reload",
+      "verify_cmd": "systemctl is-active nginx",
+      "risk_level": "medium"
+    }
+  ]
+}
