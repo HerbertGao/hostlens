@@ -111,6 +111,8 @@ def test_sdk_client_constructed_with_max_retries_zero() -> None:
 
 
 def test_capabilities_match_production_constant() -> None:
+    # ``capabilities`` is now a per-instance attribute (design.md D-3); the
+    # default construction must still equal the historical 7-field constant.
     backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
     assert backend.capabilities == BackendCapabilities(
         prompt_caching=True,
@@ -123,12 +125,95 @@ def test_capabilities_match_production_constant() -> None:
     )
 
 
+def test_prompt_caching_false_flips_only_that_field() -> None:
+    """``prompt_caching=False`` → that one field flips; the other 6 stay."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY, prompt_caching=False)
+    assert backend.capabilities.prompt_caching is False
+    assert backend.capabilities == BackendCapabilities(
+        prompt_caching=False,
+        tool_use=True,
+        structured_output=True,
+        parallel_tool_use=True,
+        extended_thinking=False,
+        vision=True,
+        streaming=False,
+    )
+
+
+def test_prompt_caching_default_true() -> None:
+    """Default (no kwarg) → ``prompt_caching=True`` (behavior unchanged)."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    assert backend.capabilities.prompt_caching is True
+
+
+def test_extra_headers_passed_to_sdk_default_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``extra_headers`` non-None → SDK client built with ``default_headers``."""
+
+    captured: dict[str, Any] = {}
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return AsyncMock()
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _spy)
+    headers = {"HTTP-Referer": "https://x", "X-OpenRouter-Title": "hostlens"}
+    AnthropicAPIBackend(api_key=_FAKE_KEY, extra_headers=headers)
+    assert captured["default_headers"] == headers
+
+
+def test_extra_headers_default_omits_default_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default (no ``extra_headers``) → SDK client built WITHOUT
+    ``default_headers`` (real Anthropic request shape unchanged)."""
+
+    captured: dict[str, Any] = {}
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return AsyncMock()
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _spy)
+    AnthropicAPIBackend(api_key=_FAKE_KEY)
+    assert "default_headers" not in captured
+
+
 def test_repr_does_not_leak_api_key() -> None:
     backend = AnthropicAPIBackend(api_key=_FAKE_KEY, base_url="https://api.anthropic.com")
     rendered = repr(backend)
     assert _FAKE_KEY not in rendered
     # The fingerprint helper output should appear instead.
     assert "sk-a...klmn" in rendered
+
+
+def test_repr_masks_extra_header_values() -> None:
+    """``extra_headers`` values are masked to ``***`` unconditionally (D-5).
+
+    The probe value is deliberately a form ``redact_text`` does NOT match
+    (no ``sk-`` / Bearer / JWT / URL shape) so an implementation that wrongly
+    routes through form-based redaction would leak it and fail this assertion.
+    """
+
+    backend = AnthropicAPIBackend(
+        api_key=_FAKE_KEY,
+        extra_headers={"X-Custom-Auth": "not-a-real-secret-PROBE-0001"},
+    )
+    rendered = repr(backend)
+    assert "not-a-real-secret-PROBE-0001" not in rendered
+    # Key kept for debugging, value fully masked.
+    assert "X-Custom-Auth" in rendered
+    assert "***" in rendered
+
+
+def test_repr_extra_headers_none_renders_none() -> None:
+    """Default backend (no extra_headers) renders ``extra_headers=None``."""
+
+    backend = AnthropicAPIBackend(api_key=_FAKE_KEY)
+    assert "extra_headers=None" in repr(backend)
 
 
 @pytest.mark.asyncio

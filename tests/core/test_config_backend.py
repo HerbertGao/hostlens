@@ -259,6 +259,86 @@ def test_disable_thinking_decoupled_from_type() -> None:
     assert b.disable_thinking is True
 
 
+def test_extra_headers_defaults_none() -> None:
+    """Spec §场景:backend.extra_headers 缺省为 None."""
+
+    b = BackendSettings(type="fake")
+    assert b.extra_headers is None
+
+
+def test_extra_headers_env_loads_as_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spec §场景:backend.extra_headers 经 env 加载为 dict.
+
+    pydantic-settings parses the nested ``HOSTLENS_BACKEND__EXTRA_HEADERS``
+    env var as JSON into a ``dict[str, str]``.
+    """
+
+    monkeypatch.setenv("HOSTLENS_BACKEND__TYPE", "fake")
+    monkeypatch.setenv(
+        "HOSTLENS_BACKEND__EXTRA_HEADERS",
+        '{"HTTP-Referer":"https://example.com","X-OpenRouter-Title":"hostlens"}',
+    )
+    settings = load_settings()
+    assert settings.backend is not None
+    assert settings.backend.extra_headers == {
+        "HTTP-Referer": "https://example.com",
+        "X-OpenRouter-Title": "hostlens",
+    }
+
+
+def test_extra_headers_decoupled_from_type() -> None:
+    """Spec §场景: non-anthropic_api type may set extra_headers without error.
+
+    Any type accepts the header map at load time (no cross-field validation);
+    only the ``anthropic_api`` path consumes it in ``create_backend``.
+    """
+
+    b = BackendSettings(
+        type="playback",
+        cassette_path=Path("/tmp/x.jsonl"),
+        extra_headers={"HTTP-Referer": "https://example.com"},
+    )
+    assert b.extra_headers == {"HTTP-Referer": "https://example.com"}
+
+
+def test_prompt_caching_defaults_none() -> None:
+    """Spec §场景:backend.prompt_caching 缺省为 None.
+
+    ``None`` is semantically equivalent to ``True`` (real-Anthropic default
+    prompt caching stays on); only ``False`` flips behaviour.
+    """
+
+    b = BackendSettings(type="fake")
+    assert b.prompt_caching is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), ("false", False), ("1", True), ("0", False)],
+)
+def test_prompt_caching_env_bool_parsing(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    """Spec §场景:backend.prompt_caching 经 env 加载为 False."""
+
+    monkeypatch.setenv("HOSTLENS_BACKEND__TYPE", "fake")
+    monkeypatch.setenv("HOSTLENS_BACKEND__PROMPT_CACHING", raw)
+    settings = load_settings()
+    assert settings.backend is not None
+    assert settings.backend.prompt_caching is expected
+
+
+def test_prompt_caching_decoupled_from_type() -> None:
+    """Spec §场景: non-anthropic_api type may set prompt_caching without error."""
+
+    b = BackendSettings(
+        type="playback",
+        cassette_path=Path("/tmp/x.jsonl"),
+        prompt_caching=False,
+    )
+    assert b.prompt_caching is False
+
+
 def test_extra_fields_in_backend_settings_rejected() -> None:
     """Spec contract: ``model_config = ConfigDict(extra="forbid")``.
 

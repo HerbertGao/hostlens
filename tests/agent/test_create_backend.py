@@ -163,6 +163,107 @@ def test_anthropic_api_disable_thinking_defaults_false() -> None:
     assert backend._disable_thinking is False
 
 
+def test_anthropic_api_strips_auth_headers_case_insensitive() -> None:
+    """Spec §需求:`AnthropicAPIBackend` 必须支持 `extra_headers` 透传 §场景:认证 header 丢弃大小写不敏感.
+
+    Authentication is sourced solely from ``api_key`` (D-4). ``create_backend``
+    MUST drop ``x-api-key`` / ``authorization`` keys (case-insensitive)
+    before threading ``extra_headers`` into the backend so a statistics header
+    can never override the SecretStr-backed auth path. Only the non-auth
+    ``HTTP-Referer`` survives.
+    """
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+            extra_headers={
+                "X-Api-Key": "attacker",  # pragma: allowlist secret — adversarial fixture
+                "AUTHORIZATION": "Bearer x",  # pragma: allowlist secret — adversarial fixture
+                "HTTP-Referer": "https://x",
+            },
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend._extra_headers == {"HTTP-Referer": "https://x"}
+
+
+def test_anthropic_api_extra_headers_all_auth_collapses_to_none() -> None:
+    """When every key is an auth header, the stripped dict collapses to None.
+
+    Passing an empty dict as ``default_headers`` would break the backend's
+    "None → don't pass ``default_headers``" default-shape guarantee, so the
+    wiring layer normalizes a fully-stripped dict back to None.
+    """
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+            extra_headers={
+                "x-api-key": "attacker",  # pragma: allowlist secret — adversarial fixture
+                "Authorization": "Bearer x",  # pragma: allowlist secret — adversarial fixture
+            },
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend._extra_headers is None
+
+
+def test_anthropic_api_extra_headers_default_none() -> None:
+    """No ``extra_headers`` configured → backend receives None (default shape)."""
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend._extra_headers is None
+
+
+def test_anthropic_api_prompt_caching_false_end_to_end() -> None:
+    """Spec §需求:`AnthropicAPIBackend` 必须支持 `prompt_caching` capability 实例注入.
+
+    A config-level ``prompt_caching=False`` must flow through ``create_backend``
+    into the constructed backend's ``capabilities.prompt_caching``, so the
+    Agent loop skips ``cache_control`` injection for non-Claude endpoints.
+    """
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+            prompt_caching=False,
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend.capabilities.prompt_caching is False
+
+
+@pytest.mark.parametrize("configured", [None, True])
+def test_anthropic_api_prompt_caching_none_or_true_maps_to_true(
+    configured: bool | None,
+) -> None:
+    """Both unset (None) and explicit True map to backend ``prompt_caching=True``."""
+
+    settings = Settings(
+        backend=BackendSettings(
+            type="anthropic_api",
+            api_key=SecretStr(_FAKE_KEY),
+            prompt_caching=configured,
+        ),
+    )
+    backend = create_backend(settings)
+    assert isinstance(backend, AnthropicAPIBackend)
+    assert backend.capabilities.prompt_caching is True
+
+
 # (d) anthropic_api + api_key is None → ConfigError
 def test_anthropic_api_without_api_key_raises_config_error() -> None:
     """Defensive guard for programmatic construction that bypassed schema

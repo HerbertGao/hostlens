@@ -11,9 +11,10 @@ other consumer talks through the ``LLMBackend`` Protocol. The adapter:
   on SDK internals.
 - Routes ``cache_control`` blocks through ``check_capability_consistency``
   before the SDK call so a capability mismatch surfaces immediately (D-2).
-- Redacts the ``api_key`` and ``base_url`` from ``__repr__`` and from
-  ``health_check`` failure messages so neither logs nor doctor JSON output
-  can ever leak the live secret.
+- Redacts the ``api_key`` from ``__repr__`` and from ``health_check``
+  failure messages, and unconditionally masks ``extra_headers`` values to
+  ``***`` in ``__repr__`` (D-5), so neither logs nor doctor JSON output can
+  ever leak the live secret or a tokenized statistics header.
 """
 
 from __future__ import annotations
@@ -90,21 +91,6 @@ class AnthropicAPIBackend:
     """
 
     name: ClassVar[str] = "anthropic_api"
-    capabilities: ClassVar[BackendCapabilities] = BackendCapabilities(
-        prompt_caching=True,
-        tool_use=True,
-        structured_output=True,
-        parallel_tool_use=True,
-        # ``disable_thinking`` is an optional token-saving optimization that
-        # suppresses the provider's default thinking output; it does NOT enable
-        # Hostlens consumption of thinking blocks, so ``extended_thinking`` stays
-        # False regardless of the instance setting. (Inbound thinking is now
-        # tolerated unconditionally via the ``ContentBlock`` union — closing the
-        # switch is no longer required to avoid a crash.)
-        extended_thinking=False,
-        vision=True,
-        streaming=False,
-    )
 
     def __init__(
         self,
@@ -113,6 +99,8 @@ class AnthropicAPIBackend:
         base_url: str | None = None,
         health_check_model: str = "claude-haiku-4-5",
         disable_thinking: bool = False,
+        prompt_caching: bool = True,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         # Keep ``api_key`` / ``base_url`` only as instance state for repr
         # rendering; the live secret lives inside ``self._client`` and never
@@ -125,14 +113,39 @@ class AnthropicAPIBackend:
         # correctness — inbound thinking is tolerated by the ``ContentBlock``
         # union, so leaving it False no longer crashes (design.md D-8).
         self._disable_thinking: bool = disable_thinking
+        # ``capabilities`` is a per-instance attribute (design.md D-3): only
+        # ``prompt_caching`` is configurable so non-Claude OpenRouter upstreams
+        # (DeepSeek / Qwen) that ignore ``cache_control`` can declare False and
+        # make the Agent loop skip injection (CLAUDE.md §4.8). The other 6
+        # fields are fixed — they are either endpoint-invariant or unconsumed
+        # by the loop (design.md D-1).
+        self.capabilities: BackendCapabilities = BackendCapabilities(
+            prompt_caching=prompt_caching,
+            tool_use=True,
+            structured_output=True,
+            parallel_tool_use=True,
+            extended_thinking=False,
+            vision=True,
+            streaming=False,
+        )
+        # Kept for ``__repr__`` so leaked-header detection has a stable source;
+        # values are masked at render time (D-5), never the SDK client's live
+        # ``default_headers``.
+        self._extra_headers: dict[str, str] | None = extra_headers
         # ``max_retries=0`` is the explicit Anthropic SDK API to disable its
         # internal retry layer — D-5 mandates single-source retry control by
-        # the Agent loop.
-        self._client = anthropic.AsyncAnthropic(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=0,
-        )
+        # the Agent loop. ``default_headers`` is only passed when
+        # ``extra_headers`` is non-None so the real Anthropic request shape is
+        # byte-for-byte unchanged in the default path (spec 场景:extra_headers
+        # 缺省不改请求形状).
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "max_retries": 0,
+        }
+        if extra_headers is not None:
+            client_kwargs["default_headers"] = extra_headers
+        self._client = anthropic.AsyncAnthropic(**client_kwargs)
 
     def __repr__(self) -> str:
         # ``api_key_fingerprint`` returns ``"<unset>"`` / ``"<redacted>"`` /
@@ -140,9 +153,20 @@ class AnthropicAPIBackend:
         # rendered verbatim because dev / staging URLs are not secret; if a
         # user pushes a tokenized proxy URL through ``base_url`` they should
         # rely on ``hostlens.core.redact.redact_url`` (out of scope here).
+        #
+        # ``extra_headers`` values are masked UNCONDITIONALLY to ``***`` (keys
+        # kept for debugging). D-5 rejects ``core.redact`` form-based redaction:
+        # a bare header token (``X-Custom-Auth: deadbeef...``) matches no
+        # ``redact_text`` form regex and ``X-Custom-Auth`` matches no
+        # ``is_sensitive_key`` name, so form detection would leak it. Masking
+        # every value is the only guarantee that holds for an arbitrary header.
+        if self._extra_headers is None:
+            masked_headers: dict[str, str] | None = None
+        else:
+            masked_headers = {key: "***" for key in self._extra_headers}
         return (
             f"AnthropicAPIBackend(api_key_fingerprint={api_key_fingerprint(self._api_key)!r}, "
-            f"base_url={self._base_url!r})"
+            f"base_url={self._base_url!r}, extra_headers={masked_headers!r})"
         )
 
     async def messages_create(

@@ -536,11 +536,38 @@ def create_backend(settings: Settings) -> LLMBackend:
         health_check_model = (
             settings.agent.health_check_model if settings.agent is not None else "claude-haiku-4-5"
         )
+        # ``prompt_caching`` is ``bool | None`` at the config layer so "unset"
+        # is distinguishable from an explicit ``True``; both map to backend
+        # ``prompt_caching=True`` (D-2). Only an explicit ``False`` flips the
+        # capability so non-Claude OpenRouter upstreams stop advertising cache.
+        prompt_caching = (
+            backend_settings.prompt_caching if backend_settings.prompt_caching is not None else True
+        )
+        # Authentication is sourced solely from ``api_key`` (D-4). Drop any
+        # ``x-api-key`` / ``authorization`` keys from ``extra_headers``
+        # (case-insensitive) before threading them into the backend so a
+        # statistics/routing header can never become an auth override that
+        # bypasses the SecretStr path. Collapse a fully-stripped dict back to
+        # None so the backend's "None → no default_headers" default-shape
+        # guarantee survives.
+        extra_headers: dict[str, str] | None = None
+        if backend_settings.extra_headers is not None:
+            # SDK auth surface verified == {X-Api-Key, Authorization} as of
+            # anthropic 0.104.x; a future SDK adding a third auth header would
+            # need this set updated to keep the override-strip complete.
+            auth_header_keys = {"x-api-key", "authorization"}
+            extra_headers = {
+                key: value
+                for key, value in backend_settings.extra_headers.items()
+                if key.lower() not in auth_header_keys
+            } or None
         backend = AnthropicAPIBackend(
             api_key=backend_settings.api_key.get_secret_value(),
             base_url=base_url_str,
             health_check_model=health_check_model,
             disable_thinking=backend_settings.disable_thinking,
+            prompt_caching=prompt_caching,
+            extra_headers=extra_headers,
         )
     elif backend_type == "fake":
         from hostlens.agent.backends.fake import FakeBackend

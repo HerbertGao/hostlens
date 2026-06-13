@@ -110,6 +110,26 @@ class BackendSettings(BaseModel):
     # intentionally decoupled from ``type`` (no cross-field validation) so any
     # type may set it and it is a silent no-op on non-anthropic_api paths.
     disable_thinking: bool = False
+    # Non-secret statistics headers passed through to the Anthropic SDK's
+    # ``default_headers`` (e.g. OpenRouter's recommended ``HTTP-Referer`` /
+    # ``X-OpenRouter-Title``). Positioned as **non-secret** identifying headers:
+    # no ``SecretStr``-level serialization protection — redaction duty lives in
+    # ``AnthropicAPIBackend.__repr__`` (D-5), and the only Settings-derived
+    # output surface (doctor ``BackendHealthRow``) does not emit it. Decoupled
+    # from ``type`` like ``disable_thinking``: any type may set it, only the
+    # ``anthropic_api`` path consumes it in ``create_backend``. ``create_backend``
+    # strips auth headers (``x-api-key`` / ``authorization``) so this can never
+    # become an authentication bypass around ``api_key`` (D-4); default ``None``
+    # leaves the existing outbound header set untouched.
+    extra_headers: dict[str, str] | None = None
+    # Targeted override of ``AnthropicAPIBackend.capabilities.prompt_caching``.
+    # ``bool | None`` (not ``bool = True``) so "unset" stays distinguishable from
+    # an explicit ``True`` at the config layer; ``create_backend`` maps both
+    # ``None`` and ``True`` to backend ``prompt_caching=True``. Set ``False`` for
+    # non-Claude OpenRouter models that silently ignore ``cache_control`` (so the
+    # Agent loop stops injecting it and cache-hit-rate metrics stop being
+    # distorted). Decoupled from ``type``; only ``anthropic_api`` consumes it.
+    prompt_caching: bool | None = None
 
     @model_validator(mode="after")
     def _validate_type_specific_required_fields(self) -> BackendSettings:
