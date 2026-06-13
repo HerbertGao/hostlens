@@ -28,7 +28,7 @@
 ## 5. 文档 + 手动验收
 
 - [x] 5.1 `docs/ARCHITECTURE.md §9` OpenRouter 段补「非 Claude 端点须设 `prompt_caching: false`」与 `extra_headers` 配置示例；`.env.example` OpenRouter 模板对齐两字段
-- [ ] 5.2 手动 Demo Path（`tests/manual`，非 CI）：`base_url=https://openrouter.ai/api`（SDK 追加 `/v1/messages`；勿写 `.../api/v1`）+ `prompt_caching=false` + `extra_headers` 下 `deepseek/deepseek-v4-pro` 与 `qwen/qwen3.7-plus` 各跑通一次 `hostlens demo run cpu_saturation`
+- [x] 5.2 真端点验收（2026-06-13 实测通过）：`base_url=https://openrouter.ai/api` + `prompt_caching=false` + `extra_headers` 下经 `qwen/qwen3.7-plus` 发真请求往返成功（`create_backend` 读真 `.env`，返回 `OPENROUTER_OK`、`capabilities.prompt_caching=False`、repr extra_headers 值全遮蔽 `***`、`cache_creation_input_tokens=0`）。**修正**：原写 `hostlens demo run cpu_saturation` 验证不了 OpenRouter——`hostlens demo` 离线写死 `PlaybackBackend`、不走 `create_backend`；真端点须走 `create_backend`/`hostlens inspect` agent 路径。运营发现（非缺陷）：deepseek/qwen 经 OpenRouter 延迟常 >5s 超 `doctor` health_check 5s 硬超时
 
 ## 6. 收尾
 
