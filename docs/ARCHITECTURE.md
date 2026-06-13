@@ -1153,14 +1153,22 @@ OpenRouter 在 `https://openrouter.ai/api/v1/messages` 暴露一个 **Anthropic 
 
 **模型 ID 格式**：OpenRouter 使用 `provider/model-name`，例如 `deepseek/deepseek-v4-pro`、`qwen/qwen3.7-plus`。与直连 DeepSeek 的裸 `deepseek-chat` 不同，`health_check_model` 也须同步修改。
 
+**`base_url` 注意**：必须填 `https://openrouter.ai/api`，SDK 会自动追加 `/v1/messages`。**勿写成 `https://openrouter.ai/api/v1`** —— 会变成双 `/v1`（`.../api/v1/v1/messages`）导致 400。
+
+**非 Claude 模型必须设 `prompt_caching: false`**：非 Claude 模型走兼容端点时不支持 prompt caching ——`cache_control: ephemeral` block 被上游静默忽略、`cache_creation_input_tokens` 恒 `0`。`AnthropicAPIBackend.capabilities.prompt_caching` 默认 `True`，Agent loop 据此仍注入 `cache_control` → cache hit rate 指标失真。`BackendSettings.prompt_caching` 缺省 `None`（映射为 `True`，保持真 Anthropic 行为不变）；接 OpenRouter 非 Claude 模型时显式置 `false`，Agent loop 既有分支据此**不注入** `cache_control`（CLAUDE.md §4.8），指标恢复真实。doctor **不**强校验该字段（无法可靠判定 `base_url` 背后的上游模型族），误配仅损失缓存收益（多花 token），不影响正确性。
+
+**`extra_headers` 统计 header**：OpenRouter 推荐请求方携带 `HTTP-Referer` / `X-OpenRouter-Title` 统计 header。`BackendSettings.extra_headers`（`dict[str, str] | None`，缺省 `None`）透传到 Anthropic SDK 的 `default_headers`。`extra_headers` **定位为非密钥统计 header**，不提供 `SecretStr` 级序列化保护；`create_backend` 接线层会**剥离**大小写不敏感的 `x-api-key` / `authorization` 键（认证以 `api_key` 字段为唯一来源，杜绝绕过 SecretStr 的认证旁路），`AnthropicAPIBackend.__repr__` 对其值无条件全遮蔽为 `***`（keys 保留）。
+
 **配置示例（环境变量）**：
 
 ```bash
 # OpenRouter — DeepSeek v4 Pro
 export HOSTLENS_BACKEND__TYPE=anthropic_api
 export HOSTLENS_BACKEND__API_KEY=sk-or-v1-...        # OpenRouter key
-export HOSTLENS_BACKEND__BASE_URL=https://openrouter.ai/api
+export HOSTLENS_BACKEND__BASE_URL=https://openrouter.ai/api    # SDK 自动追加 /v1/messages；勿写 .../api/v1
 export HOSTLENS_BACKEND__DISABLE_THINKING=false       # thinking 块已容忍；true 可省 token
+export HOSTLENS_BACKEND__PROMPT_CACHING=false         # 非 Claude 模型必须设 false，否则 cache hit rate 指标失真
+export HOSTLENS_BACKEND__EXTRA_HEADERS='{"HTTP-Referer":"https://github.com/HerbertGao/hostlens","X-OpenRouter-Title":"hostlens"}'
 export HOSTLENS_AGENT__PRIMARY_MODEL=deepseek/deepseek-v4-pro
 export HOSTLENS_AGENT__HEALTH_CHECK_MODEL=deepseek/deepseek-v4-pro
 
@@ -1171,10 +1179,9 @@ export HOSTLENS_AGENT__HEALTH_CHECK_MODEL=qwen/qwen3.7-plus
 
 也可复制 `.env.example`（仓库根目录，方案 B）填入 key 后 `cp .env.example .env` 即可使用。
 
-**已知待改进项**（不阻塞当前使用，需独立提案）：
+**已知限制**（不阻塞当前使用）：
 
-- `BackendSettings` 缺 `extra_headers` 字段——无法传 OpenRouter 建议的 `HTTP-Referer` / `X-OpenRouter-Title` 统计 header
-- `BackendCapabilities` 为 ClassVar（类级别常量），无法按实例（模型）覆盖；非 Claude 模型的 `prompt_caching` 实际不生效但仍声明为 `True`，导致 cache hit rate 指标失真
+- OpenRouter quota 语义与 Anthropic 不同，本框架不改 `quota_check`（仍返回 `None`）——OpenRouter 的余额 / 限流不经 `quota_check` 暴露。未来若接 OpenRouter `/key` 余额查询另起提案。
 
 #### 注入方式（不进 ToolContext）
 

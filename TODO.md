@@ -692,10 +692,10 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
     - [ ] Bedrock backend 跑通同一套 cassette（除 prompt caching 相关测试外）
     - [ ] Subscription backend 在 daemon 进程中启动必须立刻 exit 1
     - [ ] 切换 backend 不需要修改任何业务代码（只改配置文件 `backend.type`）
-- [ ] **10.6 OpenRouter backend 配置优化**（`add-openrouter-backend-config` 提案；OpenRouter 经 `tests/manual/openrouter_probe.py` 实测已可用，以下是改进项，不阻塞当前使用）
-  - [ ] `BackendSettings` 加 `extra_headers: dict[str, str] | None` 字段，`AnthropicAPIBackend` 透传给 SDK `default_headers`——支持 OpenRouter 推荐的 `HTTP-Referer` / `X-OpenRouter-Title` 统计 header
-  - [ ] `BackendCapabilities` 从 ClassVar 改为实例字段（构造时注入）——允许按模型/端点配置实际支持的 capability，解决非 Claude 模型 `prompt_caching=True` 但 `cache_creation_input_tokens` 恒 0 导致指标失真的问题
-  - [ ] 验收：`HOSTLENS_BACKEND__EXTRA_HEADERS='{"HTTP-Referer":"https://..."}'` 能透传；`deepseek/deepseek-v4-pro` 与 `qwen/qwen3.7-plus` 跑通 `hostlens demo`
+- [ ] **10.6 OpenRouter backend 配置优化**（`add-openrouter-backend-config` 提案；代码已实现+测试随本 PR，**真端点 demo 待手动验收**故 top-level 暂留未勾）
+  - [x] `BackendSettings` 加 `extra_headers: dict[str, str] | None` 字段，`AnthropicAPIBackend` 透传给 SDK `default_headers`——支持 OpenRouter 推荐的 `HTTP-Referer` / `X-OpenRouter-Title` 统计 header（`create_backend` 接线层剥离大小写不敏感的 `x-api-key`/`authorization` 防认证覆盖；`__repr__` 对值无条件全遮蔽 `***`）
+  - [x] `AnthropicAPIBackend.capabilities` 从 ClassVar 改为构造时实例注入（新构造参数 `prompt_caching: bool=True` + `BackendSettings.prompt_caching: bool|None=None`，定向覆盖单项）——非 Claude 模型置 `False` 使 loop 不注入 `cache_control`，解决 `cache_creation_input_tokens` 恒 0 导致指标失真。注：仅开放 `prompt_caching` 单项覆盖（其余 6 capability 无按模型配置需求，详见提案 D-1）
+  - [ ] 验收：`HOSTLENS_BACKEND__EXTRA_HEADERS=...` 透传 **+ `prompt_caching=False` 行为均有单测覆盖（已过）**；`deepseek/deepseek-v4-pro` 与 `qwen/qwen3.7-plus` 跑通 `hostlens demo` **待手动**（真 OpenRouter 端点 + key，非 CI；= change task 5.2）
 
 ---
 
