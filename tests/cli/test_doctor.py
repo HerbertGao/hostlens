@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,18 @@ from typer.testing import CliRunner
 from hostlens.cli import app
 from hostlens.targets.base import Capability
 from hostlens.targets.registry import TargetRegistry
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Clear ``HOSTLENS_*`` env and chdir off the repo so a dev ``.env`` /
+    exported ``HOSTLENS_*`` don't leak a configured backend into these
+    M0/M1-baseline doctor tests (which assert the unconfigured shape)."""
+
+    for key in list(os.environ):
+        if key.startswith("HOSTLENS_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:

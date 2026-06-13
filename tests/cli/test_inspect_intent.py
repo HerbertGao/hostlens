@@ -21,6 +21,7 @@ no ``@pytest.mark.asyncio``; no ``@pytest.mark.live`` (every backend is fake).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -39,6 +40,20 @@ from hostlens.agent.backend import (
 from hostlens.agent.backends.fake import FakeBackend
 from hostlens.agent.backends.playback import PlaybackBackend
 from hostlens.cli import main
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Clear ``HOSTLENS_*`` env and chdir off the repo so a dev ``.env`` /
+    exported ``HOSTLENS_*`` don't leak a configured backend into tests that
+    assert the no-backend path (e.g. ``--intent`` exit 3). Runs before the
+    per-test backend-config fixtures (autouse → clear, then they set)."""
+
+    for key in list(os.environ):
+        if key.startswith("HOSTLENS_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+
 
 # --------------------------------------------------------------------------- #
 # Backend / settings injection fixtures
