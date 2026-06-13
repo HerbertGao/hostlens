@@ -3,7 +3,6 @@
 ## 目的
 
 定义 Hostlens 核心服务层(M0)——`Settings`(从 env 与 .env 加载强类型校验,支持 `backend` / `agent` 两个独立 namespace)、`Logging`(dev / prod 双渲染模式,不打印环境变量值含嵌套结构兜底)、异常基类层次。
-
 ## 需求
 ### 需求:`Settings` 从 env 与 .env 文件加载配置并强类型校验
 
@@ -123,6 +122,8 @@
 - `oauth_token: SecretStr | None = None`（type=claude_subscription 预留位）
 - `accept_subscription_risks: bool = False`（type=claude_subscription 预留位）
 - `disable_thinking: bool = False`（抑制「thinking 默认开」的 anthropic 兼容端点输出；为 True 时由 `create_backend` 接入 `AnthropicAPIBackend`、令其 `messages_create` 注入 `extra_body={"thinking":{"type":"disabled"}}`，行为见 llm-backend-protocol spec。与 `backend.type` **无耦合校验**：任意 type 都允许设置，仅 `anthropic_api` 路径在 `create_backend` 中真正消费它；默认 `False` 使既有配置与真 Anthropic 请求路径不变）
+- `extra_headers: dict[str, str] | None = None`（注入到出站 HTTP 请求的自定义 header，透传给 Anthropic SDK 的 `default_headers`，行为见 llm-backend-protocol spec。用途：OpenRouter 等 anthropic 兼容端点推荐的统计 header（`HTTP-Referer` / `X-OpenRouter-Title`）。与 `backend.type` **无耦合校验**：任意 type 都允许设置，仅 `anthropic_api` 路径在 `create_backend` 中真正消费它；默认 `None` 使既有出站请求 header 不变。接线层**禁止**令 `extra_headers` 覆盖 SDK 认证 header（`x-api-key` / `authorization`）—— 同名键必须被丢弃，认证以 `api_key` 字段为唯一来源）
+- `prompt_caching: bool | None = None`（定向覆盖 `AnthropicAPIBackend` 实例的 `capabilities.prompt_caching`；为 `False` 时由 `create_backend` 注入，使 backend 声明不支持 prompt caching，Agent loop 据此**不注入** `cache_control`。用途：OpenRouter 上非 Claude 模型不支持 `cache_control`、`cache_creation_input_tokens` 恒 0，置 `False` 避免 cache hit rate 指标失真。与 `backend.type` **无耦合校验**：任意 type 都允许设置，仅 `anthropic_api` 路径在 `create_backend` 中真正消费它；默认 `None` 等价 `True`（真 Anthropic 默认 prompt caching 生效，既有行为不变）。**仅覆盖 `prompt_caching` 单项**：只有 `prompt_caching` 既被 loop/gate branch、又随模型变；其余 6 个无此需求（`tool_use` 恒真、`structured_output` 是 Planner 语义依赖、另 4 个无消费者），不开放 per-config 覆盖）
 
 `AgentSettings` Pydantic 模型字段：
 
@@ -194,3 +195,23 @@
 
 - **当** 配置含 `backend: {type: playback, cassette_path: "...", disable_thinking: true}`，调 `load_settings()`
 - **那么** 必须 exit 0；`settings.backend.disable_thinking is True`，但 playback 路径不消费该字段（不报错、不影响回放）
+
+#### 场景:`backend.extra_headers` 缺省为 None
+
+- **当** 配置 `backend:` 节**不**含 `extra_headers`，调 `load_settings()`
+- **那么** 必须 exit 0；`settings.backend.extra_headers is None`
+
+#### 场景:`backend.extra_headers` 经 env 加载为 dict
+
+- **当** 设置 `HOSTLENS_BACKEND__EXTRA_HEADERS='{"HTTP-Referer":"https://example.com","X-OpenRouter-Title":"hostlens"}'`（且其余 backend 必填字段满足），调 `load_settings()`
+- **那么** 加载出的 `settings.backend.extra_headers == {"HTTP-Referer": "https://example.com", "X-OpenRouter-Title": "hostlens"}`
+
+#### 场景:`backend.prompt_caching` 缺省为 None
+
+- **当** 配置 `backend:` 节**不**含 `prompt_caching`，调 `load_settings()`
+- **那么** 必须 exit 0；`settings.backend.prompt_caching is None`（语义等价 `True`，既有真 Anthropic 行为不变）
+
+#### 场景:`backend.prompt_caching` 经 env 加载为 False
+
+- **当** 设置 `HOSTLENS_BACKEND__PROMPT_CACHING=false`（且其余 backend 必填字段满足），调 `load_settings()`
+- **那么** 加载出的 `settings.backend.prompt_caching is False`
