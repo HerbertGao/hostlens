@@ -150,3 +150,15 @@ def test_unsupported_field_rejected(tmp_path: Path) -> None:
 def test_empty_inventory_returns_empty(tmp_path: Path) -> None:
     ref = _write(tmp_path / "inv.yml", "")
     assert YamlSource().parse(str(ref)) == []
+
+
+def test_normalized_name_collision_rejected(tmp_path: Path) -> None:
+    # ``Web.Prod`` and ``Web-Prod`` both normalize to ``web-prod`` → collision.
+    ref = _write(
+        tmp_path / "inv.yml",
+        'hosts:\n  "Web.Prod": {type: ssh, host: 1.1.1.1}\n'
+        '  "Web-Prod": {type: ssh, host: 2.2.2.2}\n',
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "ambiguous_target_name"

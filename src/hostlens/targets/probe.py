@@ -288,11 +288,25 @@ class TargetProbe:
         non-zero ``exit_code`` is still reachable.
         """
 
-        target = build_one_target(entry, self._settings)
+        try:
+            target = build_one_target(entry, self._settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Construction failure (bad entry / settings) is isolated per host.
+            return ProbeResult(reachable=False, error_kind="exec_failed")
+
         try:
             result = await self._exec_probe(target)
         except ProbeError as exc:
             return ProbeResult(reachable=False, error_kind=exc.kind)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Any non-transport failure (OSError from a local subprocess, an
+            # asyncssh error not wrapped as TargetError, ...) is isolated to
+            # this host so one bad entry cannot abort the whole batch.
+            return ProbeResult(reachable=False, error_kind="exec_failed")
         finally:
             await _aclose_target(target)
 

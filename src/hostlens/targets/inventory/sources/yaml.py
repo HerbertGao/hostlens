@@ -35,6 +35,7 @@ from hostlens.targets.inventory.models import (
     _ENV_VAR_NAME_PATTERN,
     CandidateTarget,
     normalize_target_name,
+    reject_normalized_name_collisions,
 )
 
 __all__ = ["YamlSource"]
@@ -119,6 +120,7 @@ class YamlSource:
                         entry=str(raw_identifier),
                     )
                 candidates.append(self._build_candidate(str(raw_identifier), entry, raw_defaults))
+        reject_normalized_name_collisions(candidates)
         return candidates
 
     # -- internal -----------------------------------------------------------

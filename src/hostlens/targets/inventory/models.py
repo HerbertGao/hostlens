@@ -28,6 +28,7 @@ from hostlens.core.exceptions import ConfigError
 __all__ = [
     "CandidateTarget",
     "normalize_target_name",
+    "reject_normalized_name_collisions",
 ]
 
 
@@ -75,6 +76,27 @@ def normalize_target_name(raw: str) -> str:
             raw_identifier=raw,
         )
     return truncated
+
+
+def reject_normalized_name_collisions(candidates: list[CandidateTarget]) -> None:
+    """Raise if two candidates in a batch share a normalized ``name``.
+
+    Distinct source identifiers can normalize to the same target name (e.g.
+    ``Web-Prod`` and ``web_prod`` both → ``web-prod``). Without this check the
+    second silently vanishes at ``save_targets_config``'s idempotent upsert
+    (name already present) — one host onboarded, the other dropped with no
+    error (spec §需求:...规范化撞名被拒不静默).
+    """
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate.name in seen:
+            raise ConfigError(
+                "two source identifiers normalize to the same target name",
+                kind="ambiguous_target_name",
+                target=candidate.name,
+            )
+        seen.add(candidate.name)
 
 
 class CandidateTarget(BaseModel):

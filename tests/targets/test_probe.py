@@ -408,3 +408,38 @@ async def test_probe_many_respects_concurrency_bound(monkeypatch: pytest.MonkeyP
     assert len(results) == 6
     assert all(r.reachable for r in results)
     assert peak <= 2
+
+
+def test_probe_isolates_unexpected_construction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unexpected error (e.g. OSError) is isolated to exec_failed, not raised."""
+    import hostlens.targets.probe as probe_mod
+
+    def _boom(entry: object, settings: object) -> object:
+        raise OSError("subprocess creation failed")
+
+    monkeypatch.setattr(probe_mod, "build_one_target", _boom)
+    result = asyncio.run(TargetProbe(Settings()).probe(LocalEntry(name="x", type="local")))
+    assert result.reachable is False
+    assert result.error_kind == "exec_failed"
+
+
+def test_probe_many_isolates_one_bad_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One host raising an unexpected error must not abort the batch."""
+    import hostlens.targets.probe as probe_mod
+
+    real = probe_mod.build_one_target
+
+    def _selective(entry: object, settings: object) -> object:
+        if getattr(entry, "name", None) == "bad":
+            raise OSError("boom")
+        return real(entry, settings)
+
+    monkeypatch.setattr(probe_mod, "build_one_target", _selective)
+    results = asyncio.run(
+        TargetProbe(Settings()).probe_many(
+            [LocalEntry(name="bad", type="local"), LocalEntry(name="good", type="local")]
+        )
+    )
+    assert len(results) == 2
+    assert results[0].reachable is False and results[0].error_kind == "exec_failed"
+    assert results[1].reachable is True

@@ -225,3 +225,14 @@ def test_non_numeric_port_raises_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         SshConfigSource().parse(str(ref))
     assert excinfo.value.kind == "invalid_ssh_config"
+
+
+def test_normalized_name_collision_rejected(tmp_path: Path) -> None:
+    # ``Web.Prod`` and ``Web-Prod`` both normalize to ``web-prod`` → collision.
+    ref = _write(
+        tmp_path / "config",
+        "Host Web.Prod\n  HostName 1.1.1.1\nHost Web-Prod\n  HostName 2.2.2.2\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        SshConfigSource().parse(str(ref))
+    assert excinfo.value.kind == "ambiguous_target_name"

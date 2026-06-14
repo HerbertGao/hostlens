@@ -30,7 +30,11 @@ import os
 import structlog
 
 from hostlens.core.exceptions import ConfigError
-from hostlens.targets.inventory.models import CandidateTarget, normalize_target_name
+from hostlens.targets.inventory.models import (
+    CandidateTarget,
+    normalize_target_name,
+    reject_normalized_name_collisions,
+)
 
 __all__ = ["SshConfigSource"]
 
@@ -115,7 +119,9 @@ class SshConfigSource:
         """Parse ``ref`` (and one level of in-tree ``Include``) into candidates."""
 
         text = self._read_ref(ref)
-        return self._parse_text(text, allow_include=True)
+        candidates = self._parse_text(text, allow_include=True)
+        reject_normalized_name_collisions(candidates)
+        return candidates
 
     # -- internal -----------------------------------------------------------
 
