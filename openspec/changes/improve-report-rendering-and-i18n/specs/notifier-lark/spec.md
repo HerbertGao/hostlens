@@ -5,7 +5,7 @@
 Lark 交互卡片**必须**以与 Telegram **同构**的信息结构渲染（卡片 JSON 形态）:
 
 - **抬头**:severity 配色的标题区,`Hostlens 巡检 · {target_name} · {中文 severity}`,**禁止**用 `report.intent` 当标题。
-- **覆盖行**:`{ok}/{total} 项检查 · {skipped} 项跳过` + 时间。
+- **覆盖行**:`{ok}/{total} 项检查 · {skipped} 项跳过 · {failed} 项失败` + 时间（计数规则与 Telegram 一致:`ok`→ok、`requires_unmet`→skipped、`timeout`/`target_unreachable`/`exception`→failed;不变量 `ok + skipped + failed == total`;`{failed}` 仅 `failed > 0` 时渲染）。
 - **根因分析置顶**:有 `hypotheses` 时放在「发现」之前,含每条 `description` 与其 `suggested_actions`。
 - **发现**:**去重**(去重键为 `(target_name, inspector_name, message, severity)` **四元组全字段相等才合并**,**禁止**仅 `(inspector_name, message)`——否则误并同 message 不同 severity / target 的独立发现)+ **按 severity 排序** + 每条**带来源** `inspector_name`。
 - **健康态**:无 findings 时为「✅ 未发现异常」卡片(不渲空发现区)。

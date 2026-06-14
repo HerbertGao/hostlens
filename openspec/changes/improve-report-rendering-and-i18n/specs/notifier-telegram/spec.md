@@ -5,7 +5,7 @@
 Telegram 模板渲染的报告**必须**:
 
 - **抬头**:`{severity 图标} *Hostlens 巡检 · {target_name} · {中文 severity}*`,**禁止**把 `report.intent`（整段巡检意图）当标题。
-- **覆盖行**:含时间 + `{ok}/{total} 项检查 · {skipped} 项跳过`(从 `meta.inspectors_used` 算,`requires_unmet` 状态计入 skipped)。
+- **覆盖行**:含时间 + `{ok}/{total} 项检查 · {skipped} 项跳过 · {failed} 项失败`(从 `meta.inspectors_used` 算:`ok` 计入 `ok`、`requires_unmet` 计入 `skipped`、`timeout` / `target_unreachable` / `exception` 计入 **`failed`**)。**计数不变量** `ok + skipped + failed == total`——覆盖 `InspectorStatus` 五值闭集,**禁止**把 `failed` 折进 `skipped` 或漏计任何状态(否则运维误以为本次 schedule 完整完成、看不到真实失败)。`{failed}` 子句**仅在 `failed > 0` 时渲染**(为 0 省略,不引入「· 0 项失败」噪声)。
 - **根因分析置顶**(在「发现」之前):有 `hypotheses` 时渲染 `根因分析` 段 —— 每条 `description`（带中文「置信度」）+ 其 `suggested_actions` 逐条以 `↳` 列出。
 - **发现**:findings **必须去重**——去重键为 **`(target_name, inspector_name, message, severity)` 四元组,全字段相等才合并为一条**;**禁止**仅以 `(inspector_name, message)` 为键去重(否则会把同 message 不同 severity / 不同 target 的独立发现误并)。去重后 findings **按 severity 降序排**(critical → warning → info)、每条**带来源** `inspector_name`。
 - **健康态**:无 findings 时渲染 `✅ 未发现异常`,**禁止**渲染空的「发现」段。
@@ -16,6 +16,14 @@ Telegram 模板渲染的报告**必须**:
 #### 场景:抬头不是 intent、且带覆盖行
 - **当** 渲染一个 `intent` 为长句、severity=critical 的报告
 - **那么** 第一行**必须**是 `🔴 *Hostlens 巡检 · <target> · 严重*` 类抬头,**禁止**出现整句 intent 当标题;**必须**有 `N/M 项检查` 覆盖行
+
+#### 场景:覆盖行计入失败状态（不只 ok + skipped）
+- **当** report 的 `meta.inspectors_used` 含 5 个 `ok` / 1 个 `requires_unmet` / 2 个 `timeout`（或 `exception` / `target_unreachable`）共 8 项
+- **那么** 覆盖行**必须**渲染 `5/8 项检查 · 1 项跳过 · 2 项失败`,**禁止**渲染 `5/8 项检查 · 1 项跳过`（把 2 个失败漏计、误导运维以为 schedule 完整完成）;**必须**满足 `ok + skipped + failed == total`（5+1+2==8）
+
+#### 场景:无失败时省略 failed 子句
+- **当** report 的 `meta.inspectors_used` 全部 `ok` 与 `requires_unmet`、无任何 `timeout` / `target_unreachable` / `exception`
+- **那么** 覆盖行**禁止**渲染 `· 0 项失败`（`failed > 0` 才渲染该子句）
 
 #### 场景:findings 去重 + 排序 + 带来源
 - **当** report 含 2 条 `(target_name, inspector_name, message, severity)` 四元组**完全相同**的 finding，及一条更低 severity 的 finding
