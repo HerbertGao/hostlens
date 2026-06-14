@@ -510,9 +510,11 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 > M7 落地只读三件套（`list_targets` / `list_inspectors` / `run_inspector`）。本扩展让 AI 助手通过 MCP 完成全套管控操作，无需切回 CLI 或手编 YAML。
 
-> **2026-06-13 探索结论（取代下方原 A/B/C 分组）**：按 `side_effects` 切**读 / 写两期**，而非按域切三组。硬约束在 `McpToolsAdapter.dispatch`：当前 **rule ③ 硬拒** `side_effects ∈ {write,destructive}`、**rule ④ 硬拒** `requires_approval=True`（reason `approval_flow_not_supported_in_m2`），且 MCP `context_factory` 注入的是永远 refuse 的 `NoopApprovalService`。原 A/B/C 分组里每个写工具（`add_target`/`remove_target`/`trigger_schedule`/`test_channel`）都标 `requires_approval=True`——**按当前 gate 根本到不了 handler**，是不可实施的规划。故重构为：**读半零闸门改动、可立刻落**；**写半必须先建 MCP approval 机制**。四点收敛决策：①读写分期 ②补 reports 读三件套（原规划漏） ③`add_target`→批量 `import_targets`（驱动场景=已有 target 列表迁移，一条条敲 CLI 太烦） ④trigger 的「发通知」从只读触发里拆出独立写工具。
+> **2026-06-13 探索结论（取代原 A/B/C 分组）**：按 `side_effects` 切**读 / 写两期**，而非按域切三组。读半零闸门改动、已落（提案①，#101）。
+>
+> **2026-06-14 探索更新（写半被取代，见下）**：原写期提案② `add-mcp-write-approval-flow`（两段式 MCP approval）经 `/opsx:explore` + Codex/架构 review + Gate 0 实测**已废弃**——用户真实目标是「批量纳管服务器」，载体应是 CLI 而非 MCP 写审批。重切为「批量纳管」路线，见下方「服务器批量纳管」。
 
-#### 提案① `add-mcp-readonly-management-tools`（读期，零闸门改动，先落）
+#### 提案① `add-mcp-readonly-management-tools`（读期，零闸门改动）✅ 已落 #101
 
 七个只读工具，**仅给已有 handler 声明 `surfaces ∋ "mcp"` + `sensitive_output` + 投影适配**，复用既有 store/loader/runner，不重写业务逻辑：
 
@@ -525,26 +527,41 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [x] `diff_reports(run_id_a, run_id_b)` — regression diff；`sensitive_output=True`
 - [x] 共同：每个新 ToolSpec 分别撰 `mcp_description`（远程 LLM）/ `agent_description`（本地 loop），不复用
 
-#### 提案② `add-mcp-write-approval-flow`（写期，核心是两段式 approval 机制）
+#### ~~提案② `add-mcp-write-approval-flow`（写期，两段式 approval）~~ ❌ 已废弃（2026-06-14）
 
-**approval 模型（探索定稿）：两段式 token，Hostlens 强制，commit 必须带外。** 关键正确性约束：propose 把 token 返给 LLM，但 commit **只能**经人类在自己终端 `hostlens mcp approve <token>` 完成——LLM 物理上驱动不了写盘。**反模式**：用第二个 MCP `confirm_action(token)` 工具提交，则 LLM 自己就拿到 token、可自问自答，两段式沦为花架子。与 §4.5 `plan→preview→approve→execute`、M9「medium/high 不代执行」(`feedback_ai_no_auto_exec_elevated_risk`) 同形。
+> 经 `/opsx:explore add-mcp-write-approval-flow` + Codex / Software Architect 两路独立 review + Gate 0 实测收敛：
+> 用户真实首要目标是「**批量迁移服务器到本工程**」，这个目标的正确载体是 **CLI 批量导入**，不是「MCP 写 + 两段式 approval」。
+> 批量场景下逐个 approve token 反人类（一个 token 批 50 台又正是 prompt-injection 想要的）；审批天然该是本地 `--dry-run → --yes`，不碰 M9 远程审批红线。
+> 故废弃本提案，重切为下方「服务器批量纳管」路线。`import_targets` 上 MCP 最多 propose-only；`remove_target` 不上 MCP；`test_channel`/`notify_report` 与纳管无关，各自独立小提案。
 
-**意外干净属性**：MCP server 进程永远只读（propose 不写盘）；唯一写盘点在 CLI `approve` 进程 → 现成的 `_refuse_root_for_write(EUID==0)` 守卫天然覆盖，写拒 root 红线不用在 MCP 层重造。
+---
 
-建议再切两片（各独立提案，PR scope 干净，符合「每组独立提案」）：
+### 服务器批量纳管（Target Onboarding）
 
-**②a `add-mcp-write-approval-mechanism`（纯机制 + 最小验证）**
+> **首要目标**：用户批量迁移服务器到本工程时，快速、准确地把指定服务器加入巡检环境。
+> **完整 roadmap + 现实锚定（首批 = `ts.mac-mini:~/tizi` 6 台）+ Gate 0 实测**：见 [docs/roadmap/target-onboarding.md](docs/roadmap/target-onboarding.md)。
+>
+> **Gate 0 ✅（2026-06-14）**：asyncssh 直连 Tailscale SSH，6/6 cred-less 连通（全 Debian13/podman）→ `transport:openssh` 逃生舱不需要。
+> **目标架构**：四层只读→写流水线 `InventorySource(Protocol) → TargetProbe(复用 ExecutionTarget，须先 exec 触发 lazy capability) → ImportPlan(可读 diff，--dry-run 停这) → save_targets_config(config.py 现缺 save；原子 + 幂等 upsert + ${VAR} 保全)`。
 
-- [ ] pending-action store：token / action 类型 / payload（待写 diff）/ created_at / 过期 / 单次使用 / 状态（pending→approved→executed / expired）；design.md 决断**复用 M9 `remediation/approval.py` 的 ApprovalGate + append-only audit 形态**还是另起
-- [ ] CLI `hostlens mcp approve <token>` / `hostlens mcp pending`：读 store、重校验（含 EUID≠0）、执行、写 audit、标记 executed
-- [ ] dispatch 放开 rule ④ 走 **propose 旁路**（rule ③ 仍拒**直接**写——写只能经 propose→人类 approve）
-- [ ] 最小验证写工具 `test_channel(channel)`：发一条测试消息，最小爆炸半径验证两段式端到端跑通
+#### 提案 A `add-cli-target-import`（主，独立满足首要目标）
 
-**②b `add-mcp-write-management-tools`（招牌写工具，叠在已验证机制上）**
+- [ ] `InventorySource` Protocol + registry（显式装配，加来源=加文件，与 Notifier/Inspector/Target 同构）；首发 `ssh_config` + `yaml` 两个 source（覆盖 tizi 首批 100%），CSV / 自然语言留后续
+- [ ] `TargetProbe`：复用 `ExecutionTarget`，并发限流探活 + 能力探测（**必须先触发一次 exec 才能读到真 capability**，lazy-probe）+ OS/runtime 指纹
+- [ ] `ImportPlan`：to_add / skipped(已存在) / failed_probe 的可读 diff；`--dry-run` 停在此（零副作用）
+- [ ] `save_targets_config`（`targets/config.py` 新增）：原子写（临时文件 + `os.replace`）+ 幂等 upsert（按 name，重跑安全）+ `${VAR}` 占位保全（复用 `_load_raw_targets_dict` raw round-trip，不经 loader expand）
+- [ ] `hostlens target import <inventory>` CLI：`--dry-run`/`--yes`/拒 root；默认 `--skip-unreachable`，给 `--include-unreachable` 逃生舱
+- [ ] 绝不靠主机名 DNS 解析（tizi telegrambot 撞 FakeDNS 198.18.x）——用清单显式地址；5 地址候选取运维实际选择（Tailscale）
 
-- [ ] `import_targets(entries[])` — **招牌：批量迁移**。input_schema **只收 `*_env`（环境变量名），绝无 `password` 明文字段**；propose 返 `targets.yaml` 的 before/after diff 预览；`mcp_description` 写明行为约定：源数据遇明文密钥 → 映射成 env 名 + 提示人类 `export`，**绝不把明文写进 yaml**
-- [ ] `remove_target(name)` — destructive，走同一两段式 gate
-- [ ] `notify_report(report_id, channels)` — trigger 的「发通知」半，外部副作用（真实消息）走 gate
+#### 提案 B `add-mcp-target-import-propose`（次 / 可延后）
+
+- [ ] 把 import 接进 MCP，但**只产 `ImportPlan` 不落盘**（`side_effects="read"`，零 dispatch gate 改动）；用户拿 plan 本地 `target import --from-plan` 落地 ≡ M9 runbook 模式
+- [ ] 自然语言来源（NLSource）作为前置翻译器，产物仍喂同一 probe→plan 流水线（不绕过探测直接写）
+
+#### 关联独立小提案（与纳管解耦，按需）
+
+- [ ] `test_channel` / `notify_report` 上 MCP 的策略（倾向受限 / propose-only；数据外泄面单独评估）
+- [ ] `inventory.yml` 富元数据（role/provider/region/runtime）落点 → target `tags` + 是否驱动 inspector 选择（牵出 targets.yaml metadata 扩展，独立 spec）
 
 ---
 
@@ -713,7 +730,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 - [ ] **Prompt cache hit rate**：每次新增 LLM 调用点都看一遍指标
 - [ ] **OpenSpec 卫生**：每完成一期把 `openspec/changes/` 下的提案归档到 `openspec/specs/`
 - [ ] **README / CLAUDE.md / config.yaml 同步**：架构演进后及时更新
-- [ ] **MCP 资产登记**：当前 MCP server 只有只读三件套；通过 AI 对话完成资产登记的能力已重规划为 M7-ext 写期提案②b 的 `import_targets`（批量迁移，两段式 approval），见上方「M7 后续扩展 — MCP 管控工具集」。在该提案落地前，资产登记须手动编辑 `~/.config/hostlens/targets.yaml` 或用 `hostlens target add` CLI
+- [ ] **资产登记 / 批量纳管**：能力已重规划为「服务器批量纳管」路线——主路径是提案 A `add-cli-target-import`（`hostlens target import <inventory>`，CLI 批量导入 + 探活 + 原子幂等写），MCP 侧最多 propose-only（提案 B）。见上方「服务器批量纳管」+ [docs/roadmap/target-onboarding.md](docs/roadmap/target-onboarding.md)。在提案 A 落地前，资产登记须手动编辑 `~/.config/hostlens/targets.yaml` 或用 `hostlens target add` CLI（单台）
 
 ---
 
