@@ -255,6 +255,14 @@ def test_can_handle_binary_returns_false(tmp_path: Path) -> None:
     assert SshConfigSource().can_handle(str(ref)) is False
 
 
+def test_include_path_with_nul_byte_rejected(tmp_path: Path) -> None:
+    """A NUL byte in an Include path → ConfigError, not an uncaught ValueError."""
+    ref = _write(tmp_path / "config", "Host x\n  Include ~/.ssh/conf\x00ig\n")
+    with pytest.raises(ConfigError) as excinfo:
+        SshConfigSource().parse(str(ref))
+    assert excinfo.value.kind == "include_path_escape"
+
+
 def test_include_absolute_outside_tree_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

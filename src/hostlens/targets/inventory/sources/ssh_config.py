@@ -322,6 +322,11 @@ class SshConfigSource:
         """
 
         expanded = os.path.expanduser(_first_token(value))
+        if "\x00" in expanded:
+            # A NUL byte makes os.path.realpath / glob / os.open raise a bare
+            # ValueError (not OSError), which would escape as an uncaught
+            # traceback; reject it as an invalid path so it maps to exit 2.
+            raise ConfigError("Include path contains a NUL byte", kind="include_path_escape")
         if not os.path.isabs(expanded):
             # OpenSSH anchors relative Include paths to ~/.ssh, not the CWD.
             expanded = os.path.join(os.path.expanduser("~/.ssh"), expanded)

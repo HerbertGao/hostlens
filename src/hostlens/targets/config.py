@@ -394,10 +394,22 @@ def load_targets_config(path: Path, *, expand_env: bool = True) -> TargetsConfig
         )
         return TargetsConfig(version="1", targets=[])
 
-    raw_text = path.read_text()
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(
+            "failed to read targets.yaml (not readable / not UTF-8)",
+            kind="targets_config_read_error",
+            original=exc,
+            path=str(path),
+        ) from exc
     try:
         parsed = yaml.safe_load(raw_text)
-    except yaml.YAMLError as exc:
+    # ``ValueError`` covers PyYAML construction failures that are not
+    # ``YAMLError`` — e.g. a bare integer token over Python's int-string digit
+    # limit, whose ``int()`` raises a plain ``ValueError`` and would otherwise
+    # escape as an uncaught traceback (bypassing exit 2).
+    except (yaml.YAMLError, ValueError) as exc:
         raise ConfigError(
             "failed to parse targets.yaml",
             kind="yaml_parse_error",
@@ -552,8 +564,16 @@ def _load_raw_targets_dict(cfg_path: Path, *, fallback_version: str = "1") -> di
 
     if not cfg_path.exists():
         return {"version": fallback_version, "targets": []}
-    text = cfg_path.read_text() or ""
-    parsed = yaml.safe_load(text)
+    try:
+        text = cfg_path.read_text(encoding="utf-8") or ""
+        parsed = yaml.safe_load(text)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise ConfigError(
+            "failed to read or parse targets.yaml",
+            kind="yaml_parse_error",
+            original=exc,
+            path=str(cfg_path),
+        ) from exc
     if not isinstance(parsed, dict):
         return {"version": fallback_version, "targets": []}
     parsed.setdefault("version", fallback_version)

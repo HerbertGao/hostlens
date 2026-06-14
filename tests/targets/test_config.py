@@ -167,6 +167,31 @@ def test_load_handles_empty_yaml_file(tmp_path: Path) -> None:
     assert cfg.targets == []
 
 
+def test_load_oversized_integer_raises_config_error(tmp_path: Path) -> None:
+    """A bare int token over Python's digit limit → ConfigError, not a traceback.
+
+    ``yaml.safe_load`` constructs it via ``int()`` → plain ``ValueError`` (not a
+    ``YAMLError``); it must surface as a ConfigError (CLI maps to exit 2).
+    """
+    cfg_path = tmp_path / "targets.yaml"
+    cfg_path.write_text(
+        'version: "1"\ntargets:\n  - name: h\n    type: ssh\n    host: 1.1.1.1\n'
+        f"    port: {'9' * 5000}\n"
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_targets_config(cfg_path, expand_env=False)
+    assert excinfo.value.kind == "yaml_parse_error"
+
+
+def test_load_non_utf8_raises_config_error(tmp_path: Path) -> None:
+    """A non-UTF-8 targets.yaml → ConfigError, never an uncaught traceback."""
+    cfg_path = tmp_path / "targets.yaml"
+    cfg_path.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(ConfigError) as excinfo:
+        load_targets_config(cfg_path, expand_env=False)
+    assert excinfo.value.kind == "targets_config_read_error"
+
+
 def test_load_basic_local_and_ssh(tmp_path: Path) -> None:
     """Two-target round trip exercising both discriminator branches."""
 
