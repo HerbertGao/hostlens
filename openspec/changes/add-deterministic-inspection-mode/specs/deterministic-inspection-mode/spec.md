@@ -2,7 +2,7 @@
 
 ### 需求:deterministic 模式必须固定 inspector 集逐 target 直跑、不走 Planner、不漫游
 
-`mode=deterministic` 的 job body **必须**对 `manifest.targets` 的**每个** target，跑解析出的固定 inspector 集（经 `InspectorRunner`，复用 `run_inspector` 的 target / inspector 解析 + capability 门），收集 `InspectorResult`。**禁止**实例化 Planner、**禁止**让 LLM 选 inspector 或 target;采集阶段**禁止**注入 `LLMBackend`（守 §4.2「Inspector 只采集不调 LLM」+ ADR-008）。每个 inspector 对**不满足 capability** 的 target **必须**记为 `skipped`（**非** `failed`，不计入报告 severity）。单 inspector 失败**必须**隔离进结果、**禁止**崩整批。`targets × inspectors` 的并发**必须**信号量限流。
+`mode=deterministic` 的 job body **必须**对 `manifest.targets` 的**每个** target，跑解析出的固定 inspector 集（经 `InspectorRunner`，复用 `run_inspector` 的 target / inspector 解析 + capability 门），收集 `InspectorResult`。**禁止**实例化 Planner、**禁止**让 LLM 选 inspector 或 target;采集阶段**禁止**注入 `LLMBackend`（守 §4.2「Inspector 只采集不调 LLM」+ ADR-008）。每个 inspector 对**不满足 capability** 的 target **必须**当作跳过处理（**非** `failed`，不计入报告 severity）。**术语澄清**:这里「跳过」是 **severity 处理概念**——`InspectorStatus` 是闭集 5 值（`ok` / `timeout` / `target_unreachable` / `requires_unmet` / `exception`）,本提案**不新增** `skipped` 枚举值;capability 不匹配的真实状态仍是 `requires_unmet`,只是在 deterministic 的 severity / 降级派生处**当跳过处理**（见下「`requires_unmet` 必须视为预期跳过」需求）。单 inspector 失败**必须**隔离进结果、**禁止**崩整批。`targets × inspectors` 的并发**必须**信号量限流。
 
 #### 场景:固定集逐 target 跑、覆盖确定不漫游
 - **当** `mode=deterministic`、`targets=[A, B, C]`、解析出的 inspector 集 = `{cpu, disk}`
