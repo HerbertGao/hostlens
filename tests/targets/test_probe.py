@@ -493,6 +493,14 @@ def test_promote_ssh_rejects_control_chars_in_user() -> None:
         promote_candidate(CandidateTarget(name="x", type="ssh", host="1.1.1.1", user="ro\x9bot"))
 
 
+def test_promote_ssh_rejects_control_chars_in_key_path() -> None:
+    """key_path is written to targets.yaml, so it gets the same gate as host/user."""
+    with pytest.raises(ValueError, match="control or bidirectional"):
+        promote_candidate(
+            CandidateTarget(name="x", type="ssh", host="1.1.1.1", key_path="/keys/id\x9b_rsa")
+        )
+
+
 def test_target_probe_clamps_concurrency_to_bounds() -> None:
     """``--concurrency`` is clamped to ``[1, _MAX_CONCURRENCY]`` (no storm)."""
     import hostlens.targets.probe as probe_mod

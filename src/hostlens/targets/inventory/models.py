@@ -37,10 +37,11 @@ __all__ = [
 
 # Unicode categories that are unsafe to echo verbatim into the dry-run audit
 # diff: C0+C1 controls + DEL (``Cc``), zero-width / bidi-override format chars
-# (``Cf``, incl. U+202E RLO), and line / paragraph separators (``Zl`` / ``Zp``).
-# A ``host`` / ``user`` carrying any of these is rejected at promotion so a
-# crafted inventory can neither spoof the preview nor be written to disk.
-_UNSAFE_DISPLAY_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf", "Zl", "Zp"})
+# (``Cf``, incl. U+202E RLO), line / paragraph separators (``Zl`` / ``Zp``), and
+# lone surrogates (``Cs``, which would raise on yaml.safe_dump / json.dumps).
+# A connection field carrying any of these is rejected at promotion so a crafted
+# inventory can neither spoof the preview nor be written to disk.
+_UNSAFE_DISPLAY_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 
 def contains_unsafe_display_chars(value: str) -> bool:

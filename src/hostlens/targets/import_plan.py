@@ -165,7 +165,11 @@ class ImportPlan(BaseModel):
             "to_add": [
                 {
                     "name": item.entry.name,
-                    "raw_identifier": item.raw_identifier,
+                    "raw_identifier": (
+                        _strip_control_chars(item.raw_identifier)
+                        if item.raw_identifier is not None
+                        else None
+                    ),
                     "type": item.entry.type,
                     "host": item.entry.host if isinstance(item.entry, SSHEntry) else None,
                     "password_env": item.password_env,
