@@ -213,9 +213,13 @@ class YamlSource:
         port_value = merged.get("port")
         port: int | None
         if port_value is not None:
-            # ``bool`` is an ``int`` subclass — ``port: true`` would otherwise
-            # silently become 1; reject it (and any non-numeric) explicitly.
-            if isinstance(port_value, bool):
+            # ``bool`` is an ``int`` subclass (``port: true`` -> 1) and a
+            # ``float`` either truncates silently (``port: 22.9`` -> 22,
+            # diverging from ssh_config which rejects it) or overflows
+            # (``port: .inf`` -> int() raises OverflowError, escaping the catch
+            # below). Reject both so only a real int / numeric string reaches
+            # ``int()`` and the exit-2 contract holds.
+            if isinstance(port_value, (bool, float)):
                 raise ConfigError(
                     "yaml inventory 'port' must be an integer",
                     kind="invalid_entry",

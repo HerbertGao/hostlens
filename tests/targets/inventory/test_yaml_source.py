@@ -205,6 +205,28 @@ def test_port_bool_rejected(tmp_path: Path) -> None:
     assert excinfo.value.kind == "invalid_entry"
 
 
+def test_port_float_rejected(tmp_path: Path) -> None:
+    """A float port (``22.9``) must not silently truncate to 22."""
+    ref = _write(
+        tmp_path / "inv.yml",
+        "g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    port: 22.9\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "invalid_entry"
+
+
+def test_port_infinity_rejected(tmp_path: Path) -> None:
+    """``port: .inf`` (YAML float infinity) → ConfigError, never an OverflowError."""
+    ref = _write(
+        tmp_path / "inv.yml",
+        "g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    port: .inf\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "invalid_entry"
+
+
 def test_binary_file_raises_config_error_not_traceback(tmp_path: Path) -> None:
     """A non-UTF-8 file → ConfigError (exit 2), never an uncaught traceback."""
     ref = tmp_path / "inv.yaml"
