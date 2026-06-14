@@ -8,9 +8,9 @@
 - **当** `mode=deterministic`、`targets=[A, B, C]`、解析出的 inspector 集 = `{cpu, disk}`
 - **那么** **必须**恰好对 A / B / C 各跑 `cpu` + `disk`（共 6 次）；**禁止**跑集外 inspector、**禁止**跑 `targets` 之外的 target
 
-#### 场景:不适用项记 skipped 不污染 severity
+#### 场景:不适用项当跳过处理不污染 severity
 - **当** 某 inspector 要求的 capability 在某 target 不满足
-- **那么** 该项**必须**记为 `skipped`、**禁止**计入报告 severity 聚合，整批其余照常
+- **那么** 该项的 `InspectorStatus` **保持** `requires_unmet`（**不新增** `skipped` 枚举值）,但在 deterministic 的 severity / 降级派生处**当跳过处理**——**禁止**计入报告 severity 聚合,整批其余照常
 
 ### 需求:deterministic 模式的 capability 不匹配（requires_unmet）必须视为预期跳过、不降级报告
 
