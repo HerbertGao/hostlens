@@ -26,6 +26,8 @@
 - 不新增 inspector —— 默认健康集是对**现有** inspector 的 curated 选择。
 - 不为 agent 模式放开多 target（多 target 仅 deterministic）。
 - 不动 Notifier 协议 / 通道配置 / 调度触发与留痕机制。
+- **fleet（多 target）Report 不支持 per-target regression diff** —— fleet Report 是 notify 导向、持单一 fleet `target_id`，无法按内含 target 分别取 baseline;per-target regression diff 仍只在 agent 模式的单 target report 上做。
+- **不改 `compute_finding_id`** —— `Finding.target_name` 是 add-only 标注字段，**不**纳入 finding id 指纹（保单 target finding id 跨 run 稳定、per-target diff 同 id 锚点不变）。
 
 ## 功能 (Capabilities)
 
@@ -37,10 +39,12 @@
 
 - `schedule-manifest`: 新增 `mode: agent | deterministic`(默认 agent);deterministic 模式放开 `targets` 多成员（agent 仍单 target）;`inspectors` 在 deterministic 模式语义从 soft hint 变权威集。
 - `scheduler-engine`: job body 按 `mode` 路由 —— `agent` 走现有 `run_diagnosis_pipeline`;`deterministic` 走新的「逐 target 跑固定集 → narrate-only → 多 target 报告」路径。
+- `report-data-model`: `Finding` 加 add-only 来源字段 `target_name: str | None = None`(默认 None,旧构造 / 旧 JSON 零改动;**不**纳入 `compute_finding_id`);新增多 target（fleet）Report 组装路径(跨多 target 的 inspector_results 组装一份 Report、`Report.target_name` 为确定性 fleet 标签、`meta.target_id` 为确定性 fleet id、每条 finding 盖来源 target_name);明确 fleet Report 不支持 per-target regression diff。
+- `diagnostician-agent`: 新增 narrate-only 装配路径(只注册 `correlate_findings`,禁注册 `request_more_inspection` / `list_inspectors` / `list_targets`),供 deterministic 路径让 LLM 结构上拿不到再巡检 / 选 target 的工具;既有全装配(三件)不变。
 
 ## 影响
 
-- **代码**:`scheduler/{schema,loader,runner}.py`（mode 字段 + 多 target 校验 + 路由 + 确定性采集路径）;默认健康集定义（常量 / 命名集）;多 target 报告组装;Diagnostician narrate-only 入口（复用、禁 `request_more_inspection`）。
+- **代码**:`scheduler/{schema,loader,runner}.py`（mode 字段 + 多 target 校验 + 路由 + 确定性采集路径）;默认健康集定义（常量 / 命名集）;`reporting/models.py`（`Finding.target_name` add-only 字段 + 多 target fleet Report 组装路径,`compute_finding_id` 不变）;`tools/diagnostician_tools.py`（narrate-only 装配路径,只注册 `correlate_findings`,复用 `_build_correlate_findings_spec`);deterministic 组装把 `requires_unmet` 排除出 severity / 降级触发集。
 - **行为**:新增 opt-in 模式;agent 模式与既有调度留痕 / 触发 / 优雅停机不变。
 - **文档**:schedule manifest 文档增 `mode` / 多 target / 默认健康集说明 + Demo Path。
 - **测试**:确定性路径（固定集逐 target 跑、不漫游、capability 过滤）、多 target 校验、narrate-only（diagnostician 不追加巡检）、默认集 vs 显式 override、多 target 报告聚合 + notify 路由;VCR cassette 回放 narrate-only LLM。
