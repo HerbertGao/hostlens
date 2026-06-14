@@ -1,4 +1,4 @@
-> **范围**:本提案交付 ①模板重做 + ③中文根因叙述 + ②契约 & crosscheck 框架 + `systemd_failed_units` 旗舰样板。全量 72 个 inspector 的 message 改写是**分阶段多 PR 长尾**(任务 2.2),**不必原子合入本提案**。多 target 分节渲染依赖提案 B(`report-data-model` MODIFY 提供 add-only `Finding.target_name`);B 未落时单 target 路径不受影响。**关键依赖（redaction 边界）**:notifier 渲染入口先 `redact_report_for_render` 再喂模板,而 `_redact.py:_redact_finding` 显式逐字段重构 Finding——多 target 分节 / 四元组去重要在脱敏拷贝上拿到真实 `target_name`,**依赖提案 B 在 `_redact_finding` 透传 `target_name`**（B 任务 2.5.5 + report-data-model 脱敏需求 MODIFY）。C 的多 target 快照测试**必须**经真实 `render()`（含 redact）或 `redact_report_for_render` 喂报告、**不得**直接喂未脱敏 raw report,否则 B 漏透传时 C 测试假绿而真实 notify 链假红。
+> **范围**:本提案交付 ①模板重做 + ③中文根因叙述 + ②契约 & crosscheck 框架 + `linux.systemd.failed_units` 旗舰样板。全量 72 个 inspector 的 message 改写是**分阶段多 PR 长尾**(任务 2.2),**不必原子合入本提案**。多 target 分节渲染依赖提案 B(`report-data-model` MODIFY 提供 add-only `Finding.target_name`);B 未落时单 target 路径不受影响。**关键依赖（redaction 边界）**:notifier 渲染入口先 `redact_report_for_render` 再喂模板,而 `_redact.py:_redact_finding` 显式逐字段重构 Finding——多 target 分节 / 四元组去重要在脱敏拷贝上拿到真实 `target_name`,**依赖提案 B 在 `_redact_finding` 透传 `target_name`**（B 任务 2.5.5 + report-data-model 脱敏需求 MODIFY）。C 的多 target 快照测试**必须**经真实 `render()`（含 redact）或 `redact_report_for_render` 喂报告、**不得**直接喂未脱敏 raw report,否则 B 漏透传时 C 测试假绿而真实 notify 链假红。
 
 ## 1. 通知模板重做（telegram + lark，立竿见影）
 
@@ -9,7 +9,7 @@
 
 ## 2. finding message 具体化 + 中文契约
 
-- [ ] 2.1 crosscheck 测试(机审,**按已迁移 allowlist 范围**):对**已迁移 allowlist**(初始 = `{systemd_failed_units}`,各域长尾 PR 改写完逐个加入)内 inspector 断言 (a) 无 `see .* for details` 类空指针、(b) 含中文、(c) 含 ≥1 `{field}` 注入**或** manifest 显式豁免,且注入字段在 `output_schema` 声明存在;**禁**对 allowlist 外未迁移 inspector 施加这些断言(否则 71 个英文 message 让 crosscheck 一上线即全红)。另加**防漂移断言**:每个内置 inspector 恰在 allowlist 或 backlog 之一、二者并集 == 全部内置(新增未分类即失败)。
+- [ ] 2.1 crosscheck 测试(机审,**按已迁移 allowlist 范围**):对**已迁移 allowlist**(初始 = `{linux.systemd.failed_units}`,各域长尾 PR 改写完逐个加入)内 inspector 断言 (a) 无 `see .* for details` 类空指针、(b) 含中文、(c) **若** message 含 `{field}` 注入**则**注入字段须在 `output_schema` 声明存在(if-inject-then-declared 守卫,**不**强制每条必注入、**无**豁免标记);**禁**对 allowlist 外未迁移 inspector 施加这些断言(否则 71 个英文 message 让 crosscheck 一上线即全红)。另加**防漂移断言**:每个内置 inspector 恰在 allowlist 或 backlog 之一、二者并集 == 全部内置(新增未分类即失败)。
 - [ ] 2.2 systematic 改写 ~72 个 inspector 的 `message` 为「简短中文标签 + `{field}` 注入数据」:先 `linux/systemd_failed_units.yaml` 做样板——其 `failed` 是 array-of-objects、`{failed}` 会吐 repr,故 **collector 须额外 emit `failed_names`(join 的单元名串)+ 扩 `output_schema`(`failed_names: {type: string}` 并加入 `required`)**,message 写 `systemd 失败服务：{failed_names}`(**禁** `{failed}`);再按域(计算/内存/磁盘/网络/服务…)分批(可多 PR)。**凡注入数组/对象类字段的 message 都须配套 emit 干净 join 串字段。**
 - [ ] 2.3 既有 service-inspector / fixture crosscheck 硬编码结构若含 message 断言,同步更新([[project_service_inspector_crosscheck_frozen_structures]])。
 
