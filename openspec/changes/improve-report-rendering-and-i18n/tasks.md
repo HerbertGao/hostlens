@@ -10,7 +10,7 @@
 ## 2. finding message 具体化 + 中文契约
 
 - [ ] 2.1 crosscheck 测试(机审):遍历所有内置 inspector 的 FindingRule `message`,断言 (a) 无 `see .* for details` 类空指针、(b) 含中文、(c) 有非平凡 output 字段者含 `{...}` 注入。
-- [ ] 2.2 systematic 改写 ~72 个 inspector 的 `message` 为「简短中文标签 + `{field}` 注入数据」:先 `linux/systemd_failed_units.yaml`(`see failed for details` → `systemd 失败服务：{failed}`)做样板,再按域(计算/内存/磁盘/网络/服务…)分批(可多 PR)。
+- [ ] 2.2 systematic 改写 ~72 个 inspector 的 `message` 为「简短中文标签 + `{field}` 注入数据」:先 `linux/systemd_failed_units.yaml` 做样板——其 `failed` 是 array-of-objects、`{failed}` 会吐 repr,故 **collector 须额外 emit `failed_names`(join 的单元名串)+ 扩 `output_schema`(`failed_names: {type: string}` 并加入 `required`)**,message 写 `systemd 失败服务：{failed_names}`(**禁** `{failed}`);再按域(计算/内存/磁盘/网络/服务…)分批(可多 PR)。**凡注入数组/对象类字段的 message 都须配套 emit 干净 join 串字段。**
 - [ ] 2.3 既有 service-inspector / fixture crosscheck 硬编码结构若含 message 断言,同步更新([[project_service_inspector_crosscheck_frozen_structures]])。
 
 ## 3. 中文根因叙述

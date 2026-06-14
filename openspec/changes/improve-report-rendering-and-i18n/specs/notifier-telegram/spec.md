@@ -9,7 +9,7 @@ Telegram 模板渲染的报告**必须**:
 - **根因分析置顶**(在「发现」之前):有 `hypotheses` 时渲染 `根因分析` 段 —— 每条 `description`（带中文「置信度」）+ 其 `suggested_actions` 逐条以 `↳` 列出。
 - **发现**:findings **必须去重**——去重键为 **`(target_name, inspector_name, message, severity)` 四元组,全字段相等才合并为一条**;**禁止**仅以 `(inspector_name, message)` 为键去重(否则会把同 message 不同 severity / 不同 target 的独立发现误并)。去重后 findings **按 severity 降序排**(critical → warning → info)、每条**带来源** `inspector_name`。
 - **健康态**:无 findings 时渲染 `✅ 未发现异常`,**禁止**渲染空的「发现」段。
-- **多 target**:**按 `finding.target_name` 分组分节**渲染(每节主机名 + 该主机 severity + 该主机 findings)。该字段由提案 B(`report-data-model` MODIFY)提供的 add-only `Finding.target_name` 给出——**本能力的多 target 分节渲染显式依赖提案 B 落地**。**退化**:report 为单主机时(所有 finding 的 `target_name` 相同、或全为 `None`)**必须无分节渲染**(与既有单 target 行为一致、不引入分节噪声)。
+- **多 target**:**按 `finding.target_name` 分组分节**渲染(每节主机名 + 该主机 severity + 该主机 findings)。该字段由提案 B(`report-data-model` MODIFY)提供的 add-only `Finding.target_name` 给出——**本能力的多 target 分节渲染显式依赖提案 B 落地**。**退化判据(纯渲染层自持,对 B 的盖值策略零耦合)**:当 **`distinct(non-None target_name) ≤ 1`**（即去重后非 None 的来源 target 至多一个——把 `None` 与单一值视作同一主机)时**必须无分节渲染**(与既有单 target 行为一致、不引入分节噪声)。**禁止**用「全相同或全 None」这种判据——B 单 target 路径若对部分 finding 盖值、部分留 None,「全相同或全 None」两分支都不满足会误判多 target。
 
 既有 MarkdownV2 转义、`validate_config`、`sendMessage` 发送需求**不变**。
 
@@ -29,8 +29,8 @@ Telegram 模板渲染的报告**必须**:
 - **当** report 的 findings 含两个不同 `target_name`(由提案 B 的 add-only `Finding.target_name` 提供)
 - **那么** **必须**按 `target_name` 分主机节渲染,每节含主机名 + 该主机 severity + 该主机 findings
 
-#### 场景:单主机退化为无分节
-- **当** report 所有 finding 的 `target_name` 相同(或全为 `None`)
+#### 场景:单主机退化为无分节（distinct non-None ≤ 1）
+- **当** report 的 finding `target_name` 去重后非 None 值至多一个（含全 `None`、全同值、或部分盖值部分 None 的混合）
 - **那么** **禁止**渲染主机分节,**必须**与既有单 target 行为一致(无分节噪声)
 
 #### 场景:根因置顶

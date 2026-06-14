@@ -9,7 +9,7 @@ Lark 交互卡片**必须**以与 Telegram **同构**的信息结构渲染（卡
 - **根因分析置顶**:有 `hypotheses` 时放在「发现」之前,含每条 `description` 与其 `suggested_actions`。
 - **发现**:**去重**(去重键为 `(target_name, inspector_name, message, severity)` **四元组全字段相等才合并**,**禁止**仅 `(inspector_name, message)`——否则误并同 message 不同 severity / target 的独立发现)+ **按 severity 排序** + 每条**带来源** `inspector_name`。
 - **健康态**:无 findings 时为「✅ 未发现异常」卡片(不渲空发现区)。
-- **多 target**:**按 `finding.target_name` 分组分节**(字段由提案 B 的 add-only `Finding.target_name` 提供,**多 target 分节显式依赖提案 B 落地**)。**退化**:单主机时(所有 finding `target_name` 相同或全 `None`)**必须无分节**(与既有单 target 行为一致)。
+- **多 target**:**按 `finding.target_name` 分组分节**(字段由提案 B 的 add-only `Finding.target_name` 提供,**多 target 分节显式依赖提案 B 落地**)。**退化判据(渲染层自持)**:`distinct(non-None target_name) ≤ 1`（去重后非 None 来源至多一个,含混合盖值/None）**必须无分节**(与既有单 target 一致);**禁**用「全相同或全 None」（混合盖值会误判）。
 
 既有 HMAC-SHA256 时间戳签名、`validate_config`、发送需求**不变**。
 
@@ -21,8 +21,8 @@ Lark 交互卡片**必须**以与 Telegram **同构**的信息结构渲染（卡
 - **当** 卡片渲染含两条 `inspector_name` 与 `message` 相同、`severity` 不同的 finding
 - **那么** 两条**必须各自保留**(去重键含 `severity`,不合并)
 
-#### 场景:单主机退化为无分节
-- **当** report 所有 finding 的 `target_name` 相同(或全为 `None`)
+#### 场景:单主机退化为无分节（distinct non-None ≤ 1）
+- **当** report 的 finding `target_name` 去重后非 None 值至多一个（含全 None、全同值、或混合盖值/None）
 - **那么** 卡片**禁止**渲染主机分节,**必须**与既有单 target 行为一致
 
 #### 场景:健康态卡片

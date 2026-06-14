@@ -17,7 +17,7 @@
    - **干净抬头**(severity 图标 + `Hostlens 巡检 · <target> · <中文 severity>`),**不**再用 intent 当标题;
    - **覆盖行**(`N/M 项检查 · K 项跳过` + 时间),一眼看全跑没;
    - **根因分析置顶**(中文叙述 + `↳` 可执行处置命令)——人最该看的放最前;
-   - **发现**:**渲染时去重**(同 inspector + 同 message)+ **按 severity 排序** + 每条带**来源 inspector**;
+   - **发现**:**渲染时去重**(四元组 `(target_name, inspector_name, message, severity)` 全字段相等才合并——不能只 inspector+message,否则同 message 不同 severity / target 的独立发现被误并)+ **按 severity 排序** + 每条带**来源 inspector**;
    - **健康态**:无 findings 时 `✅ 未发现异常` + 覆盖行(不吵);
    - **多 target**(确定性模式):findings **按主机分节**聚合。
 
