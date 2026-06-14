@@ -13,15 +13,16 @@
 
 - [ ] 2.5.1 `Finding` 加 add-only 字段 `target_name: str | None = None`（`reporting/models.py`，`extra="forbid"` / `frozen` 不变;旧构造 / 旧 JSON 零改动可加载）。
 - [ ] 2.5.2 `compute_finding_id` **保持不变**:`target_name` **不**纳入指纹（指纹恒为 `sha256(name\x00version\x00message)[:16]`）;加测试钉「同 name/version/message 异 target_name → 同 id」。
-- [ ] 2.5.3 多 target（fleet）Report 组装路径:接受跨多 target 的 inspector_results,组**一份** Report,`Report.target_name`=确定性 fleet 标签（有序 target 名 join,满足 `min_length=1`）,`meta.target_id`=确定性 fleet id（有序 target_id + `schedule_name` 派生,避免不同 fleet 撞 store key）,每条 flatten 出的 finding 盖来源 `InspectorResult.target_name`;既有单 target `from_inspector_results` 行为不变。
-- [ ] 2.5.4 测试:多 target 组装产一份 Report、findings 带来源 target_name、fleet target_id/标签确定性（同输入同输出、不同 fleet 不撞 key）、legacy 无 target_name 的 Finding dict 可加载。
+- [ ] 2.5.3 多 target（fleet）Report 组装路径:接受跨多 target 的 inspector_results,组**一份** Report,`Report.target_name`=确定性 fleet 标签（对 target 名集合**先排序取规范序**再 join、**不依赖调用方传入顺序**,满足 `min_length=1`）,`meta.target_id`=确定性 fleet id（**排序后**的 target_id + `schedule_name` 派生、带 `fleet:` 前缀避免不同 fleet / 单成员 fleet 撞 store key）,每条 flatten 出的 finding 盖来源 `InspectorResult.target_name` **且与 `from_inspector_results` 一致填充身份字段** `id`/`inspector_name`/`inspector_version`（C 去重前提）,`meta.inspectors_used` 逐项保真;既有单 target `from_inspector_results` 行为不变。
+- [ ] 2.5.4 测试:多 target 组装产一份 Report、findings 带来源 target_name **且身份字段非 None**、fleet target_id/标签确定性（**乱序传入同组 target 派生同一 id/标签**、不同 fleet 不撞 key、单成员 fleet 不撞该机 per-target key）、`meta.inspectors_used` 逐项保真（含 `requires_unmet`）、legacy 无 target_name 的 Finding dict 可加载。
+- [ ] 2.5.5 **redaction 边界透传 `target_name`**（BLOCKER：notifier 渲染入口先 `redact_report_for_render` 再喂模板，否则提案 C 的多 target 分节 / 四元组去重在脱敏拷贝上拿到全 None → 分节失效 + 跨主机误并）:`reporting/_redact.py:_redact_finding` 的 `Finding(...)` 重构补 `target_name`（过 `redact_text`，`None`→`None`，与既有 meta/report target_name 同处理）;`tests/reporting/test_redact_m3_fields.py` 加 `target_name` 存活断言;补端到端断言（含 `target_name` 的 fleet report 经 `redact_report_for_render` 后该字段未丢成 None）。
 
 ## 3. 确定性采集路径
 
-- [ ] 3.1 `run_deterministic_inspection`:逐 `target × inspector 集` 经 `InspectorRunner` 跑（复用 `run_inspector` 的解析 + capability 门;不满足记 `skipped`）;信号量限流;单项失败隔离;**采集阶段不注入 LLMBackend**（守 §4.2 / ADR-008）。
+- [ ] 3.1 `run_deterministic_inspection`:逐 `target × inspector 集` 经 `InspectorRunner` 跑（复用 `run_inspector` 的解析 + capability 门;不满足时 status 仍 `requires_unmet`、**不新增 skipped 枚举**,仅在 severity 派生处当跳过）;信号量限流;单项失败隔离;**采集阶段不注入 LLMBackend**（守 §4.2 / ADR-008）。
 - [ ] 3.2 inspector 集解析:`deterministic` 无 `inspectors:` → 默认集;有 → 权威集（不叠加）。
 - [ ] 3.3 deterministic 组装的 report status / severity 派生把 `requires_unmet`（capability 不匹配）排除出降级触发集:**不计入** severity 聚合、**不**降级为 `partial`（显式传 override status 或调用支持该语义的组装路径）;`timeout`(全 timeout) / `exception` / `target_unreachable` 仍按既有语义降级。
-- [ ] 3.4 测试:固定集逐 target 跑不漫游（不跑集外 / targets 外）;capability 不满足记 skipped 不计 severity;`requires_unmet` 不降级（其余 ok → 报告 status=ok）;真失败（target_unreachable / exception）仍降级 partial;并发限流;单项失败隔离不崩批。
+- [ ] 3.4 测试:固定集逐 target 跑不漫游（不跑集外 / targets 外）;capability 不满足 status 仍 `requires_unmet`、在 severity 派生处当跳过不计 severity（断言**无** `InspectorResult.status == "skipped"`，闭集仍 5 值）;`requires_unmet` 不降级（其余 ok → 报告 status=ok）;真失败（target_unreachable / exception）仍降级 partial;并发限流;单项失败隔离不崩批。
 
 ## 4. narrate-only 装配 + 多 target 报告
 

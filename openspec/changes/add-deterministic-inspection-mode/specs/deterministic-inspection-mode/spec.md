@@ -19,7 +19,7 @@ deterministic 模式逐 target 跑**固定健康集**时,固定集中某 inspect
 - **禁止**计入 deterministic 报告的 severity 聚合（与「skipped 不污染 severity」一致）。
 - **禁止**因 `requires_unmet` 把报告 `meta.status` 降级为 `partial`。
 
-这是 deterministic 模式对既有 `from_inspector_results` 默认派生（§需求:`Report.from_inspector_results` 工厂方法……中「任一 `requires_unmet` → partial」的保守外推）的**蓄意覆盖**:agent 模式下 `requires_unmet` 罕见且值得标注为 partial;deterministic 模式下它是固定健康集跨异构机的**预期**结果,标注 partial 会让每份 fleet 报告恒为 partial、淹没真正的降级信号。**真正的降级信号**——`timeout` / `exception` / `target_unreachable`——**仍**按既有语义计入 severity / 降级判定(全 timeout、任一 target_unreachable / exception 仍派生 partial)。deterministic 组装路径**必须**在派生 report status 时把 `requires_unmet` 排除出降级触发集（显式传入 override status,或调用支持该语义的组装路径)。
+这是 deterministic 模式对既有 `from_inspector_results` 默认派生（§需求:`Report.from_inspector_results` 工厂方法……中「任一 `requires_unmet` → partial」的保守外推）的**蓄意覆盖**:agent 模式下 `requires_unmet` 罕见且值得标注为 partial;deterministic 模式下它是固定健康集跨异构机的**预期**结果,标注 partial 会让每份 fleet 报告恒为 partial、淹没真正的降级信号。**真正的降级信号**——`timeout` / `exception` / `target_unreachable`——**仍**按既有语义计入 severity / 降级判定(全 timeout、任一 target_unreachable / exception 仍派生 partial)。deterministic 组装路径**必须**在派生 report status 时把 `requires_unmet` 排除出降级触发集（显式传入 override status,或调用支持该语义的组装路径)。**派生真值表（防「永远传 ok」吞真失败）**:把 `requires_unmet` 视同 `ok` 后套用既有 `_derive_report_status` 语义——① 全 `ok`（含被视同 ok 的 `requires_unmet`）→ `ok`；② 非 ok 仅 `timeout` 且至少一个 `ok` → `ok`；③ **全** `timeout`、或任一 `target_unreachable` / `exception` → `partial`。**禁止**实现成无条件 `ok`（那会吞掉 ③ 的真降级,违反下「真正的失败仍降级」场景）。
 
 #### 场景:requires_unmet 不降级 deterministic 报告
 - **当** deterministic 固定健康集对某 target 含 `requires_unmet`（该台没装对应服务）,其余结果均 `ok`
