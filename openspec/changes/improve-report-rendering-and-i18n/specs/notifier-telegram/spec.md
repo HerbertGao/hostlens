@@ -29,6 +29,10 @@ Telegram 模板渲染的报告**必须**:
 - **当** report 的 findings 含两个不同 `target_name`(由提案 B 的 add-only `Finding.target_name` 提供)
 - **那么** **必须**按 `target_name` 分主机节渲染,每节含主机名 + 该主机 severity + 该主机 findings
 
+#### 场景:去重 × 分节组合（跨主机同 finding 不合并、主机内重复合并）
+- **当** report 含三条 finding:hostA 与 hostB 各一条 `inspector_name` / `message` / `severity` **相同但 `target_name` 不同**的 finding(跨主机同问题),外加 hostA 内一条与其首条**四元组完全相同**(含 `target_name=hostA`)的重复
+- **那么** 去重以 **`(target_name, inspector_name, message, severity)` 四元组**为键、**先于**分节执行:hostA 的两条重复**合并为一条**(四元组全等);hostA 与 hostB 的「同问题」**各自保留**(`target_name` 不同 → 四元组不等 → 不跨主机合并);最终 hostA 节 1 条、hostB 节 1 条,**禁止**因 message 相同把跨主机两条误并成一节一条(否则 fleet 报告会丢主机维度)
+
 #### 场景:单主机退化为无分节（distinct non-None ≤ 1）
 - **当** report 的 finding `target_name` 去重后非 None 值至多一个（含全 `None`、全同值、或部分盖值部分 None 的混合）
 - **那么** **禁止**渲染主机分节,**必须**与既有单 target 行为一致(无分节噪声)

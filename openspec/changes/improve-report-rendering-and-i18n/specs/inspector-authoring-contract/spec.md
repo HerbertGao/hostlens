@@ -12,7 +12,7 @@
 
 目的:报告里每条发现**自带具体指向 + 中文**。叙述性的根因分析归 Diagnostician（中文,见 diagnostician-agent),finding message 只做「简短中文标签 + 数据」。
 
-**契约记录(finding id churn)**:`message` 是 `compute_finding_id(inspector_name, inspector_version, message)` 的输入(severity 被刻意排除以支持 `changed_severity`)。因此**改写 message 会改变同一问题的 finding id**——批量重写 message 的那次升级,**首跑 regression diff 会把旧 id 一次性报成 `resolved`、新 id 报成 `added`**(同一真实问题 id 被重置,**非真实状态变化**)。这是 message 改写的**已知一次性副作用**,认可且记录在案;作者改写 message 时须知晓,运维侧首跑 diff 的这次 resolved+added 噪声应被解读为 id 重置而非问题消失 / 新增。
+**契约记录(finding id churn)**:`message` 是 `compute_finding_id(inspector_name, inspector_version, message)` 的输入(severity 被刻意排除以支持 `changed_severity`)。因此**改写 message 会改变同一问题的 finding id**——批量重写 message 的那次升级,**首跑 regression diff 会把旧 id 一次性报成 `resolved`、新 id 报成 `added`**(同一真实问题 id 被重置,**非真实状态变化**)。这是 message 改写的**已知一次性副作用**,认可且记录在案;作者改写 message 时须知晓,运维侧首跑 diff 的这次 resolved+added 噪声应被解读为 id 重置而非问题消失 / 新增。**适用范围限定**:该 churn 叙述**仅适用 agent 模式的 per-target regression diff**;fleet（deterministic）report **不做** per-target regression diff（见提案 B `add-deterministic-inspection-mode` 的 report-data-model「fleet 无 per-target diff」非目标),故 message 改写在 fleet-only 部署中**不产生** diff 噪声——纯 fleet 部署可忽略本 churn 提示。
 
 #### 场景:message 注入干净串而非空指针 / repr
 - **当** 一个列出 failed 单元的 inspector(输出 `failed: [{unit:...}]` 数组,并旁配 collector emit 的已 join 串字段 `failed_names`),其 FindingRule 在 `len(failed) > 0` 时触发
