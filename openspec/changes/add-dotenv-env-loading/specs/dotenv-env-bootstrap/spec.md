@@ -16,6 +16,10 @@
 - **当** cwd 不存在 `.env`，运行任一 CLI 命令
 - **那么** **禁止**抛异常、**禁止**打印 `.env` 路径或缺失提示；命令照常执行（env 仅来自真实 `os.environ`）
 
+#### 场景:根回调的 cwd 副作用扩大测试隔离义务（CI 红防线）
+- **当** 测试在仓库根（含开发用 `.env`，写有 `HOSTLENS_BACKEND__TYPE` / secret 等真值）通过 `CliRunner` 或直接调用 exercise CLI 根回调
+- **那么** 根回调的 `load_dotenv` 会把该 `.env` 注入 `os.environ`、污染本测试 env——本变更把「需隔离 dev `.env` 的测试集」从「仅 exercise `load_settings()` 者」**扩大**到「任何 exercise 根回调者」。故契约要求:任何 exercise 根回调的测试**必须**隔离 cwd（`chdir` 到无 `.env` 的 tmp）并按需 `delenv` 清掉 `HOSTLENS_*` / secret 占位变量，使「干净 CI（无 `.env`）」与「本地仓库根（有 dev `.env`）」行为一致;**禁止**依赖运行目录恰好无 `.env`（否则本地绿、干净 CI 红或反之）
+
 #### 场景:Settings 取值不因加载改变
 - **当** `.env` 含 `HOSTLENS_LOG_MODE=dev` 且无对应 `export`
 - **那么** `load_settings()` **必须**仍得到 `log_mode="dev"`（取值结果与加载前一致，仅命中来源从 `.env file` 层前移到 `os.environ` 层）

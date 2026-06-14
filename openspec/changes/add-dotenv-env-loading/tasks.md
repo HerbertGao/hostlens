@@ -5,8 +5,8 @@
 
 ## 2. 测试
 
-- [ ] 2.1 新增 CLI 启动加载行为测试，覆盖 spec 四场景:`.env` 注入 → `${VAR}`/`os.environ` 可读；`override=False` → export 优先；缺 `.env` 静默零影响;`Settings` 取值不变。
-- [ ] 2.2 既有 CLI / serve / agent-loop 配置测试隔离仓根 dev `.env`（复用 `_isolate_env`:chdir tmp + delenv），确认干净 CI 不被仓根 `.env` 污染（[[project_tests_must_isolate_dev_env_or_ci_red]]）。
+- [ ] 2.1 新增 CLI 启动加载行为测试，覆盖 spec 四个**行为**场景:`.env` 注入 → `${VAR}`/`os.environ` 可读；`override=False` → export 优先；缺 `.env` 静默零影响;`Settings` 取值不变。
+- [ ] 2.2 既有 CLI / serve / agent-loop 配置测试隔离仓根 dev `.env`（复用 `_isolate_env`:chdir tmp + delenv），确认干净 CI 不被仓根 `.env` 污染（[[project_tests_must_isolate_dev_env_or_ci_red]]）——即落实 spec「根回调的 cwd 副作用扩大测试隔离义务」契约场景:本变更后须隔离的测试集从「exercise `load_settings()` 者」扩到「任何 exercise 根回调者」。
 
 ## 3. 文档与收尾
 
