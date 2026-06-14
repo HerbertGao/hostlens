@@ -291,3 +291,14 @@ def test_host_star_provides_global_defaults(
     assert by_name["foo"].port == 2200
     assert by_name["bar"].user == "specific"  # host-specific overrides default
     assert by_name["bar"].port == 2200  # default still fills the gap
+
+
+def test_host_star_defaults_apply_to_included_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Host *`` defaults reach hosts pulled in via ``Include``."""
+    ssh = _make_ssh_home(tmp_path, monkeypatch)
+    _write(ssh / "extra", "Host inc\n  HostName 9.9.9.9\n")
+    ref = _write(ssh / "config", "Host *\n  User globaluser\nInclude ~/.ssh/extra\n")
+    by_name = {c.name: c for c in SshConfigSource().parse(str(ref))}
+    assert by_name["inc"].user == "globaluser"

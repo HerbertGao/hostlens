@@ -122,7 +122,12 @@ class SshConfigSource:
         """Parse ``ref`` (and one level of in-tree ``Include``) into candidates."""
 
         text = self._read_ref(ref)
-        candidates = self._parse_text(text, allow_include=True)
+        pending, defaults = self._parse_text(text, allow_include=True)
+        # Build deferred to here so ``Host *`` defaults apply to every host
+        # uniformly — including Include'd hosts (merged into ``pending``) and a
+        # ``Host *`` block that appears after the hosts or inside an Include.
+        # The explicit host-specific directive wins over a default.
+        candidates = [self._build_candidate(a, {**defaults, **b}) for a, b in pending]
         reject_normalized_name_collisions(candidates)
         return candidates
 
@@ -142,8 +147,16 @@ class SshConfigSource:
                 original=exc,
             ) from exc
 
-    def _parse_text(self, text: str, *, allow_include: bool) -> list[CandidateTarget]:
-        candidates: list[CandidateTarget] = []
+    def _parse_text(
+        self, text: str, *, allow_include: bool
+    ) -> tuple[list[tuple[list[str], dict[str, str]]], dict[str, str]]:
+        """Return ``(explicit-host blocks, Host-* defaults)`` — building deferred.
+
+        Construction is deferred to ``parse`` so ``Host *`` defaults apply
+        uniformly. An ``Include``'s blocks + defaults are merged into this
+        file's, so the parent's ``Host *`` reaches Include'd hosts too.
+        """
+
         pending: list[tuple[list[str], dict[str, str]]] = []
         defaults: dict[str, str] = {}  # directives under ``Host *``
         block: dict[str, str] | None = None
@@ -203,17 +216,16 @@ class SshConfigSource:
                     _logger.debug("skipping nested Include (one level only)")
                     continue
                 included = self._read_include(value)
-                candidates.extend(self._parse_text(included, allow_include=False))
+                inc_pending, inc_defaults = self._parse_text(included, allow_include=False)
+                pending.extend(inc_pending)
+                defaults.update(inc_defaults)
                 continue
 
             if block is not None and mode in ("host", "default"):
                 block[keyword] = value
 
         flush()
-        for host_aliases, host_block in pending:
-            # ``Host *`` defaults fill directives the explicit block omits.
-            candidates.append(self._build_candidate(host_aliases, {**defaults, **host_block}))
-        return candidates
+        return pending, defaults
 
     @staticmethod
     def _build_candidate(aliases: list[str], block: dict[str, str]) -> CandidateTarget:
