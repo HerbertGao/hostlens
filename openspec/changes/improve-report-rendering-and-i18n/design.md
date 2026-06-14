@@ -1,6 +1,6 @@
 ## 上下文
 
-报告渲染链:Report(`reporting/models.py`:Finding{severity/message/evidence/inspector_name}、RootCauseHypothesis{description/confidence/suggested_actions}、ReportMeta{inspectors_used/status/timestamp})→ `redact_report_for_render` → telegram `report.md.j2` / lark `report.card.j2`(Jinja，filters `mdv2_escape`/`sev_icon`)。
+报告渲染链:Report(`reporting/models.py`:Finding{severity/message/evidence/inspector_name/**target_name**}、RootCauseHypothesis{description/confidence/suggested_actions}、ReportMeta{inspectors_used/status/timestamp})→ `redact_report_for_render` → telegram `report.md.j2` / lark `report.card.j2`(Jinja，filters `mdv2_escape`/`sev_icon`)。**关键:`redact_report_for_render` 在渲染链中间**——`_redact.py:_redact_finding` 显式逐字段重构 Finding,本提案多 target 分节 / 四元组去重消费的是**脱敏拷贝**,故 `target_name` 能否到达模板**取决于提案 B 在 `_redact_finding` 透传 `target_name`**(B 任务 2.5.5)。B 漏透传 → 模板侧 `target_name` 全 None → 分节失效 + 跨主机误并;C 的多 target 快照测试须经真实 redact 路径以暴露此依赖、不喂 raw report 假绿。
 
 现状:模板第 1 行 `report.intent` 当标题;逐条 `finding.message` 裸渲染(不去重);findings 的 message 是 inspector YAML 里**作者手写英文静态串、不注入数据**(FindingRule `message` 走 `.format`,但作者没用占位)。本提案的 prototype 已验证新布局可渲染(根因优先 + 去重 + 来源 + 中文 + 覆盖行)。
 
