@@ -59,12 +59,20 @@ class PendingAdd(BaseModel):
 
 
 class FailedProbe(BaseModel):
-    """A promoted entry whose probe failed (unreachable / auth / timeout)."""
+    """A promoted entry whose probe failed (unreachable / auth / timeout).
+
+    Carries the same ``password_env`` / ``passphrase_env`` refs as
+    ``PendingAdd``: with ``--include-unreachable`` a failed entry is still
+    written (``enabled=False``), and its ``${VAR}`` credential placeholder
+    must be preserved so re-enabling the host later does not lose its auth.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     entry: LocalEntry | SSHEntry
     result: ProbeResult
+    password_env: str | None = None
+    passphrase_env: str | None = None
 
 
 class InvalidCandidate(BaseModel):

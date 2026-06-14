@@ -156,6 +156,11 @@ class SshConfigSource:
             if keyword == "host":
                 flush()
                 tokens = value.split()
+                if not tokens:
+                    raise ConfigError(
+                        "ssh_config 'Host' line has no pattern",
+                        kind="invalid_ssh_config",
+                    )
                 if any(_is_wildcard_host(token) for token in tokens):
                     _logger.debug("skipping wildcard Host pattern", host=value)
                     skip_block = True
@@ -201,7 +206,18 @@ class SshConfigSource:
         user = _first_token(user_value) if user_value else None
 
         port_value = block.get("port")
-        port = int(_first_token(port_value)) if port_value else None
+        port: int | None
+        if port_value:
+            port_token = _first_token(port_value)
+            try:
+                port = int(port_token)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"invalid ssh_config Port: {port_token!r}",
+                    kind="invalid_ssh_config",
+                ) from exc
+        else:
+            port = None
 
         identity = block.get("identityfile")
         key_path = _resolve_identity_file(_first_token(identity)) if identity else None

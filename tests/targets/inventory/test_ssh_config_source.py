@@ -206,3 +206,22 @@ def test_nested_include_one_level_only(tmp_path: Path, monkeypatch: pytest.Monke
     candidates = SshConfigSource().parse(str(ref))
     # ``deep`` is reached via a nested Include and is dropped (one level only).
     assert {c.name for c in candidates} == {"mid"}
+
+
+# ---------------------------------------------------------------------------
+# malformed input → structured ConfigError (not a raw crash)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_host_line_raises_config_error(tmp_path: Path) -> None:
+    ref = _write(tmp_path / "config", "Host\n  HostName 1.2.3.4\n")
+    with pytest.raises(ConfigError) as excinfo:
+        SshConfigSource().parse(str(ref))
+    assert excinfo.value.kind == "invalid_ssh_config"
+
+
+def test_non_numeric_port_raises_config_error(tmp_path: Path) -> None:
+    ref = _write(tmp_path / "config", "Host gw\n  HostName 1.2.3.4\n  Port notaport\n")
+    with pytest.raises(ConfigError) as excinfo:
+        SshConfigSource().parse(str(ref))
+    assert excinfo.value.kind == "invalid_ssh_config"

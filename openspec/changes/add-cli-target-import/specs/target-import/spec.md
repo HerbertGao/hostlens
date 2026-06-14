@@ -67,7 +67,7 @@
 
 - `to_add: list[PendingAdd]`,`PendingAdd{entry: TargetEntry, password_env: str|None, passphrase_env: str|None}` —— 探活成功且 name 不冲突(落盘需 entry + 凭据 env 引用,见 save 需求);**`entry.password`/`passphrase` 恒为 `None`**(凭据仅经 `password_env`/`passphrase_env` 字段透传,**禁**内联 `${VAR}` 进 entry 造双写)
 - `skipped: list[str]` —— name 已在 `targets.yaml`(幂等不覆盖,只需 name)
-- `failed_probe: list[FailedProbe]`,`FailedProbe{entry: TargetEntry, result: ProbeResult}` —— 探活失败(已提升)
+- `failed_probe: list[FailedProbe]`,`FailedProbe{entry: TargetEntry, result: ProbeResult, password_env: str|None, passphrase_env: str|None}` —— 探活失败(已提升);**携带凭据 env 引用**(同 `PendingAdd`)——`--include-unreachable` 落盘 `enabled=False` 条目时须保全 `${VAR}` 占位,否则操作者日后 re-enable 该主机会丢失 auth
 - `invalid_candidate: list[InvalidCandidate]`,`InvalidCandidate{candidate: CandidateTarget, error_summary: str}` —— 提升失败(脱敏摘要)
 
 `ImportPlan` 是写盘前最后一个**只读**产物,必须可渲染成人可读 diff + `--json`。渲染(diff + `--json`)对 `failed_probe`/`invalid_candidate` **禁止**输出未脱敏的 host 原始地址 / `user@host` / `original` 异常链 / traceback(对齐 `_emit_target_error` 纪律:只 `error_kind` 枚举 + 候选 name);`to_add` 必须**完整列出每个候选的最终连接地址(host)**,使操作者能在 `--yes` 前审计是否有非预期主机(把 dry-run 从「预览」升为「落盘前地址审计点」)。`name` 规范化的 `原始标识 → 派生 name` 映射须可在 plan 展示。

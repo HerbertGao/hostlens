@@ -153,7 +153,14 @@ async def build_import_plan(
                 )
             )
         else:
-            failed.append(FailedProbe(entry=entry, result=result))
+            failed.append(
+                FailedProbe(
+                    entry=entry,
+                    result=result,
+                    password_env=candidate.password_env,
+                    passphrase_env=candidate.passphrase_env,
+                )
+            )
 
     return ImportPlan(
         to_add=to_add,
@@ -170,10 +177,10 @@ def assemble_save_entries(plan: ImportPlan, *, include_unreachable: bool) -> lis
       credential env references.
     - When ``include_unreachable`` is set, ``failed_probe`` candidates are also
       registered but with ``enabled=False`` (registered-but-not-activated, so
-      later inspections don't report ``requires_unmet`` noise). Their
-      credential env refs are not threaded — ``failed_probe`` carries the
-      promoted ``entry`` but not the original ``CandidateTarget``'s ``*_env``
-      names, and a disabled entry is not connected anyway.
+      later inspections don't report ``requires_unmet`` noise). Their credential
+      env refs ARE threaded — a disabled entry is not connected now, but the
+      operator may re-enable it once the host is back, and dropping the
+      ``${VAR}`` placeholder would silently lose its auth.
 
     The returned list is the exact shape ``save_targets_config`` consumes.
     """
@@ -184,5 +191,5 @@ def assemble_save_entries(plan: ImportPlan, *, include_unreachable: bool) -> lis
     if include_unreachable:
         for failed in plan.failed_probe:
             disabled = failed.entry.model_copy(update={"enabled": False})
-            entries.append((disabled, None, None))
+            entries.append((disabled, failed.password_env, failed.passphrase_env))
     return entries
