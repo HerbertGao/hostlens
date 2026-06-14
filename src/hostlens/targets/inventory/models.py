@@ -38,9 +38,10 @@ __all__ = [
 # Unicode categories that are unsafe to echo verbatim into the dry-run audit
 # diff: C0+C1 controls + DEL (``Cc``), zero-width / bidi-override format chars
 # (``Cf``, incl. U+202E RLO), line / paragraph separators (``Zl`` / ``Zp``), and
-# lone surrogates (``Cs``, which would raise on yaml.safe_dump / json.dumps).
-# A connection field carrying any of these is rejected at promotion so a crafted
-# inventory can neither spoof the preview nor be written to disk.
+# lone surrogates (``Cs``) — none of which are valid text in a connection field
+# and which corrupt a UTF-8 round-trip. A connection field carrying any of these
+# is rejected at promotion so a crafted inventory can neither spoof the preview
+# nor be written to disk.
 _UNSAFE_DISPLAY_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 
