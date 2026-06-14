@@ -227,6 +227,28 @@ def test_port_infinity_rejected(tmp_path: Path) -> None:
     assert excinfo.value.kind == "invalid_entry"
 
 
+def test_oversized_integer_token_raises_config_error(tmp_path: Path) -> None:
+    """A bare int token over Python's digit limit → ConfigError, not a traceback.
+
+    PyYAML's ``safe_load`` constructs it via ``int()``, which raises a plain
+    ``ValueError`` (not a ``YAMLError``); that must surface as exit 2.
+    """
+    big = "9" * 5000
+    ref = _write(
+        tmp_path / "inv.yml",
+        f"g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    port: {big}\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "yaml_parse_error"
+
+
+def test_can_handle_oversized_integer_returns_false(tmp_path: Path) -> None:
+    big = "9" * 5000
+    ref = _write(tmp_path / "inv.yml", f"g:\n  h:\n    type: ssh\n    port: {big}\n")
+    assert YamlSource().can_handle(str(ref)) is False
+
+
 def test_binary_file_raises_config_error_not_traceback(tmp_path: Path) -> None:
     """A non-UTF-8 file → ConfigError (exit 2), never an uncaught traceback."""
     ref = tmp_path / "inv.yaml"

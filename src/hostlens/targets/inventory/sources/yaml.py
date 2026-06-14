@@ -73,7 +73,10 @@ class YamlSource:
         try:
             with open(os.path.expanduser(ref), encoding="utf-8") as handle:
                 parsed = yaml.safe_load(handle.read())
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        # ``ValueError`` covers PyYAML construction failures that are not
+        # ``YAMLError`` — notably a bare integer token over Python's int-string
+        # digit limit, whose ``int()`` raises a plain ``ValueError``.
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
             return False
         return isinstance(parsed, dict)
 
@@ -81,7 +84,11 @@ class YamlSource:
         text = self._read_ref(ref)
         try:
             parsed = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
+        # ``ValueError`` covers PyYAML construction failures that are not
+        # ``YAMLError`` — notably a bare integer token over Python's int-string
+        # digit limit, whose ``int()`` raises a plain ``ValueError`` and would
+        # otherwise escape as an uncaught traceback (bypassing exit 2).
+        except (yaml.YAMLError, ValueError) as exc:
             raise ConfigError(
                 "failed to parse yaml inventory",
                 kind="yaml_parse_error",
