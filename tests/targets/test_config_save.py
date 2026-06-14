@@ -139,6 +139,25 @@ def test_save_is_idempotent_on_rerun(tmp_path: Path) -> None:
     assert [e["name"] for e in payload["targets"]] == ["demo"]
 
 
+def test_save_returns_actual_appended_count(tmp_path: Path) -> None:
+    """The return value reflects real appends, not ``len(entries)`` (idempotent skip)."""
+
+    cfg_path = tmp_path / "targets.yaml"
+    entries: list[tuple[LocalEntry | SSHEntry, str | None, str | None]] = [
+        (LocalEntry(name="a", type="local"), None, None),
+        (LocalEntry(name="b", type="local"), None, None),
+    ]
+    assert save_targets_config(cfg_path, entries) == 2
+    # Re-run: both names already present → zero appended.
+    assert save_targets_config(cfg_path, entries) == 0
+    # Mixed: one new, one existing → one appended.
+    mixed: list[tuple[LocalEntry | SSHEntry, str | None, str | None]] = [
+        (LocalEntry(name="a", type="local"), None, None),
+        (LocalEntry(name="c", type="local"), None, None),
+    ]
+    assert save_targets_config(cfg_path, mixed) == 1
+
+
 def test_save_skips_name_already_in_file(tmp_path: Path) -> None:
     """Existing on-disk name is skipped (not overwritten) — upsert default skip."""
 

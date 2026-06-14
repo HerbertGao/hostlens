@@ -626,17 +626,22 @@ def import_cmd(
     if not save_entries:
         # ``--yes`` but nothing to write. Two distinct cases land here:
         #
-        # 1. **All candidates failed probe** (and no ``--include-unreachable``)
-        #    → business failure: the operator wanted to onboard but no host was
-        #    reachable. Exit 1 (spec §场景:--yes 全探活失败且非 include 退 1).
-        # 2. **Empty / already-managed inventory** (no probe failures) →
-        #    nothing to onboard is not a failure; exit 0 (spec §场景:空
-        #    inventory → 空 plan → exit 0, and idempotent re-runs where every
-        #    candidate is ``skipped``).
-        if plan.failed_probe and not include_unreachable:
+        # 1. **Candidates existed but none could be onboarded** — every host
+        #    either failed probe (and no ``--include-unreachable``) or failed
+        #    promotion (``invalid_candidate``). The operator asked to onboard
+        #    hosts and none succeeded → business failure, exit 1.
+        # 2. **Empty / already-managed inventory** (no failures) → nothing to
+        #    onboard is not a failure; exit 0 (spec §场景:空 inventory → 空 plan
+        #    → exit 0, and idempotent re-runs where every candidate is
+        #    ``skipped``).
+        candidates_failed = (
+            plan.failed_probe and not include_unreachable
+        ) or plan.invalid_candidate
+        if candidates_failed:
             typer.echo(
-                "hostlens target import: no reachable targets to write "
-                "(use --include-unreachable to register unreachable candidates).",
+                "hostlens target import: no targets onboarded — all candidates were "
+                "unreachable or invalid (see the plan above; "
+                "--include-unreachable registers unreachable hosts).",
                 err=True,
             )
             raise typer.Exit(code=1)
@@ -648,9 +653,13 @@ def import_cmd(
         # which may emit the same absent-file DEBUG line to stdout; keep the
         # ``--json`` stdout clean by redirecting during the write too.
         with _quiet_stdout():
-            save_targets_config(cfg_path, save_entries)
+            added = save_targets_config(cfg_path, save_entries)
     except (ConfigError, ValidationError) as exc:
         typer.echo(f"hostlens target import: failed to write targets config: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    _status(f"imported {len(save_entries)} target(s) into {cfg_path}")
+    # ``save_targets_config`` skips entries whose name already exists on its
+    # fresh load, so report the real append count — not ``len(save_entries)``.
+    skipped_existing = len(save_entries) - added
+    suffix = f" ({skipped_existing} already present, skipped)" if skipped_existing else ""
+    _status(f"imported {added} target(s) into {cfg_path}{suffix}")

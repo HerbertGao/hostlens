@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,10 +29,24 @@ from hostlens.core.exceptions import ConfigError
 
 __all__ = [
     "CandidateTarget",
+    "contains_unsafe_display_chars",
     "normalize_target_name",
     "reject_normalized_name_collisions",
     "resolve_key_path",
 ]
+
+# Unicode categories that are unsafe to echo verbatim into the dry-run audit
+# diff: C0+C1 controls + DEL (``Cc``), zero-width / bidi-override format chars
+# (``Cf``, incl. U+202E RLO), and line / paragraph separators (``Zl`` / ``Zp``).
+# A ``host`` / ``user`` carrying any of these is rejected at promotion so a
+# crafted inventory can neither spoof the preview nor be written to disk.
+_UNSAFE_DISPLAY_CATEGORIES: frozenset[str] = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+def contains_unsafe_display_chars(value: str) -> bool:
+    """True if ``value`` holds a control / bidi / line-separator character."""
+
+    return any(unicodedata.category(ch) in _UNSAFE_DISPLAY_CATEGORIES for ch in value)
 
 
 # Mirror of ``targets/config.py:_NAME_PATTERN`` (``TargetEntry.name``). The

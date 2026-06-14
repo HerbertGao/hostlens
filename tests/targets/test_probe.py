@@ -478,6 +478,21 @@ def test_promote_ssh_getuser_failure_raises_value_error(monkeypatch: pytest.Monk
         promote_candidate(CandidateTarget(name="x", type="ssh", host="1.1.1.1"))
 
 
+def test_promote_ssh_rejects_control_chars_in_host() -> None:
+    """A host with control/bidi chars → ValueError (→ invalid_candidate).
+
+    Rejecting at promotion keeps the saved value equal to the previewed value:
+    a crafted inventory can neither spoof the audit line nor be written raw.
+    """
+    with pytest.raises(ValueError, match="control or bidirectional"):
+        promote_candidate(CandidateTarget(name="x", type="ssh", host="1.1.1.1\x07evil"))
+
+
+def test_promote_ssh_rejects_control_chars_in_user() -> None:
+    with pytest.raises(ValueError, match="control or bidirectional"):
+        promote_candidate(CandidateTarget(name="x", type="ssh", host="1.1.1.1", user="ro\x9bot"))
+
+
 def test_target_probe_clamps_concurrency_to_bounds() -> None:
     """``--concurrency`` is clamped to ``[1, _MAX_CONCURRENCY]`` (no storm)."""
     import hostlens.targets.probe as probe_mod

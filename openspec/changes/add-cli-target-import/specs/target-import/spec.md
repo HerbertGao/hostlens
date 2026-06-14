@@ -96,7 +96,11 @@
 
 #### 场景:to_add 完整列出连接地址供审计
 - **当** dry-run 渲染 `ImportPlan`
-- **那么** `to_add` 每条完整列出最终 `host` 地址(操作者落盘前可审计有无非预期主机)
+- **那么** `to_add` 每条完整列出最终 `host` 地址(操作者落盘前可审计有无非预期主机);`原始标识 → 派生 name` 在两者不同时一并展示(diff 的 `name (from <raw>)` + `--json` 的 `raw_identifier` 字段)
+
+#### 场景:host/user 含控制字符提升即拒(预览与落盘一致)
+- **当** 候选的 `host` 或 `user` 含控制 / 双向(bidi)/ 行分隔字符(Unicode 类目 `Cc`/`Cf`/`Zl`/`Zp`)
+- **那么** **提升即失败**归 `invalid_candidate`(不进 `to_add`、不落盘),使「预览展示的地址」恒等于「落盘写入的地址」——杜绝「预览脱敏成干净串、`--yes` 却写入不同的原始连接串」的伪造面
 
 ### 需求:import 落盘必须经 execution-target 的 `save_targets_config`,`enabled` 按可达性定
 
@@ -162,10 +166,14 @@ import 的写盘**必须**调用 `execution-target` capability 新增的 `save_t
 - **当** 干净环境缺 backend 配置,`load_settings()` raise `ConfigError`
 - **那么** exit 2(镜像 `target add` 的配置错处理)
 
-#### 场景:--yes 全探活失败且非 include 退 1
-- **当** `--yes` 但候选全部探活失败,且未带 `--include-unreachable`
-- **那么** 无可纳管项,exit 1,`targets.yaml` 不被修改
+#### 场景:--yes 候选全部失败(探活或提升)退 1
+- **当** `--yes` 但**没有任何候选可纳管**——候选要么探活失败(且未带 `--include-unreachable`)、要么提升失败归 `invalid_candidate`(空 inventory / 全 `skipped` 除外)
+- **那么** 无可纳管项,exit 1,`targets.yaml` 不被修改;区别于「空 inventory / 全已存在」(无失败)走 exit 0
 
 #### 场景:--include-unreachable 全失败仍登记成功
 - **当** `--yes --include-unreachable` 且候选全部探活失败
 - **那么** 全部以 `enabled=False` 落盘,exit 0(逃生舱语义)
+
+#### 场景:成功计数反映实际追加数(非 len(entries))
+- **当** `--yes` 落盘时部分 to_add 的 name 已存在于 `targets.yaml`(`save_targets_config` 幂等跳过)
+- **那么** CLI 报告的「imported N」为**实际追加**条数(已存在者计入 skipped 后缀),不得用 `len(save_entries)` 高报

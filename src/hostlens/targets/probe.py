@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Final, Literal, get_args
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from hostlens.core.exceptions import TargetError
+from hostlens.targets.inventory.models import contains_unsafe_display_chars
 from hostlens.targets.registry import build_one_target
 
 if TYPE_CHECKING:
@@ -192,6 +193,14 @@ def promote_candidate(candidate: CandidateTarget) -> LocalEntry | SSHEntry:
         # and turn the (otherwise unreachable) malformed case into a clean
         # invalid_candidate instead of an empty host string.
         raise ValueError("ssh candidate is missing a host")
+    # Reject control / bidi characters in the connection fields here (→
+    # invalid_candidate) so a crafted inventory can neither spoof the audit
+    # preview nor be persisted to targets.yaml raw — the saved value always
+    # equals the previewed value. The message carries no host/user value.
+    if contains_unsafe_display_chars(candidate.host):
+        raise ValueError("ssh candidate host contains control or bidirectional characters")
+    if candidate.user is not None and contains_unsafe_display_chars(candidate.user):
+        raise ValueError("ssh candidate user contains control or bidirectional characters")
     if candidate.user:
         user = candidate.user
     else:

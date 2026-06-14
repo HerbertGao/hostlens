@@ -698,8 +698,12 @@ def _atomic_write_yaml(path: Path, raw_dict: dict[str, Any]) -> None:
 def save_targets_config(
     path: Path,
     entries: list[tuple[LocalEntry | SSHEntry, str | None, str | None]],
-) -> None:
+) -> int:
     """Idempotently upsert ``entries`` into ``targets.yaml`` (atomic, ``0o600``).
+
+    Returns the number of entries **actually appended** — an entry whose name
+    already exists on the fresh load is skipped, so the count reflects real
+    writes (callers must not assume ``len(entries)``).
 
     The inverse of ``load_targets_config`` for the write side, sharing the
     ``_PLACEHOLDER_ALLOWED_FIELDS`` placeholder discipline and the same
@@ -736,6 +740,7 @@ def save_targets_config(
     raw.setdefault("targets", [])
 
     seen = set(existing_names)
+    appended = 0
     for entry, password_env, passphrase_env in entries:
         if entry.name in seen:
             continue
@@ -743,5 +748,7 @@ def save_targets_config(
         raw["targets"].append(
             _entry_to_dict(entry, password_env=password_env, passphrase_env=passphrase_env)
         )
+        appended += 1
 
     _atomic_write_yaml(path, raw)
+    return appended

@@ -678,6 +678,27 @@ def test_import_missing_yes_is_dry_run_exit_0_not_1(
     assert not targets_path.exists()
 
 
+def test_import_yes_all_invalid_candidates_exits_1(
+    runner: CliRunner,
+    import_env: tuple[Path, Path],
+) -> None:
+    """``--yes`` with every candidate failing promotion (no probe failures) → exit 1.
+
+    A control char in the host rejects the candidate at promotion; with nothing
+    onboarded the command must signal failure, not exit 0 "nothing to import".
+    """
+
+    targets_path, _inventory_path = import_env
+    bad_inv = targets_path.parent / "bad.yml"
+    # YAML double-quoted ``\x07`` → a BEL control char in the host value.
+    bad_inv.write_text('hosts:\n  bad:\n    type: ssh\n    host: "1.1.1.1\\x07"\n')
+
+    result = runner.invoke(app, ["target", "import", str(bad_inv), "--source", "yaml", "--yes"])
+
+    assert result.exit_code == 1, result.stdout + result.stderr
+    assert not targets_path.exists()
+
+
 def test_import_dry_run_and_yes_is_exit_2(
     runner: CliRunner,
     import_env: tuple[Path, Path],
@@ -991,6 +1012,7 @@ def test_import_json_schema_stable(
     assert payload["to_add"] == [
         {
             "name": "demo-localhost",
+            "raw_identifier": "demo-localhost",
             "type": "local",
             "host": None,
             "password_env": None,

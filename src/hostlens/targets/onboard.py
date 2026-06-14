@@ -191,6 +191,7 @@ async def build_import_plan(
                     entry=entry,
                     password_env=candidate.password_env,
                     passphrase_env=candidate.passphrase_env,
+                    raw_identifier=candidate.source_metadata.get("raw_identifier"),
                 )
             )
         else:

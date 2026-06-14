@@ -57,6 +57,10 @@ class PendingAdd(BaseModel):
     entry: LocalEntry | SSHEntry
     password_env: str | None = None
     passphrase_env: str | None = None
+    # The source's original identifier (ssh_config Host alias / yaml dict-key)
+    # before normalization, so the plan can surface the required
+    # ``原始标识 → 派生 name`` mapping when it differs from ``entry.name``.
+    raw_identifier: str | None = None
 
 
 class FailedProbe(BaseModel):
@@ -161,6 +165,7 @@ class ImportPlan(BaseModel):
             "to_add": [
                 {
                     "name": item.entry.name,
+                    "raw_identifier": item.raw_identifier,
                     "type": item.entry.type,
                     "host": item.entry.host if isinstance(item.entry, SSHEntry) else None,
                     "password_env": item.password_env,
@@ -234,8 +239,23 @@ def _pending_add_label(item: PendingAdd) -> str:
     """
 
     entry = item.entry
+    name = _name_with_origin(entry.name, item.raw_identifier)
     if isinstance(entry, SSHEntry):
         port = "" if entry.port == 22 else f":{entry.port}"
         user = f"{_strip_control_chars(entry.user)}@" if entry.user else ""
-        return f"{entry.name} -> {user}{_strip_control_chars(entry.host)}{port}"
-    return f"{entry.name} (local)"
+        return f"{name} -> {user}{_strip_control_chars(entry.host)}{port}"
+    return f"{name} (local)"
+
+
+def _name_with_origin(name: str, raw_identifier: str | None) -> str:
+    """Render ``name`` annotated with its pre-normalization origin when they differ.
+
+    Surfaces the spec-required ``原始标识 → 派生 name`` mapping (e.g. ``Web_1`` →
+    ``web-1``) so an operator sees how each name was derived before ``--yes``.
+    The raw identifier is control-char-stripped — it too is operator inventory
+    text echoed into the audit line.
+    """
+
+    if raw_identifier is not None and raw_identifier != name:
+        return f"{name} (from {_strip_control_chars(raw_identifier)})"
+    return name

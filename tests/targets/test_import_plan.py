@@ -178,6 +178,50 @@ def test_render_diff_strips_c1_and_bidi_control_chars() -> None:
     assert "1.2.3.4" in diff
 
 
+def test_render_diff_shows_raw_identifier_mapping() -> None:
+    """When the normalized name differs from the source id, show the mapping."""
+
+    plan = ImportPlan(
+        to_add=[
+            PendingAdd(
+                entry=SSHEntry(name="web-1", type="ssh", host="10.0.0.5", user="alice"),
+                raw_identifier="Web_1",
+            )
+        ],
+    )
+    diff = plan.render_diff()
+    assert "web-1" in diff
+    assert "from Web_1" in diff
+
+
+def test_render_diff_omits_mapping_when_name_unchanged() -> None:
+    """No ``(from ...)`` noise when the source id already equals the name."""
+
+    plan = ImportPlan(
+        to_add=[
+            PendingAdd(
+                entry=SSHEntry(name="web", type="ssh", host="10.0.0.5", user="root"),
+                raw_identifier="web",
+            )
+        ],
+    )
+    assert "(from" not in plan.render_diff()
+
+
+def test_json_to_add_includes_raw_identifier() -> None:
+    """``--json`` carries the original identifier so the mapping is machine-readable."""
+
+    plan = ImportPlan(
+        to_add=[
+            PendingAdd(
+                entry=SSHEntry(name="web-1", type="ssh", host="10.0.0.5", user="root"),
+                raw_identifier="Web_1",
+            )
+        ],
+    )
+    assert plan.to_json_obj()["to_add"][0]["raw_identifier"] == "Web_1"
+
+
 def test_render_json_redacts_failed_and_invalid() -> None:
     """``--json`` surface drops host / fingerprint for the failure buckets."""
 
