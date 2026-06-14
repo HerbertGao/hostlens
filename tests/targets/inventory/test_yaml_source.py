@@ -172,3 +172,23 @@ def test_invalid_port_raises_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         YamlSource().parse(str(ref))
     assert excinfo.value.kind == "invalid_entry"
+
+
+def test_key_path_tilde_expanded(tmp_path: Path) -> None:
+    ref = _write(
+        tmp_path / "inv.yml",
+        "g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    key_path: ~/.ssh/id_x\n",
+    )
+    candidates = YamlSource().parse(str(ref))
+    assert candidates[0].key_path is not None
+    assert "~" not in candidates[0].key_path
+
+
+def test_key_path_placeholder_rejected(tmp_path: Path) -> None:
+    ref = _write(
+        tmp_path / "inv.yml",
+        "g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    key_path: ${KEY}/id\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "key_path_placeholder_forbidden"

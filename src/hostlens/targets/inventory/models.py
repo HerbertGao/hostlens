@@ -18,6 +18,7 @@ a ``ValidationError`` instead of a structured per-candidate error.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Literal
 
@@ -29,6 +30,7 @@ __all__ = [
     "CandidateTarget",
     "normalize_target_name",
     "reject_normalized_name_collisions",
+    "resolve_key_path",
 ]
 
 
@@ -97,6 +99,25 @@ def reject_normalized_name_collisions(candidates: list[CandidateTarget]) -> None
                 target=candidate.name,
             )
         seen.add(candidate.name)
+
+
+def resolve_key_path(value: str) -> str:
+    """Expand ``~`` in a ``key_path`` reference; fail closed on ``${VAR}``.
+
+    Shared by every inventory source. ``key_path`` is a non-secret field that
+    lands on disk as a literal value (it does NOT enjoy the loader's ``${VAR}``
+    placeholder preservation). Letting the source ``expandvars`` here would
+    smuggle an entire env value (possibly a sensitive ``/run/.../secrets/...``
+    path) into a plaintext-persisted ``key_path`` — fail-closed rejection is
+    safer than expansion. The path is never opened / stat-ed.
+    """
+
+    if "${" in value:
+        raise ConfigError(
+            "key_path contains a ${VAR} placeholder; it must be a literal path",
+            kind="key_path_placeholder_forbidden",
+        )
+    return os.path.expanduser(value)
 
 
 class CandidateTarget(BaseModel):

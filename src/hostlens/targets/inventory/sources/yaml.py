@@ -36,6 +36,7 @@ from hostlens.targets.inventory.models import (
     CandidateTarget,
     normalize_target_name,
     reject_normalized_name_collisions,
+    resolve_key_path,
 )
 
 __all__ = ["YamlSource"]
@@ -230,6 +231,10 @@ class YamlSource:
             port=port,
             password_env=merged.get("password_env"),
             passphrase_env=merged.get("passphrase_env"),
-            key_path=str(merged["key_path"]) if merged.get("key_path") is not None else None,
+            key_path=(
+                resolve_key_path(str(merged["key_path"]))
+                if merged.get("key_path") is not None
+                else None
+            ),
             source_metadata=metadata,
         )

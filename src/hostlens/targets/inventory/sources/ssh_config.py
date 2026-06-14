@@ -36,6 +36,7 @@ from hostlens.targets.inventory.models import (
     CandidateTarget,
     normalize_target_name,
     reject_normalized_name_collisions,
+    resolve_key_path,
 )
 
 __all__ = ["SshConfigSource"]
@@ -228,7 +229,7 @@ class SshConfigSource:
             port = None
 
         identity = block.get("identityfile")
-        key_path = _resolve_identity_file(_first_token(identity)) if identity else None
+        key_path = resolve_key_path(_first_token(identity)) if identity else None
 
         return CandidateTarget(
             name=name,
@@ -308,22 +309,3 @@ def _within_roots(real_path: str, roots: list[str]) -> bool:
         except ValueError:
             continue
     return False
-
-
-def _resolve_identity_file(value: str) -> str:
-    """Expand ``~`` in an ``IdentityFile`` reference; fail closed on ``${VAR}``.
-
-    ``key_path`` is a non-secret field that lands on disk as a literal
-    value (it does NOT enjoy the loader's ``${VAR}`` placeholder
-    preservation). Letting the source ``expandvars`` here would smuggle an
-    entire env value (possibly a sensitive ``/run/.../secrets/...`` path)
-    into a plaintext-persisted ``key_path`` — fail-closed rejection is
-    safer than expansion. The path is never opened / stat-ed.
-    """
-
-    if "${" in value:
-        raise ConfigError(
-            "IdentityFile contains a ${VAR} placeholder; key_path must be a literal path",
-            kind="key_path_placeholder_forbidden",
-        )
-    return os.path.expanduser(value)
