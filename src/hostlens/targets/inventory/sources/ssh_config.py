@@ -5,8 +5,8 @@ Spec: ``inventory-source/spec.md`` §需求:`ssh_config` source.
 This is a **hand-written line parser**, deliberately NOT delegated to
 ``asyncssh.config.SSHClientConfig``: the SDK parser auto-resolves
 ``Include`` / ``Match`` / wildcards for connection time and offers no hook
-to impose the ``~/.ssh/`` boundary + realpath check, so it would silently
-bypass the ``include_path_escape`` security gate.
+to impose the path boundary + realpath check, so it would silently bypass
+the ``include_path_escape`` security gate.
 
 Key invariants:
 
@@ -14,9 +14,10 @@ Key invariants:
   resolution of the ``Host`` alias (defeats FakeDNS / split-horizon). When
   ``HostName`` is absent the canonical ``Host`` token is used verbatim
   (OpenSSH fallback; asyncssh resolves it at connect time).
-- ``Include`` is bounded to the ``~/.ssh/`` tree by a two-gate check
-  (realpath pre-screen via ``commonpath`` + ``O_NOFOLLOW`` final read to
-  close the TOCTOU window). One level of ``Include`` only.
+- ``Include`` resolves OpenSSH-style (``~`` expanded, relative anchored to
+  ``~/.ssh``, globs expanded) and is bounded to the home tree or the
+  resolved ``~/.ssh`` tree by a realpath ``commonpath`` check + ``O_NOFOLLOW``
+  final read (closes the TOCTOU window). One level of ``Include`` only.
 - ``IdentityFile`` becomes a ``key_path`` reference: ``~`` is expanded but
   any ``${VAR}`` fails closed (never ``expandvars``); the file is never
   opened / stat-ed at parse time.
@@ -25,6 +26,7 @@ Key invariants:
 
 from __future__ import annotations
 
+import glob
 import os
 
 import structlog
@@ -240,56 +242,72 @@ class SshConfigSource:
 
     @staticmethod
     def _read_include(value: str) -> str:
-        """Read an ``Include`` target, fail-closed outside the ``~/.ssh/`` tree.
+        """Read ``Include`` target(s) the way OpenSSH resolves them, fail-closed.
 
-        Two gates (spec §需求:`Include` 路径边界):
+        Resolution mirrors OpenSSH user-config semantics:
 
-        1. realpath pre-screen — ``base = realpath(~/.ssh)`` (left operand
-           also realpath'd so a ``~/.ssh`` that is itself a symlink is not
-           mis-rejected); ``commonpath([base, tgt]) != base`` rejects.
-        2. ``O_NOFOLLOW`` final read — the last hop must not be a symlink,
-           closing the TOCTOU window where realpath validates then the
-           attacker re-points the symlink.
+        - ``~`` is expanded; a **relative** path is anchored to ``~/.ssh/``
+          (OpenSSH's rule), never the process CWD.
+        - Shell **globs** (``Include ~/.ssh/config.d/*``) are expanded; a glob
+          matching nothing is treated as empty (OpenSSH ignores it).
 
-        ``commonpath`` raising ``ValueError`` (mixed abs/rel; unreachable
-        after realpath but a fail-closed bound) maps to
-        ``include_path_escape`` too. The exception text NEVER echoes file
-        content — only the path ``kind``.
+        Safety (the ssh_config is operator-trusted, same as ``target add``):
+        each resolved path must stay within the user's **home tree** or the
+        symlink-resolved ``~/.ssh`` tree — this allows the documented
+        ``Include ~/tizi/hosts`` pattern and ``~/.ssh`` dotfiles symlinks while
+        blocking ``Include /etc/shadow``. The boundary is checked on the
+        pattern itself (rejects an escaping path regardless of existence) and
+        on each glob match. The final read uses ``O_NOFOLLOW`` (closes the
+        TOCTOU / last-hop-symlink window in a shared config dir). The exception
+        text NEVER echoes file content — only the path ``kind``.
         """
 
-        include_token = _first_token(value)
-        expanded = os.path.expanduser(include_token)
+        expanded = os.path.expanduser(_first_token(value))
+        if not os.path.isabs(expanded):
+            # OpenSSH anchors relative Include paths to ~/.ssh, not the CWD.
+            expanded = os.path.join(os.path.expanduser("~/.ssh"), expanded)
 
-        base = os.path.realpath(os.path.expanduser("~/.ssh"))
-        target = os.path.realpath(expanded)
-        try:
-            common = os.path.commonpath([base, target])
-        except ValueError as exc:
-            raise ConfigError(
-                "Include path escapes the ~/.ssh/ tree",
-                kind="include_path_escape",
-            ) from exc
-        if common != base:
-            raise ConfigError(
-                "Include path escapes the ~/.ssh/ tree",
-                kind="include_path_escape",
-            )
+        roots = [
+            os.path.realpath(os.path.expanduser("~")),
+            os.path.realpath(os.path.expanduser("~/.ssh")),
+        ]
+        if not _within_roots(os.path.realpath(expanded), roots):
+            raise ConfigError("Include path escapes the allowed tree", kind="include_path_escape")
 
+        contents: list[str] = []
+        for path in sorted(glob.glob(expanded)):
+            if not _within_roots(os.path.realpath(path), roots):
+                raise ConfigError(
+                    "Include path escapes the allowed tree", kind="include_path_escape"
+                )
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError as exc:
+                raise ConfigError(
+                    "Include path is a symlink or unreadable",
+                    kind="include_path_escape",
+                ) from exc
+            try:
+                with os.fdopen(fd, encoding="utf-8") as handle:
+                    contents.append(handle.read())
+            except OSError as exc:
+                raise ConfigError(
+                    "failed to read Include target",
+                    kind="include_path_escape",
+                ) from exc
+        return "\n".join(contents)
+
+
+def _within_roots(real_path: str, roots: list[str]) -> bool:
+    """True iff ``real_path`` is inside any of ``roots`` (component-level)."""
+
+    for root in roots:
         try:
-            fd = os.open(expanded, os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise ConfigError(
-                "Include path is a symlink or unreadable",
-                kind="include_path_escape",
-            ) from exc
-        try:
-            with os.fdopen(fd, encoding="utf-8") as handle:
-                return handle.read()
-        except OSError as exc:
-            raise ConfigError(
-                "failed to read Include target",
-                kind="include_path_escape",
-            ) from exc
+            if os.path.commonpath([root, real_path]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _resolve_identity_file(value: str) -> str:

@@ -236,3 +236,40 @@ def test_normalized_name_collision_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         SshConfigSource().parse(str(ref))
     assert excinfo.value.kind == "ambiguous_target_name"
+
+
+def test_include_relative_anchored_to_ssh_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative Include anchors to ~/.ssh (OpenSSH rule), not the CWD."""
+    ssh = _make_ssh_home(tmp_path, monkeypatch)
+    (ssh / "config.d").mkdir()
+    _write(ssh / "config.d" / "hosts", "Host rel\n  HostName 5.5.5.5\n")
+    ref = _write(ssh / "config", "Include config.d/hosts\n")
+    candidates = SshConfigSource().parse(str(ref))
+    assert {c.name for c in candidates} == {"rel"}
+
+
+def test_include_glob_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``Include ~/.ssh/config.d/*`` expands the glob to every matching file."""
+    ssh = _make_ssh_home(tmp_path, monkeypatch)
+    (ssh / "config.d").mkdir()
+    _write(ssh / "config.d" / "a.conf", "Host ga\n  HostName 1.1.1.1\n")
+    _write(ssh / "config.d" / "b.conf", "Host gb\n  HostName 2.2.2.2\n")
+    ref = _write(ssh / "config", "Include ~/.ssh/config.d/*\n")
+    candidates = SshConfigSource().parse(str(ref))
+    assert {c.name for c in candidates} == {"ga", "gb"}
+
+
+def test_include_home_outside_ssh_dir_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented tizi pattern: ~/.ssh/config includes ~/tizi/hosts (in home)."""
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "tizi").mkdir()
+    _write(home / "tizi" / "hosts", "Host tz\n  HostName 7.7.7.7\n")
+    monkeypatch.setenv("HOME", str(home))
+    ref = _write(home / ".ssh" / "config", "Include ~/tizi/hosts\n")
+    candidates = SshConfigSource().parse(str(ref))
+    assert {c.name for c in candidates} == {"tz"}

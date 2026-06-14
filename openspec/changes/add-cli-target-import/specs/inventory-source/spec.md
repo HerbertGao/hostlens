@@ -83,11 +83,12 @@
 
 ### 需求:`ssh_config` source 必须解析 OpenSSH config、用显式地址不靠 DNS、约束 `Include` 路径与 `IdentityFile`
 
-系统必须提供 `ssh_config` source,解析 OpenSSH client config 格式:`Host`(别名)/ `HostName`(连接地址)/ `User` / `Port` / `IdentityFile` / `AddressFamily`。**实现注**:为兑现下面的 `Include` 路径边界 + `Match`/通配跳过 + 不回显内容,**须手写 line parser**;**不得**整体委托 `asyncssh.config.SSHClientConfig`(它为连接期设计、自动解析 `Include`/`Match`/通配,无法在 SDK 层施加 `~/.ssh/` 边界与 realpath 校验,会静默绕过 `include_path_escape` 安全门)。约束:
+系统必须提供 `ssh_config` source,解析 OpenSSH client config 格式:`Host`(别名)/ `HostName`(连接地址)/ `User` / `Port`(非整数 → `ConfigError(kind="invalid_ssh_config")`,不裸 `ValueError`)/ `IdentityFile` / `AddressFamily`。**实现注**:为兑现下面的 `Include` 解析语义 + 路径边界 + `Match`/通配跳过 + 不回显内容,**须手写 line parser**;**不得**整体委托 `asyncssh.config.SSHClientConfig`(它为连接期设计、自动解析 `Include`/`Match`/通配,无法在 SDK 层施加路径边界与 realpath 校验,会静默绕过 `include_path_escape` 安全门)。约束:
 
 - **显式地址**:连接地址取 `HostName` 字面量,**禁止**对 `Host` 别名做 DNS 解析(防撞 FakeDNS / split-horizon)。**`HostName` 缺失**时(`Host` 块无 `HostName`):连接地址取 canonical `Host` token 字面量(OpenSSH fallback 语义,asyncssh 连接期再解析),**仍不**由本 source 主动 DNS 解析。
 - **多别名**:取一个 canonical name 经上文 name 派生契约规范化。
-- **`Include` 路径边界(realpath 预筛 + O_NOFOLLOW 终判,防 symlink 逃逸 + TOCTOU)**:`Include` 是文件读。**两道门**:(1) **realpath 预筛**——`base = os.path.realpath(~/.ssh)`(**左操作数也 realpath**,处理 `~/.ssh` 自身是 symlink 如 dotfiles `~/.ssh -> ~/dotfiles/ssh` 的情形,否则一边 realpath 一边不 realpath 会误拒合法 Include),`tgt = os.path.realpath(include_path)`,断言 **`os.path.commonpath([base, tgt]) != base` 即拒**(分量级比较,`~/.ssh-evil` 的 commonpath 是 `~/` ≠ `~/.ssh` 故正确拒;**主拒绝机制是 `!= base` 断言**,非 ValueError——POSIX 下两绝对路径 commonpath 返回 `/` 不抛,故 `/etc/shadow` 经 `!= base` 拒);**禁**仅做字符串前缀 / `..` 字面检查(`~/.ssh/evil -> /etc/shadow` symlink 路径字符串在树内但 realpath 越界)。(2) **O_NOFOLLOW 终判(防 TOCTOU)**——实际读取必须 `os.open(path, O_RDONLY | O_NOFOLLOW)`(拒最后一跳是 symlink),消除「realpath 校验后攻击者把 symlink 重指向越界文件」的 TOCTOU 窗口(realpath 只防路径字符串逃逸,防不住校验后重定向)。`commonpath` 在混 abs/rel 时 raise `ValueError`(realpath 后恒绝对、近不可达)→ 兜底一律映射 `include_path_escape`(fail-closed,**不**裸透传)。`!= base` / O_NOFOLLOW 失败 / commonpath ValueError → raise `ConfigError(kind="include_path_escape")`;异常文本**禁止**回显文件内容,只报路径 kind。首版支持**一层** `Include`;`Match` 块与通配 `Host`(`*`/`?`)跳过并 log(不静默吞、不报错)。
+- **`Include` 解析语义(OpenSSH 兼容)**:`~` 展开;**相对路径锚到 `~/.ssh/`**(OpenSSH user-config 规则,**非**进程 CWD);**glob 展开**(`Include ~/.ssh/config.d/*` 展开为每个匹配文件;无匹配视为空、不报错)。首版支持**一层** `Include`;`Match` 块与通配 `Host`(`*`/`?`)跳过并 log(不静默吞、不报错)。
+- **`Include` 路径边界 + TOCTOU(realpath + O_NOFOLLOW)**:ssh_config 是操作者可信文件(同 `target add` 信任级)。解析出的每个路径(pattern 自身 + 每个 glob 匹配)的 `os.path.realpath` 必须落在**用户 home 树** ∪ **symlink-resolve 后的 `~/.ssh` 树**内——**放行**文档化的 `Include ~/tizi/hosts`(home 内、`~/.ssh` 外)与 `~/.ssh -> ~/dotfiles/ssh` dotfiles symlink,**拒绝** `Include /etc/shadow`(两树皆外)。边界用 `os.path.commonpath([root, realpath]) == root`(任一 root 命中即放行;`ValueError` 视为不命中);**对 pattern 自身先查**(越界路径不论存在与否都拒,因 realpath 解析既有前缀)。实际读取必须 `os.open(path, O_RDONLY | O_NOFOLLOW)`(拒最后一跳 symlink,关 TOCTOU 窗口)。越界 / O_NOFOLLOW 失败 → `ConfigError(kind="include_path_escape")`;异常文本**禁止**回显文件内容,只报路径 kind。
 - **`IdentityFile` 仅作引用**:parse 阶段把 `IdentityFile` 透传为 `key_path` 引用,**禁止**读私钥内容 / `open` / `stat` 该路径;`~` 展开 + `${VAR}` fail-closed 拒绝见 key_path 需求。
 - **`AddressFamily`**:`SSHEntry` 无 `address_family` 字段,故该指令**不落盘**;IPv6 寻址意图由 `HostName` 的 IPv6 字面量本身承载,spec 不声称「保留 AddressFamily 指令」。
 
@@ -103,13 +104,25 @@
 - **当** 解析 `HostName fd7a:115c::6874` + `AddressFamily inet6`
 - **那么** `CandidateTarget.host` 为该 IPv6 字面量;`AddressFamily` 指令不落盘(SSHEntry 无对应字段)
 
+#### 场景:Include 相对路径锚到 ~/.ssh
+- **当** ssh_config(在 `~/.ssh/config`)含 `Include config.d/hosts`(相对路径)
+- **那么** 锚到 `~/.ssh/config.d/hosts`(**非** 进程 CWD)解析其 Host 块
+
+#### 场景:Include glob 展开
+- **当** ssh_config 含 `Include ~/.ssh/config.d/*`,目录下有 `a.conf`/`b.conf`
+- **那么** glob 展开为两文件,各自的 Host 块都被纳入
+
+#### 场景:Include home 内、~/.ssh 外的路径放行(tizi 模式)
+- **当** `~/.ssh/config` 含 `Include ~/tizi/hosts`(在 home 树内、`~/.ssh` 外)
+- **那么** 经 home 树边界放行,解析 `~/tizi/hosts` 的 Host 块(兑现 tizi README 文档化用法)
+
 #### 场景:Include symlink 逃逸经 realpath 被拒
-- **当** ssh_config 含 `Include ~/.ssh/evil`,而 `~/.ssh/evil` 是指向 `/etc/shadow` 的 symlink(路径字符串在 `~/.ssh/` 树内但 realpath 越界)
+- **当** ssh_config 含 `Include ~/.ssh/evil`,而 `~/.ssh/evil` 是指向 home 树外文件的 symlink
 - **那么** 经 `os.path.realpath` + `commonpath` 校验判越界 → raise `ConfigError(kind="include_path_escape")`,异常文本**禁止**含被包含文件内容
 
 #### 场景:Include 绝对路径越界被拒
-- **当** ssh_config 含 `Include /etc/shadow`
-- **那么** raise `ConfigError(kind="include_path_escape")`,不回显内容
+- **当** ssh_config 含 `Include /etc/shadow`(home 树 ∪ ~/.ssh 树皆外)
+- **那么** raise `ConfigError(kind="include_path_escape")`(不论 `/etc/shadow` 是否存在),不回显内容
 
 ### 需求:`key_path` / `IdentityFile` 必须仅展开 `~`、对 `${VAR}` fail-closed 拒绝
 

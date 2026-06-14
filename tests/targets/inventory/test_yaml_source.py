@@ -162,3 +162,13 @@ def test_normalized_name_collision_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         YamlSource().parse(str(ref))
     assert excinfo.value.kind == "ambiguous_target_name"
+
+
+def test_invalid_port_raises_config_error(tmp_path: Path) -> None:
+    ref = _write(
+        tmp_path / "inv.yml",
+        "g:\n  h:\n    type: ssh\n    host: 1.1.1.1\n    port: notaport\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        YamlSource().parse(str(ref))
+    assert excinfo.value.kind == "invalid_entry"

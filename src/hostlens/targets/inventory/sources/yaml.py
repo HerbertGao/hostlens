@@ -210,12 +210,24 @@ class YamlSource:
                 )
 
         port_value = merged.get("port")
+        port: int | None
+        if port_value is not None:
+            try:
+                port = int(port_value)
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(
+                    "yaml inventory 'port' must be an integer",
+                    kind="invalid_entry",
+                    entry=raw_identifier,
+                ) from exc
+        else:
+            port = None
         return CandidateTarget(
             name=name,
             type="ssh",
             host=str(host),
             user=str(merged["user"]) if merged.get("user") is not None else None,
-            port=int(port_value) if port_value is not None else None,
+            port=port,
             password_env=merged.get("password_env"),
             passphrase_env=merged.get("passphrase_env"),
             key_path=str(merged["key_path"]) if merged.get("key_path") is not None else None,
