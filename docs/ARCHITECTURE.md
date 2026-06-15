@@ -784,9 +784,10 @@ name: daily-prod-health
 schedule:
   cron: "0 9 * * *"
   timezone: Asia/Shanghai
-targets: [prod-web-01, prod-web-02]
+mode: agent                            # 可选; 默认 agent (省略 = agent, 向后兼容)
+targets: [prod-web-01]                 # agent 模式: 恰好 1 个 target
 intent: "做一次日常健康巡检"            # 必填; Planner Agent 据此规划
-inspectors:                            # 可选 hint; Planner 会优先考虑这个集合, 但可按需补查
+inspectors:                            # agent 模式下是可选 hint; Planner 会优先考虑这个集合, 但可按需补查
   - linux.cpu.top_processes
   - linux.disk.usage
 report:
@@ -795,6 +796,43 @@ report:
 notify:
   - channel: lark_ops_group
     only_if: "has_findings(severity >= 'warning')"
+```
+
+### `mode` —— agent vs deterministic（两条 job body 路径）
+
+`mode` 选择 job body 的执行路径与 `targets` / `inspectors` 的语义，默认 `agent`（省略 `mode` 的旧 manifest 行为零变化）：
+
+| `mode` | `targets` 基数 | `inspectors` 语义 | LLM 角色 | 产出 |
+| --- | --- | --- | --- | --- |
+| `agent`（默认） | **恰好 1** | soft hint（Planner 可补查） | Planner 自主选 inspector + 自主诊断 | 单 target Report；覆盖非确定、常 `partial` |
+| `deterministic` | **≥1（fleet）** | **权威集**（无则用内置默认健康集；有则只跑它、不叠加默认） | **只 narrate**（采集阶段不接 LLM；采集完只对已采结果写根因，不能再巡检 / 选 target） | 一份多 target（fleet）Report；逐台跑固定集、确定可复现 |
+
+- **多 target（fleet）只在 deterministic 放开**：agent 的 Planner 本就漫游、多 target 无意义；deterministic 才「逐台跑同一固定集」。loader 在加载期按 mode 校验基数（`agent` 多 target → fail-loud）。
+- **内置默认健康集 `DEFAULT_HEALTH_INSPECTORS`**（`src/hostlens/inspectors/health.py`）：覆盖核心健康域（cpu / 内存 / 磁盘容量 / inode / 系统负载 / systemd 服务 / 近期错误日志 / 网络连通性）。`mode: deterministic` 且 manifest **无** `inspectors:` 时跑这一集；想进默认集要**显式**改这个 curated 常量（新增 inspector 不会自动进集——显式可控 > 自动全跑）。每个 inspector 对每个 target 跑前过 capability 门，不适用的台视为预期跳过（status 仍 `requires_unmet`、**不**降级报告、不计 severity），跨异构机跑统一健康集是正常情形。
+- **fleet Report 是 notify 导向**：`Report.target_name` 是确定性 fleet 标签（有序 target 名 join），`meta.target_id` 是带 `fleet:` 前缀的确定性 fleet id（避免单成员 fleet 撞同机的 per-target store key）；每条 finding 盖来源 `Finding.target_name`。notify 路由的 `aggregate_severity` 对**全队 findings** 聚合，`only_if` 在全队聚合 severity 上判定。fleet Report **不**支持 per-target regression diff（per-target diff 仍只在 agent 模式 per-target report 上做）。
+
+```yaml
+# schedules/daily-health-fleet.yaml —— deterministic fleet 示例
+name: daily-health-fleet
+schedule:
+  cron: "0 8 * * *"
+  timezone: Asia/Shanghai
+mode: deterministic
+targets: [ts-1, ts-2, ts-3, ts-4, ts-5, ts-6]   # 跨 6 台逐台跑同一固定集
+intent: "做一次全队日常健康巡检"
+# 省略 inspectors: → 跑内置 DEFAULT_HEALTH_INSPECTORS
+notify:
+  - channel: lark_ops_group
+    only_if: "severity >= warning"                # 全队聚合 severity >= warning 才发
+```
+
+**Demo Path（deterministic fleet 跨多台）**：
+
+```bash
+# 把上面的 fleet manifest 放进 schedules/ 后, 一次触发逐台确定性覆盖:
+hostlens schedule trigger daily-health-fleet
+hostlens schedule status --name daily-health-fleet   # 看本次 Run: targets 列出全 6 台, status ok/partial
+# Run 的 targets 列覆盖整个 fleet; 一份 fleet Report 含全 6 台 findings, 每条带来源 target_name.
 ```
 
 ### 运行模型
@@ -850,7 +888,7 @@ class Run(BaseModel):
     report_hash: str | None                   # 当且仅当 status in {ok, partial}; sha256(持久化 Report JSON) 完整性锚点
     report_storage: Literal["db", "orphan"] | None  # 当且仅当 status in {ok, partial}; Report 落 reports.db 还是 orphan 文件
     error: str | None                         # 失败时的简短脱敏错误
-    targets: list[str]                        # 本次触发的 target 集合 (M4 恒 1 个; 留痕 who/target)
+    targets: list[str]                        # 本次触发的 target 集合 (agent 恒 1 个; deterministic 列出整个 fleet; 留痕 who/target)
     inspectors: list[str]                     # 本次实际跑的 inspector 集合快照 (无-Report 状态为 [])
     notify_results: list[NotifyResult]        # 即使无 Report, 失败本身也可能触发通知 (例如 budget_exhausted 推送 ops); M4 恒 []
 ```
@@ -864,11 +902,13 @@ class Run(BaseModel):
 | `budget_exhausted`       | ✗          | —                                                                                                                                                                 | API quota 排队超时, 早期失败             |
 | `missed`                 | ✗          | —                                                                                                                                                                 | 错过触发窗口                             |
 | `skipped_due_to_running` | ✗          | —                                                                                                                                                                 | 上次 run 未结束                          |
-| `failed_api_unavailable` | ✗          | —                                                                                                                                                                 | Anthropic 5xx 重试耗尽且无任何 finding   |
-| `failed`                 | ✗          | —                                                                                                                                                                 | 其他不可恢复错误                         |
+| `failed_api_unavailable` | ✗          | —                                                                                                                                                                 | (仅 agent) Anthropic 5xx 重试耗尽且无任何 finding |
+| `failed`                 | ✗          | —                                                                                                                                                                 | 其他不可恢复错误 / (deterministic) 全队无 inspector 结果可组装 |
 | `daemon_stopped`         | ✗          | —                                                                                                                                                                 | daemon SIGTERM 中断                      |
 
 **规则**：`Run.report_id is None ⟺ Run.status ∉ {ok, partial}`。即 `partial` 是「有 Report 但 Report 有问题」的唯一通道；Anthropic 完全不可用且无 finding 可救时不强行写空 Report。
+
+**deterministic 模式的 `None` 映射**：deterministic 采集阶段**不接 LLM**，故全队无结果可组装时落 `failed`（error=`"deterministic inspection produced no inspector results"`），**不**落 `failed_api_unavailable`（那是 agent backend 不可用语义，对 deterministic 没意义）。两 mode 的 Report 路径（ok/partial）走**同一套**映射，按 `report.meta.status` 决定 ok 还是 partial。
 
 doctor 命令必须能查询最近 N 次 Run 的状态分布，提示异常率。
 

@@ -252,6 +252,10 @@ def test_finding_identity_fields_default_none() -> None:
     assert f.id is None
     assert f.inspector_name is None
     assert f.inspector_version is None
+    # add-only source field defaults None too (spec §场景:Finding 仅核心字段时
+    # 身份字段与来源字段默认 None / §场景:单 target 路径构造 finding 不带来源
+    # target_name).
+    assert f.target_name is None
 
 
 def test_finding_accepts_explicit_identity_fields() -> None:
@@ -267,11 +271,20 @@ def test_finding_accepts_explicit_identity_fields() -> None:
     assert f.inspector_version == "1.0.0"
 
 
+def test_finding_accepts_explicit_target_name() -> None:
+    # spec §场景:Finding 接受显式来源 target_name
+    f = Finding(severity="warning", message="cpu high", target_name="aliyun-bj")
+    assert f.target_name == "aliyun-bj"
+
+
 def test_finding_legacy_dict_without_identity_fields_loads() -> None:
+    # spec §场景:legacy 缺身份字段与来源字段的 dict 可加载 — old schema produced
+    # findings with no id/inspector_name/inspector_version/target_name.
     f = Finding.model_validate({"severity": "info", "message": "x"})
     assert f.id is None
     assert f.inspector_name is None
     assert f.inspector_version is None
+    assert f.target_name is None
 
 
 def test_finding_still_extra_forbid() -> None:

@@ -58,3 +58,14 @@ def test_none_inspector_name_raises() -> None:
 def test_none_inspector_version_raises() -> None:
     with pytest.raises(ValueError):
         compute_finding_id("insp.x", None, "x")  # type: ignore[arg-type]
+
+
+def test_target_name_not_in_fingerprint() -> None:
+    # spec §场景:target_name 不改变 finding id — the helper takes no
+    # target_name argument, so the same (name, version, message) keeps a
+    # stable id no matter which target a finding originates from. This is
+    # what lets per-target regression diff anchor the same check across
+    # targets on the same id instead of a spurious resolved+added pair.
+    a = compute_finding_id("insp.x", "1.0", "disk 95%")
+    b = compute_finding_id("insp.x", "1.0", "disk 95%")
+    assert a == b

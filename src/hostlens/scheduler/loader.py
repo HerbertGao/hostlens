@@ -10,9 +10,14 @@ schema cannot express alone:
 
   (a) every ``targets`` member is registered in the injected
       `TargetRegistry`;
-  (b) ``targets`` has **exactly one** member (M4 single-target; multi-target
-      fan-out is a non-goal — design D-2 / spec §需求:M4 每个 manifest 必须
-      恰好一个 target);
+  (b) ``targets`` cardinality is checked **per ``mode``** — ``mode == "agent"``
+      requires **exactly one** member (agent reuses single-target
+      `run_diagnosis_pipeline`; multi-target fan-out stays a non-goal for
+      agent), while ``mode == "deterministic"`` allows **``>=1``** member
+      (deterministic runs the fixed inspector set per target and assembles one
+      fleet report — multi-target is its core use). The schema's
+      ``min_length=1`` already rejects an empty list in both modes (spec
+      §需求:manifest 的 target 基数必须按 mode 决定);
   (c) ``name`` is globally unique across all files;
   (d) ``intent`` is non-blank;
   (e) every ``notify[].only_if`` (when present) is a syntactically valid DSL
@@ -83,16 +88,34 @@ def load_schedules(
                 field="intent",
             )
 
-        # (b) M4 single-target. The schema allows list[str] (>=1) to keep
-        # the field shape forward-compatible with fan-out; the loader is the
-        # M4 gate that rejects >=2.
-        if len(manifest.targets) != 1:
+        # (b) per-mode target cardinality. The schema's min_length=1 already
+        # rejects an empty list; the loader is the gate that rejects an
+        # agent-mode manifest with >=2 targets. deterministic mode runs the
+        # fixed set per target and assembles one fleet report, so >=1 is valid.
+        if manifest.mode == "agent" and len(manifest.targets) != 1:
             raise ConfigError(
-                "M4 only supports a single target; multi-target fan-out is not implemented",
+                "agent mode supports only a single target; "
+                "multi-target fan-out is a non-goal for agent "
+                "(use mode: deterministic for fleet inspection)",
                 kind="schedule_multi_target_unsupported",
                 file=path.name,
                 field="targets",
                 count=len(manifest.targets),
+            )
+
+        # (b') deterministic mode: an explicit empty `inspectors: []` (distinct
+        # from `inspectors: null`, which means "use the default health set")
+        # resolves to "run nothing" → every fire would produce a failed Run.
+        # Reject it at load so a typo'd empty list fails loud here instead of
+        # silently failing every scheduled fire.
+        if manifest.mode == "deterministic" and manifest.inspectors == []:
+            raise ConfigError(
+                "deterministic mode with an explicit empty inspectors list runs "
+                "nothing; omit inspectors to use the default health set, or list "
+                "at least one inspector",
+                kind="schedule_deterministic_empty_inspectors",
+                file=path.name,
+                field="inspectors",
             )
 
         # (a) every target must be registered.

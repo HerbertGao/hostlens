@@ -49,6 +49,7 @@ from hostlens.tools.schemas.request_more_inspection import (
 
 __all__ = [
     "register_diagnostician_tools",
+    "register_narrate_only_diagnostician_tools",
 ]
 
 
@@ -296,3 +297,36 @@ def register_diagnostician_tools(
         build_request_more_inspection_spec(finding_store, target_name, clock, collector)
     )
     registry.register(list_inspectors)
+
+
+def register_narrate_only_diagnostician_tools(
+    registry: ToolRegistry,
+    *,
+    finding_store: FindingStore,
+) -> None:
+    """Register the **narrate-only** Diagnostician tool batch into ``registry``.
+
+    Registers exactly **one** tool — ``correlate_findings`` (closure-bound to
+    ``finding_store``, reusing the same ``_build_correlate_findings_spec``
+    factory as the full assembly so the structured-output channel is byte-for-
+    byte identical). It deliberately does **not** register
+    ``request_more_inspection`` / ``list_inspectors`` / ``list_targets``: the
+    deterministic inspection mode (`mode=deterministic`) fixes coverage in the
+    collection phase (run a fixed inspector set per target), so the diagnosis
+    phase must **only** narrate root causes over the already-collected results.
+    Withholding ``request_more_inspection`` and ``list_inspectors`` makes the
+    "no re-inspection, no roaming, token-bounded" contract structural — the LLM
+    simply has no tool to re-run an inspector or discover one to add (spec
+    diagnostician-agent §需求:诊断师装配必须支持 narrate-only 变体).
+
+    This is a separate assembly entry point rather than a boolean flag on
+    ``register_diagnostician_tools``: the full assembly's ``target_name`` /
+    ``clock`` / ``collector`` parameters only exist to wire
+    ``request_more_inspection``, which narrate-only never registers — folding
+    the two paths into one signature would force the caller to pass dependencies
+    the narrate-only path has no use for.
+
+    Non-idempotent: a duplicate call on the same registry raises ``ToolError``
+    (``ToolRegistry.register`` rejects dupes).
+    """
+    registry.register(_build_correlate_findings_spec(finding_store))

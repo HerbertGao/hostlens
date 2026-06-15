@@ -106,6 +106,88 @@ def test_redact_finding_identity_explicit_construction() -> None:
     assert out.id is not None
 
 
+def test_redact_preserves_finding_target_name() -> None:
+    """spec §场景:脱敏拷贝保留 Finding 来源 target_name — a fleet finding's
+    source `target_name` must survive redaction (not collapse to None), or
+    proposal C's multi-target sectioning / quadruple dedup on the redacted
+    copy would lose the host dimension.
+    """
+    finding = Finding(severity="warning", message="cpu high", target_name="bandwagon")
+    report = Report.from_inspector_results(
+        "t",
+        [_ir([finding])],
+        started_at=_t(),
+        finished_at=_t(),
+    )
+    # from_inspector_results preserves the source target_name on the
+    # flattened copy (it only updates identity fields).
+    assert report.findings[0].target_name == "bandwagon"
+
+    redacted = redact_report_for_render(report)
+    assert redacted.findings[0].target_name == "bandwagon"
+
+
+def test_redact_finding_target_name_none_stays_none() -> None:
+    """A single-target finding with no source target_name stays None through
+    redaction (`redact_text` is only applied when not None).
+    """
+    finding = Finding(severity="info", message="x")
+    report = Report.from_inspector_results(
+        "t",
+        [_ir([finding])],
+        started_at=_t(),
+        finished_at=_t(),
+    )
+    assert report.findings[0].target_name is None
+    redacted = redact_report_for_render(report)
+    assert redacted.findings[0].target_name is None
+
+
+def test_redact_fleet_report_preserves_per_finding_target_name() -> None:
+    """End-to-end: a fleet report (via from_fleet_results) carries per-finding
+    source `target_name`; after `redact_report_for_render` each finding still
+    reports its true origin target (not None).
+    """
+    ir_a = InspectorResult(
+        name="linux.cpu",
+        version="1.0.0",
+        status="ok",
+        target_name="a",
+        duration_seconds=0.1,
+        output={},
+        findings=[Finding(severity="warning", message="cpu a")],
+        error=None,
+        missing=[],
+    )
+    ir_b = InspectorResult(
+        name="linux.cpu",
+        version="1.0.0",
+        status="ok",
+        target_name="b",
+        duration_seconds=0.1,
+        output={},
+        findings=[Finding(severity="info", message="cpu b")],
+        error=None,
+        missing=[],
+    )
+    report = Report.from_fleet_results(
+        [ir_a, ir_b],
+        schedule_name="daily",
+        started_at=_t(),
+        finished_at=_t(),
+    )
+
+    redacted = redact_report_for_render(report)
+    by_message = {f.message: f for f in redacted.findings}
+    assert by_message["cpu a"].target_name == "a"
+    assert by_message["cpu b"].target_name == "b"
+    # Distinct non-None target_names survive → proposal C's degradation
+    # check `distinct(non-None target_name) <= 1` does NOT fire on the
+    # redacted copy.
+    distinct = {f.target_name for f in redacted.findings if f.target_name is not None}
+    assert distinct == {"a", "b"}
+
+
 def test_redact_preserves_meta_non_loss() -> None:
     """Factory-built report carries `meta`; redaction must not drop it."""
     report = Report.from_inspector_results(

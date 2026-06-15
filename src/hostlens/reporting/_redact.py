@@ -122,6 +122,12 @@ def _redact_finding(finding: Finding) -> Finding:
     # threaded through this reconstruction or the redacted copy would
     # silently drop the M3 identity fields (breaking diff and
     # hypothesis-reference anchors downstream).
+    # `target_name` (fleet source field) goes through `redact_text` (a
+    # no-op for normal target names, `None`→`None`). It MUST be threaded:
+    # notifier `render` redacts *before* templating, so proposal C's
+    # multi-target sectioning and `(target_name, ...)` dedup consume the
+    # redacted copy — dropping it here would null every finding's
+    # `target_name`, collapsing the fleet's host dimension silently.
     return Finding(
         severity=finding.severity,
         message=redact_text(finding.message),
@@ -130,6 +136,7 @@ def _redact_finding(finding: Finding) -> Finding:
         id=finding.id,
         inspector_name=finding.inspector_name,
         inspector_version=finding.inspector_version,
+        target_name=(redact_text(finding.target_name) if finding.target_name is not None else None),
     )
 
 

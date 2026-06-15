@@ -218,7 +218,9 @@
 
 | 故障 | 行为 | 用户可见状态 |
 |---|---|---|
-| Anthropic API 完全宕机 | Planner 跳过，按 manifest 显式列出的 Inspector 跑（如有），输出无根因报告 | report status: `degraded_no_planner` |
+| Anthropic API 完全宕机（agent 模式） | Planner 跳过，按 manifest 显式列出的 Inspector 跑（如有），输出无根因报告 | report status: `degraded_no_planner` |
+| Anthropic API 不可用（deterministic 模式 narrate 阶段） | 采集阶段不接 LLM，已采集 findings 永不丢；narrate 降级 → fleet Report 仍产出（无根因叙述），report status **反映 narrate 降级**（degraded `ReportStatus`，如后端不可用 → `degraded_no_planner`、限流 → `degraded_rate_limited`），**不**掩盖为采集的 `ok`；narrate 成功时才用采集派生的 `ok`/`partial` | run status: `partial`（degraded 类统一映射 partial） |
+| deterministic 全队无 inspector 结果可组装 | 落 `failed`（error=`deterministic inspection produced no inspector results`），**不**落 `failed_api_unavailable`（采集阶段不接 LLM） | `RunStatus.FAILED` |
 | 部分 Inspector 超时 | 该 Inspector 标记 `timeout`，其余照常 | finding-level: `inspector_status: timeout` |
 | 单个 target 不可达 | 该 target 全部 Inspector 标记 `target_unreachable`，其他 target 不受影响 | run status: `partial` |
 | Notifier 通道失败 | 其它通道不受影响；失败记入 `Run.notify_results`（不冒泡、不改 RunStatus） | notify_result.<channel>.status: `failed` |
