@@ -1,10 +1,10 @@
 {#-
   飞书 Lark interactive card layout (spec: notifier-lark §需求 同构结构化布局).
-  Isomorphic to the Telegram layout: 抬头(非 intent) → 覆盖行 → 根因分析(置顶)
-  → 发现(四元组去重 + severity 降序 + 来源) → 健康态. Multi-target findings
-  section by host when distinct(non-None target_name) > 1; single-host degrades
-  to a flat list. Every dynamic value passes through `tojson` so the card body
-  is valid JSON by construction.
+  Isomorphic to the Telegram layout (发现优先): 抬头(非 intent) → 覆盖行 →
+  发现(四元组去重 + severity 降序 + 来源) → 根因分析 → 健康态. Multi-target
+  findings section by host when distinct(non-None target_name) > 1 or fleet;
+  single-host agent degrades to a flat list. Every dynamic value passes through
+  `tojson` so the card body is valid JSON by construction.
 -#}
 {
   "msg_type": "interactive",
@@ -27,35 +27,6 @@
         }
       },
       {% endif %}
-      {% if report.hypotheses %}
-      {"tag": "hr"},
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ "**根因分析**" | tojson }}
-        }
-      },
-      {% for h in report.hypotheses %}
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ ("• " ~ h.description ~ " (置信度 " ~ (h.confidence | conf_label) ~ ")") | tojson }}
-        }
-      },
-      {% for action in h.suggested_actions %}
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ ("↳ " ~ action) | tojson }}
-        }
-      },
-      {% endfor %}
-      {% endfor %}
-      {% endif %}
-      {"tag": "hr"},
       {% if report.findings %}
       {
         "tag": "div",
@@ -64,7 +35,7 @@
           "content": {{ "**发现**" | tojson }}
         }
       }
-      {% set sections = report.findings | dedup | group_by_target %}
+      {% set sections = report.findings | dedup | group_by_target(fleet=(report.meta is not none and report.meta.target_type == "fleet")) %}
       {% for target_name, group in sections %}
       {% if target_name is not none %}
       ,{
@@ -101,6 +72,34 @@
           "content": {{ "✅ 未发现异常" | tojson }}
         }
       }
+      {% endif %}
+      {% if report.hypotheses %}
+      ,{"tag": "hr"}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ "**根因分析**" | tojson }}
+        }
+      }
+      {% for h in report.hypotheses %}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ ("• " ~ h.description ~ " (置信度 " ~ (h.confidence | conf_label) ~ ")") | tojson }}
+        }
+      }
+      {% for action in h.suggested_actions %}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ ("↳ " ~ action) | tojson }}
+        }
+      }
+      {% endfor %}
+      {% endfor %}
       {% endif %}
     ]
   }

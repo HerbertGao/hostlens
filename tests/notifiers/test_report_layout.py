@@ -1,9 +1,9 @@
 """Structured-layout rendering tests for the Telegram + Lark notifiers.
 
-Spec: ``openspec/changes/improve-report-rendering-and-i18n/specs/notifier-telegram/spec.md``
-and ``.../notifier-lark/spec.md`` (§需求:结构化布局 — 抬头非 intent / 覆盖行 /
-根因置顶 / 四元组去重 / 同 message 不同 severity 不去重 / severity 排序 / 带来源 /
-健康态 / 多 target 分节 / 单主机退化 / 去重x分节组合).
+Spec: ``openspec/specs/notifier-telegram/spec.md`` and
+``openspec/specs/notifier-lark/spec.md`` (§需求:结构化布局 — 抬头非 intent / 覆盖行 /
+发现优先 / 四元组去重 / 同 message 不同 severity 不去重 / severity 排序 / 带来源 /
+健康态 / 多 target 分节 / fleet 主机归因 / agent 单机退化 / 去重x分节组合).
 
 Both channels render through the real ``render()`` entry point (which redacts
 the report before templating), so the multi-target cases exercise the
@@ -242,11 +242,11 @@ def test_coverage_omits_failed_clause_when_zero() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 根因分析置顶
+# 发现优先(发现段在根因段之上)
 # --------------------------------------------------------------------------- #
 
 
-def test_telegram_root_cause_before_findings() -> None:
+def test_telegram_findings_before_root_cause() -> None:
     report = _single_report(
         [Finding(severity="warning", message="磁盘使用率 80%")],
         hypotheses=[
@@ -259,7 +259,9 @@ def test_telegram_root_cause_before_findings() -> None:
     )
     body = _tg_body(report, "warning")
     assert "*根因分析*" in body
-    assert body.index("根因分析") < body.index("*发现*")
+    # 发现优先:发现段必须出现在根因分析段之前。
+    assert body.index("*发现*") < body.index("*根因分析*")
+    # 根因段仍正常渲染,只是位置移到发现之后。
     # confidence rendered as 中文 label
     assert "置信度 高" in body
     # suggested_actions listed with ↳
@@ -267,7 +269,7 @@ def test_telegram_root_cause_before_findings() -> None:
     assert "↳ 扩容磁盘" in body
 
 
-def test_lark_root_cause_before_findings() -> None:
+def test_lark_findings_before_root_cause() -> None:
     report = _single_report(
         [Finding(severity="warning", message="磁盘使用率 80%")],
         hypotheses=[
@@ -278,11 +280,66 @@ def test_lark_root_cause_before_findings() -> None:
             )
         ],
     )
-    contents = _lark_contents(_lark_card(report, "warning"))
+    contents = _lark_contents(_lark_card(report, "warning"))  # _lark_card asserts valid JSON
     assert "**根因分析**" in contents
-    assert contents.index("**根因分析**") < contents.index("**发现**")
+    # 发现优先:发现段元素必须排在根因分析段元素之前。
+    assert contents.index("**发现**") < contents.index("**根因分析**")
+    # 根因段仍正常渲染,只是位置在后。
     assert any("置信度 中" in c for c in contents)
     assert any(c.startswith("↳ 清理 /var/log") for c in contents)
+
+
+def test_lark_health_with_hypotheses_is_valid_json() -> None:
+    # JSON-validity blind spot: ``findings == [] 且 hypotheses != []`` (a healthy
+    # card that still carries a 根因分析 section). After the 发现优先 reorder the
+    # 根因 block becomes the LAST ``elements`` entry — the spot most prone to a
+    # dangling / double comma with the leading-comma `,{...}` card style. The
+    # existing json.loads guards (``test_lark_renders_valid_json_for_every_scenario``)
+    # never exercise this combination, so pin it.
+    report = _single_report(
+        [],
+        hypotheses=[
+            RootCauseHypothesis(
+                description="历史日志暴涨", confidence="high", suggested_actions=["清理 /var/log"]
+            )
+        ],
+    )
+    contents = _lark_contents(_lark_card(report, "info"))  # _lark_card asserts valid JSON
+    assert "**根因分析**" in contents
+    assert "✅ 未发现异常" in contents
+    assert "**发现**" not in contents
+
+
+def test_lark_legacy_meta_none_is_valid_json() -> None:
+    # Legacy schema-1.0 path: ``meta is None`` → the ``{% if report.meta %}``
+    # coverage div is absent, so the findings/health block becomes the **first**
+    # ``elements`` entry — a distinct leading-comma topology from every
+    # meta-present case (where coverage is the leading no-comma element). The
+    # 发现优先 reorder shifts the root-cause block to the tail, so pin both the
+    # findings-present and the (most fragile) findings-empty + hypotheses shapes
+    # through ``_lark_card``'s ``json.loads``; ``meta is None`` also drives the
+    # fleet signal to False (non-fleet → flat), which must not crash.
+    hyp = [
+        RootCauseHypothesis(
+            description="历史日志暴涨", confidence="high", suggested_actions=["清理 /var/log"]
+        )
+    ]
+    # findings == [] ∧ hypotheses != [] ∧ meta is None (root-cause is last element)
+    health = _single_report([], hypotheses=hyp).model_copy(
+        update={"meta": None, "schema_version": "1.0"}
+    )
+    assert health.meta is None
+    health_contents = _lark_contents(_lark_card(health, "info"))  # asserts valid JSON
+    assert "**根因分析**" in health_contents
+    assert "✅ 未发现异常" in health_contents
+    # findings != [] ∧ hypotheses != [] ∧ meta is None (findings is first element)
+    rich = _single_report(
+        [Finding(severity="warning", message="磁盘使用率 80%")], hypotheses=hyp
+    ).model_copy(update={"meta": None, "schema_version": "1.0"})
+    assert rich.meta is None
+    rich_contents = _lark_contents(_lark_card(rich, "warning"))  # asserts valid JSON
+    assert "**发现**" in rich_contents
+    assert rich_contents.index("**发现**") < rich_contents.index("**根因分析**")
 
 
 # --------------------------------------------------------------------------- #
@@ -489,6 +546,120 @@ def test_none_section_stays_last_even_when_unstamped_finding_is_first() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 单台 finding 的 fleet 报告仍按主机标注(本提案核心修复)
+# --------------------------------------------------------------------------- #
+
+
+def test_telegram_single_finding_fleet_keeps_host_section() -> None:
+    # A fleet covering ≥2 targets where only 1 host (hostA) has a finding (the
+    # other ran clean). from_fleet_results stamps the finding's target_name, so
+    # distinct(non-None) == 1 — but a fleet report MUST still section by host so
+    # ops can see WHICH host. hostA has no hyphen, so no escaping concern.
+    report = _fleet_report(
+        [
+            _ir(
+                "linux.disk",
+                target="hostA",
+                findings=[Finding(severity="critical", message="磁盘满")],
+            ),
+            _ir("linux.cpu", target="hostB"),  # clean, no finding
+        ]
+    )
+    body = _tg_body(report, "critical")
+    assert "*hostA · 严重*" in body
+    assert "磁盘满" in body
+
+
+def test_lark_single_finding_fleet_keeps_host_section() -> None:
+    report = _fleet_report(
+        [
+            _ir(
+                "linux.disk",
+                target="hostA",
+                findings=[Finding(severity="critical", message="磁盘满")],
+            ),
+            _ir("linux.cpu", target="hostB"),  # clean, no finding
+        ]
+    )
+    joined = "\n".join(_lark_contents(_lark_card(report, "critical")))
+    assert "**hostA · 严重**" in joined
+    assert "磁盘满" in joined
+
+
+# --------------------------------------------------------------------------- #
+# all-None fleet 退化(distinct non-None == 0 ∧ fleet)— 禁止孤立未标注主机节头
+# --------------------------------------------------------------------------- #
+
+
+def test_telegram_all_none_fleet_no_unlabeled_header() -> None:
+    # Degenerate fleet (fleet=True but every finding's target_name is None →
+    # distinct(non-None) == 0). The named path returns a single (None, …)
+    # section, which the template's "节数 > 1 才渲未标注主机头" guard renders as a
+    # headerless flat list — NO isolated "未标注主机" header.
+    base = _fleet_report(
+        [_ir("linux.disk", target="hostA", findings=[Finding(severity="info", message="seed")])]
+    )
+    report = base.model_copy(
+        update={
+            "findings": [
+                Finding(severity="critical", message="磁盘满", target_name=None),
+                Finding(severity="warning", message="CPU 高", target_name=None),
+            ]
+        }
+    )
+    body = _tg_body(report, "critical")
+    assert "磁盘满" in body
+    assert "CPU 高" in body
+    assert "未标注主机" not in body
+
+
+def test_lark_all_none_fleet_no_unlabeled_header() -> None:
+    base = _fleet_report(
+        [_ir("linux.disk", target="hostA", findings=[Finding(severity="info", message="seed")])]
+    )
+    report = base.model_copy(
+        update={
+            "findings": [
+                Finding(severity="critical", message="磁盘满", target_name=None),
+                Finding(severity="warning", message="CPU 高", target_name=None),
+            ]
+        }
+    )
+    contents = _lark_contents(_lark_card(report, "critical"))  # _lark_card asserts valid JSON
+    assert any("磁盘满" in c for c in contents)
+    assert any("CPU 高" in c for c in contents)
+    assert not any("未标注主机" in c for c in contents)
+
+
+# --------------------------------------------------------------------------- #
+# fleet 信号 guard(钉住决策 1 的调用约定:agent 路径 target_type != "fleet")
+# --------------------------------------------------------------------------- #
+
+
+def test_agent_path_target_type_is_not_fleet() -> None:
+    # Guard the decision-1 calling convention with zero model change: an agent
+    # report (from_inspector_results) must never produce meta.target_type ==
+    # "fleet" (it takes the target's runtime .type, defaulting to "local"), so
+    # the render layer can safely treat ``target_type == "fleet"`` as the fleet
+    # signal. Future code that mistakenly stamps "fleet" on the agent path would
+    # trip this.
+    report = Report.from_inspector_results(
+        "web-1",
+        [_ir("linux.systemd", findings=[Finding(severity="warning", message="x")])],
+        started_at=_START,
+        finished_at=_END,
+        intent="单机巡检",
+    )
+    assert report.meta is not None
+    assert report.meta.target_type != "fleet"
+    assert report.meta.target_type == "local"
+    # _single_report (the agent-path builder used across this suite) likewise.
+    single = _single_report([Finding(severity="info", message="ok")])
+    assert single.meta is not None
+    assert single.meta.target_type != "fleet"
+
+
+# --------------------------------------------------------------------------- #
 # 去重 x 分节组合
 # --------------------------------------------------------------------------- #
 
@@ -529,24 +700,36 @@ def test_lark_dedup_x_section_cross_host_not_merged() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 单主机退化(distinct non-None ≤ 1)
+# 单主机:agent 退化无分节 vs fleet 仍按主机标注
 # --------------------------------------------------------------------------- #
 
 
 def test_telegram_single_host_no_sections() -> None:
-    # Single-target report: target_name on findings is None (per-target path).
+    # Single-target agent report (from_inspector_results, meta.target_type != "fleet"):
+    # target_name on findings is None (per-target path) → flat, no host sectioning.
     report = _single_report([Finding(severity="warning", message="磁盘 80%")])
     assert all(f.target_name is None for f in report.findings)
+    assert report.meta is not None and report.meta.target_type != "fleet"
     body = _tg_body(report, "warning")
     assert "*发现*" in body
-    # No per-host bold section header appears below the 发现 heading — the only
-    # bold markers are the 抬头 and ``*发现*`` itself.
-    findings_block = body.split("*发现*", 1)[1]
-    assert "*" not in findings_block
+    # No per-host section header (``*<host> · <sev>*``) is rendered. Asserted on
+    # the section-header glyph form (``· <sev>*``) rather than a bare ``*`` count,
+    # so the check is decoupled from whether a 根因分析 section follows after the
+    # 发现优先 reorder (which would otherwise add its own ``*…*`` markers). The
+    # 抬头 (first line) legitimately carries that glyph (``· 警告*``), so drop it
+    # before scanning the body for per-host section headers.
+    below_header = body.split("\n", 1)[1]
+    assert "· 警告*" not in below_header
+    assert "· 严重*" not in below_header
+    assert "· 信息*" not in below_header
 
 
-def test_telegram_single_host_degrade_when_one_named_target() -> None:
-    # A fleet of one target → distinct non-None == 1 → no sectioning.
+def test_telegram_single_host_fleet_still_sections() -> None:
+    # A fleet of one target → distinct non-None == 1 → MUST still section
+    # (the proposal's core fix: a single-host fleet finding keeps its
+    # attribution). Section header form is ``*<host> · <sev>*``; ``only-host``'s
+    # hyphen is MarkdownV2-escaped to ``only\-host`` so assert the escaped form
+    # (the bare ``*only-host*`` never appears).
     report = _fleet_report(
         [
             _ir(
@@ -557,11 +740,15 @@ def test_telegram_single_host_degrade_when_one_named_target() -> None:
         ]
     )
     body = _tg_body(report, "warning")
-    assert "*only-host*" not in body
+    assert "*only\\-host · 警告*" in body
     assert "磁盘 80%" in body
 
 
-def test_lark_single_host_no_sections() -> None:
+def test_lark_single_host_fleet_sections() -> None:
+    # Lark mirror: a single-host fleet card MUST carry the per-host section
+    # header. Lark serializes via ``tojson`` and does NOT MarkdownV2-escape, so
+    # the hyphen renders literally → ``**only-host · 警告**`` (with sev_icon
+    # prefix, asserted as a substring of the joined contents).
     report = _fleet_report(
         [
             _ir(
@@ -571,8 +758,21 @@ def test_lark_single_host_no_sections() -> None:
             )
         ]
     )
+    joined = "\n".join(_lark_contents(_lark_card(report, "warning")))
+    assert "**only-host · 警告**" in joined
+    assert "磁盘 80%" in joined
+
+
+def test_lark_agent_single_host_no_sections() -> None:
+    # Lark agent-path no-section anchor (re-added after the fleet flip above
+    # removed the old one): an agent single-host report (from_inspector_results,
+    # meta.target_type != "fleet") MUST NOT render a per-host section header.
+    # ``web-1`` is _single_report's default target. Routing through _lark_card
+    # also transparently guards the card JSON validity.
+    report = _single_report([Finding(severity="warning", message="磁盘 80%")])
+    assert report.meta is not None and report.meta.target_type != "fleet"
     contents = _lark_contents(_lark_card(report, "warning"))
-    assert "**only-host**" not in contents
+    assert not any("**web-1 ·" in c for c in contents)
     assert any("磁盘 80%" in c for c in contents)
 
 
