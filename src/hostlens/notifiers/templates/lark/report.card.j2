@@ -1,10 +1,12 @@
 {#-
   飞书 Lark interactive card layout (spec: notifier-lark §需求 同构结构化布局).
   Isomorphic to the Telegram layout (发现优先): 抬头(非 intent) → 覆盖行 →
-  发现(四元组去重 + severity 降序 + 来源) → 根因分析 → 健康态. Multi-target
-  findings section by host when distinct(non-None target_name) > 1 or fleet;
-  single-host agent degrades to a flat list. Every dynamic value passes through
-  `tojson` so the card body is valid JSON by construction.
+  发现(四元组去重 + severity 降序 + 来源) → 根因分析. 健康态「✅未发现异常」是
+  发现段的空态替代(占发现槽位、非根因后的尾段);findings 为空但有 hypotheses
+  时它渲染在根因分析之前. Multi-target findings section by host when
+  distinct(non-None target_name) > 1 or fleet; single-host agent degrades to a
+  flat list. Every dynamic value passes through `tojson` so the card body is
+  valid JSON by construction.
 -#}
 {
   "msg_type": "interactive",
