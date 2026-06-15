@@ -4,18 +4,25 @@ Spec: ``openspec/changes/add-scheduler/specs/scheduler-engine/spec.md``
 (design D-1 / D-2b / D-3b / D-7 / D-11).
 
 `SchedulerRunner` registers each `ScheduleManifest` as one `AsyncIOScheduler`
-job (`job_id == manifest.name`), reuses the delivery-layer-agnostic
-`run_diagnosis_pipeline` as the job body, and maps the pipeline outcome to a
-`RunStatus`:
+job (`job_id == manifest.name`) and routes the job body by `manifest.mode`:
+`agent` runs the single-target `run_diagnosis_pipeline` (Planner →
+Diagnostician), `deterministic` runs the multi-target
+`run_deterministic_pipeline` (fixed inspector set per fleet target → narrate).
+Both produce `Report | None` and map onto **one** shared `RunStatus` table:
 
 - pipeline returns a `Report` → `ReportStore.save` then a `Run` with
   `report_id` + `report_hash` (`ok` for `ReportStatus.OK`, `partial` for any
   degraded status, including `degraded_token_budget` / `degraded_max_turns` —
   **never** `budget_exhausted`, which M4 never constructs; design D-3b);
-- pipeline returns `None` with sink-captured ``terminal_status ==
+- **agent** pipeline returns `None` with sink-captured ``terminal_status ==
   "failed_api_unavailable"`` → `failed_api_unavailable` (no Report);
-- pipeline returns `None` otherwise (empty collection) → `failed` with an
-  error note (design D-2b);
+- **agent** pipeline returns `None` otherwise (empty collection) → `failed`
+  with the no-results note (design D-2b);
+- **deterministic** pipeline returns `None` (no inspector result to assemble)
+  → `failed` with the deterministic no-results note — never
+  `failed_api_unavailable`, which is meaningless for a collection phase that
+  never contacts an LLM (scheduler-engine spec §场景:deterministic 全无结果落
+  failed);
 - a save that degraded to an orphan JSON file
   (`SaveResult.stored_as_orphan`) → `partial` + `report_storage="orphan"`
   rather than a silently-`ok` row whose `report_id` `get_run` cannot resolve
@@ -32,8 +39,10 @@ Dependencies are injected through the constructor (no module-level singleton):
 the `RunStore` / `ReportStore` / `Settings`, a `backend_factory` (one fresh
 `LLMBackend` per fire — the backend reaches only the agent loops, never a
 `ToolContext`, ADR-008), a `context_factory` (fresh `ToolContext` per
-dispatch), the `TargetRegistry` used to resolve each manifest's single
-target's type, and (M5) the `channels` map (`{instance_name: Notifier}`,
+dispatch), the `TargetRegistry` used to resolve the agent manifest's single
+target's type (deterministic mode resolves its fleet through the
+`context_factory`'s registry), and (M5) the `channels` map (`{instance_name:
+Notifier}`,
 loaded from `notifiers.yaml` at assembly time). The constructor validates at
 **assembly time** that every ``notify.channel`` a manifest references resolves
 to a loaded channel — an unknown channel is fail-loud (it never enters the
@@ -69,6 +78,7 @@ from hostlens.core.exceptions import ConfigError
 from hostlens.core.redact import redact_text
 from hostlens.notifiers.base import NotifyResult, redact_secret_text
 from hostlens.notifiers.routing import aggregate_severity, should_send
+from hostlens.orchestration.deterministic import run_deterministic_pipeline
 from hostlens.orchestration.pipeline import run_diagnosis_pipeline
 from hostlens.reporting.models import Report, ReportStatus
 from hostlens.scheduler.store import Run, RunStatus, RunStore, compute_report_hash
@@ -387,35 +397,20 @@ class SchedulerRunner:
         self._inflight.add(inflight_task)
 
         manifest = self._manifests[name]
-        target_name = manifest.targets[0]
+        # The ledger ``targets`` column records every target the fire covered:
+        # the single agent target, or the whole deterministic fleet. The agent
+        # path keeps ``manifest.targets[0]`` for its single-target diagnosis;
+        # the deterministic path fans out across ``manifest.targets`` and the
+        # Run row must list them all (one fire → one fleet Run).
+        run_targets = list(manifest.targets)
         triggered_at = self._clock()
         started_at = self._clock()
         try:
-            target_type = self._target_registry.get(target_name).type
-
             captured: dict[str, str | None] = {"terminal_status": None}
-
-            def _sink(result: PlannerResult) -> None:
-                captured["terminal_status"] = result.loop_result.terminal_status
 
             backend = self._backend_factory()
             try:
-                # Only ``intent`` drives the pipeline: the Planner autonomously
-                # selects inspectors from the registry (Agent-loop design,
-                # CLAUDE.md §4.2). ``manifest.inspectors`` is a soft hint parsed
-                # but NOT consumed in M4 — injecting it into the Planner context
-                # is a later milestone (see schedule-manifest spec).
-                report = await run_diagnosis_pipeline(
-                    backend,
-                    self._settings,
-                    self._context_factory,
-                    report_target_name=target_name,
-                    target_lookup_name=target_name,
-                    target_type=target_type,
-                    intent=manifest.intent,
-                    planner_result_sink=_sink,
-                    schedule_name=manifest.name,
-                )
+                report = await self._run_pipeline(manifest, backend, captured)
             except asyncio.CancelledError:
                 # Force-cancelled while the pipeline was still executing (design
                 # D-5). Persist a terminal ``daemon_stopped`` row, then re-raise.
@@ -432,7 +427,7 @@ class SchedulerRunner:
                     started_at=started_at,
                     finished_at=self._clock(),
                     status=RunStatus.DAEMON_STOPPED,
-                    targets=[target_name],
+                    targets=run_targets,
                 )
                 await asyncio.shield(self._run_store.save(daemon_stopped))
                 raise
@@ -451,7 +446,7 @@ class SchedulerRunner:
             finalize_task: asyncio.Task[Run] = asyncio.ensure_future(
                 self._finalize_outcome(
                     manifest=manifest,
-                    target_name=target_name,
+                    targets=run_targets,
                     triggered_at=triggered_at,
                     started_at=started_at,
                     report=report,
@@ -470,11 +465,70 @@ class SchedulerRunner:
         finally:
             self._inflight.discard(inflight_task)
 
+    async def _run_pipeline(
+        self,
+        manifest: ScheduleManifest,
+        backend: LLMBackend,
+        captured: dict[str, str | None],
+    ) -> Report | None:
+        """Route the job body by ``manifest.mode`` and return ``Report | None``.
+
+        ``agent`` (unchanged): the single-target Planner→Diagnostician
+        ``run_diagnosis_pipeline``. A ``planner_result_sink`` records the
+        Planner's terminal status into ``captured`` so the no-Report branch
+        can tell ``failed_api_unavailable`` (backend never reached) apart from
+        an empty collection.
+
+        ``deterministic`` (new): the multi-target ``run_deterministic_pipeline``
+        — the resolved fixed inspector set is run against **every**
+        ``manifest.targets`` (no Planner, no ``LLMBackend`` in the collection
+        phase; the ``backend`` reaches only the narrate loop, never a
+        ``ToolContext`` — ADR-008). It returns one fleet ``Report`` (≥1
+        inspector result) or ``None`` (no result to assemble). The
+        deterministic path has **no** ``planner_result_sink`` and never sets a
+        ``terminal_status``: the no-Report branch maps its ``None`` straight to
+        ``failed`` (the deterministic collection phase does not contact an LLM,
+        so ``failed_api_unavailable`` is semantically wrong for it).
+        """
+        if manifest.mode == "deterministic":
+            return await run_deterministic_pipeline(
+                backend,
+                self._settings,
+                self._context_factory,
+                targets=list(manifest.targets),
+                inspectors=manifest.inspectors,
+                intent=manifest.intent,
+                schedule_name=manifest.name,
+            )
+
+        target_name = manifest.targets[0]
+        target_type = self._target_registry.get(target_name).type
+
+        def _sink(result: PlannerResult) -> None:
+            captured["terminal_status"] = result.loop_result.terminal_status
+
+        # Only ``intent`` drives the agent pipeline: the Planner autonomously
+        # selects inspectors from the registry (Agent-loop design, CLAUDE.md
+        # §4.2). ``manifest.inspectors`` stays a soft hint on the agent path
+        # (it is the deterministic path that consumes it as the authoritative
+        # set); injecting it into the Planner context is a later milestone.
+        return await run_diagnosis_pipeline(
+            backend,
+            self._settings,
+            self._context_factory,
+            report_target_name=target_name,
+            target_lookup_name=target_name,
+            target_type=target_type,
+            intent=manifest.intent,
+            planner_result_sink=_sink,
+            schedule_name=manifest.name,
+        )
+
     async def _finalize_outcome(
         self,
         *,
         manifest: ScheduleManifest,
-        target_name: str,
+        targets: list[str],
         triggered_at: datetime,
         started_at: datetime,
         report: Report | None,
@@ -489,7 +543,7 @@ class SchedulerRunner:
         """
         run = await self._map_outcome(
             manifest=manifest,
-            target_name=target_name,
+            targets=targets,
             triggered_at=triggered_at,
             started_at=started_at,
             report=report,
@@ -503,7 +557,7 @@ class SchedulerRunner:
         self,
         *,
         manifest: ScheduleManifest,
-        target_name: str,
+        targets: list[str],
         triggered_at: datetime,
         started_at: datetime,
         report: Report | None,
@@ -514,6 +568,22 @@ class SchedulerRunner:
         run_id = str(uuid.uuid4())
 
         if report is None:
+            if manifest.mode == "deterministic":
+                # Deterministic collection never contacts an LLM, so a no-result
+                # outcome is a real empty collection — NOT backend-unavailable.
+                # Mapping it to ``failed_api_unavailable`` would mislabel a fleet
+                # that simply produced nothing (scheduler-engine spec §场景:
+                # deterministic 全无结果落 failed).
+                return Run(
+                    run_id=run_id,
+                    schedule_name=manifest.name,
+                    triggered_at=triggered_at,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    status=RunStatus.FAILED,
+                    error="deterministic inspection produced no inspector results",
+                    targets=targets,
+                )
             if terminal_status == "failed_api_unavailable":
                 return Run(
                     run_id=run_id,
@@ -522,7 +592,7 @@ class SchedulerRunner:
                     started_at=started_at,
                     finished_at=finished_at,
                     status=RunStatus.FAILED_API_UNAVAILABLE,
-                    targets=[target_name],
+                    targets=targets,
                 )
             return Run(
                 run_id=run_id,
@@ -532,7 +602,7 @@ class SchedulerRunner:
                 finished_at=finished_at,
                 status=RunStatus.FAILED,
                 error="pipeline produced no inspector results",
-                targets=[target_name],
+                targets=targets,
             )
 
         # Report path: persist first, then write a Run pointing at it.
@@ -574,7 +644,7 @@ class SchedulerRunner:
             report_id=save_result.run_id,
             report_hash=report_hash,
             report_storage=storage,
-            targets=[target_name],
+            targets=targets,
             inspectors=inspectors,
             notify_results=notify_results,
         )
@@ -701,7 +771,10 @@ class SchedulerRunner:
         if job_id not in self._manifests:
             return None
         manifest = self._manifests[job_id]
-        target_name = manifest.targets[0]
+        # Record every covered target on the ledger row (the whole fleet for a
+        # deterministic manifest, the single target for an agent one), matching
+        # the job body's ``run_targets`` so both write paths agree.
+        run_targets = list(manifest.targets)
         triggered_at = self._event_scheduled_time(event)
 
         if event.code == EVENT_JOB_MISSED:
@@ -731,7 +804,7 @@ class SchedulerRunner:
             started_at=started_at,
             status=status,
             error=error,
-            targets=[target_name],
+            targets=run_targets,
         )
 
     def _event_scheduled_time(self, event: SchedulerEvent) -> datetime:

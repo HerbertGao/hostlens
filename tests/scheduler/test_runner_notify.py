@@ -237,7 +237,7 @@ async def test_report_fire_routes_sent_and_skipped(tmp_path: Path) -> None:
 
     run = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=_report(severity="critical"),
@@ -270,7 +270,7 @@ async def test_channel_send_exception_isolated(tmp_path: Path) -> None:
 
     run = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=_report(),
@@ -312,7 +312,7 @@ async def test_only_if_runtime_error_isolated(tmp_path: Path) -> None:
 
     run = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=_report(),
@@ -366,7 +366,7 @@ async def test_dispatch_notify_false_suppresses_routing_and_send(
     report = _report(severity="critical")
     suppressed = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=report,
@@ -390,7 +390,7 @@ async def test_dispatch_notify_false_suppresses_routing_and_send(
     sender.sent.clear()
     dispatched = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=_report(severity="critical"),
@@ -422,7 +422,7 @@ async def test_no_report_status_does_not_dispatch(tmp_path: Path) -> None:
     # report=None with terminal_status="ok" → empty-collection → failed.
     run = await runner._map_outcome(
         manifest=manifest,
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=None,

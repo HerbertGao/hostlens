@@ -34,7 +34,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 if TYPE_CHECKING:
-    from hostlens.inspectors.result import InspectorResult
+    from hostlens.inspectors.result import InspectorResult, InspectorStatus
 
 __all__ = [
     "BaselineRef",
@@ -166,10 +166,20 @@ class Finding(BaseModel):
 
     Four M1 core fields (`severity` / `message` / `evidence` / `tags`)
     plus three M3 add-only identity fields (`id` / `inspector_name` /
-    `inspector_version`). The identity fields default to `None` so that
-    direct M1/M2 construction and legacy schema-1.0 JSON load unchanged;
+    `inspector_version`) plus one add-only source field (`target_name`).
+    The identity fields default to `None` so that direct M1/M2
+    construction and legacy schema-1.0 JSON load unchanged;
     `Report.from_inspector_results` populates them on the flattened
     copies it produces.
+
+    `target_name` defaults to `None` (legacy / single-target paths leave
+    it unset). The fleet (multi-target) assembly path stamps each
+    flattened finding with its source `InspectorResult.target_name` so a
+    single fleet Report can distinguish findings by origin target. It is
+    deliberately **not** part of `compute_finding_id`: stamping it into
+    the fingerprint would give the same check different ids across
+    targets, breaking the same-id anchor per-target regression diff
+    relies on.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -182,6 +192,7 @@ class Finding(BaseModel):
     id: str | None = None
     inspector_name: str | None = None
     inspector_version: str | None = None
+    target_name: str | None = None
 
 
 def compute_finding_id(inspector_name: str, inspector_version: str, message: str) -> str:
@@ -485,18 +496,136 @@ class Report(BaseModel):
             meta=meta,
         )
 
+    @classmethod
+    def from_fleet_results(
+        cls,
+        inspector_results: list[InspectorResult],
+        *,
+        schedule_name: str,
+        intent: str | None = None,
+        started_at: datetime,
+        finished_at: datetime,
+        token_usage: TokenUsage | None = None,
+        status: ReportStatus | None = None,
+    ) -> Report:
+        """Assemble one fleet (multi-target) Report from `InspectorResult`s
+        spanning multiple targets — the deterministic-inspection-mode path.
 
-def _derive_report_status(inspector_results: list[InspectorResult]) -> ReportStatus:
-    """Derive `ReportStatus` from inspector statuses, aligned with
-    ARCHITECTURE §9 Failure Semantics.
+        Each `InspectorResult` carries its own `target_name`. The assembly
+        is deterministic and **independent of caller-supplied target order**:
 
-    All `ok` → `ok`. Non-ok results that are *only* `timeout` with at
-    least one `ok` → `ok` (§9: a partial/single inspector timeout does
-    not degrade the report — "ok unless all timed out"). Any
-    `target_unreachable` / `exception` / `requires_unmet`, or *all*
-    `timeout`, → `partial`.
+        - `Report.target_name` is a fleet label derived by sorting the
+          distinct participating target names into canonical order and
+          joining them, so the same target set yields the same label
+          regardless of input order (satisfies `min_length=1`).
+        - `meta.target_id` is a fleet id derived from the **sorted** set of
+          target ids plus `schedule_name`, forced into a `fleet:`-prefixed
+          namespace disjoint from any bare per-target `target_id`. This
+          keeps a single-member fleet (`targets:[x]`) from colliding with
+          the same host's agent-mode per-target report (`target_id == "x"`)
+          in `ReportStore`, which would let `compute_diff` cross fleet and
+          per-target baselines.
+        - Each flattened finding is stamped with its source
+          `InspectorResult.target_name` **and** filled with identity fields
+          (`id` / `inspector_name` / `inspector_version`) exactly as
+          `from_inspector_results` does — identity fields must not stay
+          None (downstream proposal C dedups on
+          `(target_name, inspector_name, message, severity)`).
+        - `meta.inspectors_used` keeps one `InspectorRun` per
+          `(target, inspector)` with each status preserved verbatim
+          (`requires_unmet` / `timeout` / ... are never folded or dropped).
+        - `status`: used as-is when supplied; when `None`, derived via the
+          deterministic truth table that treats `requires_unmet` as `ok`
+          before applying the existing `_derive_report_status` semantics.
+        """
+        if not inspector_results:
+            raise ValueError("from_fleet_results requires at least one InspectorResult")
+
+        flattened_findings: list[Finding] = []
+        for ir in inspector_results:
+            for finding in ir.findings:
+                flattened_findings.append(
+                    finding.model_copy(
+                        update={
+                            "inspector_name": ir.name,
+                            "inspector_version": ir.version,
+                            "id": compute_finding_id(ir.name, ir.version, finding.message),
+                            "target_name": ir.target_name,
+                        }
+                    )
+                )
+
+        sorted_targets = sorted({ir.target_name for ir in inspector_results})
+        fleet_target_name = ",".join(sorted_targets)
+        # `meta.target_id` is the fleet's `ReportStore` key. A bare comma-join of
+        # targets + schedule_name would alias different fleets when a target name
+        # or the schedule contains a comma (e.g. targets=[a,b] + sched="c,d" vs
+        # targets=[a,b,c] + sched="d" both → "fleet:a,b,c,d"), silently overwriting
+        # one fleet's history with another's. Hash the **structured**
+        # (count, sorted targets, schedule) over a NUL separator so the key is
+        # unambiguous and collision-resistant for any name content; the `fleet:`
+        # prefix keeps it disjoint from any bare per-target `target_id`.
+        fleet_target_id = (
+            "fleet:"
+            + hashlib.sha256(
+                "\x00".join([str(len(sorted_targets)), *sorted_targets, schedule_name]).encode(
+                    "utf-8"
+                )
+            ).hexdigest()[:16]
+        )
+
+        report_id = uuid4()
+        derived_status = (
+            status if status is not None else _derive_fleet_report_status(inspector_results)
+        )
+        meta = ReportMeta(
+            run_id=str(report_id),
+            timestamp=started_at,
+            target_id=fleet_target_id,
+            target_name=fleet_target_name,
+            target_type="fleet",
+            intent=intent,
+            schedule_name=schedule_name,
+            status=derived_status,
+            inspectors_used=[
+                InspectorRun(
+                    name=ir.name,
+                    version=ir.version,
+                    status=ir.status,
+                    duration_seconds=ir.duration_seconds,
+                    finding_count=len(ir.findings),
+                )
+                for ir in inspector_results
+            ],
+            token_usage=token_usage if token_usage is not None else TokenUsage(),
+            duration_seconds=(finished_at - started_at).total_seconds(),
+        )
+
+        return cls(
+            report_id=report_id,
+            schema_version="1.1",
+            intent=intent,
+            target_name=fleet_target_name,
+            inspector_results=inspector_results,
+            findings=flattened_findings,
+            started_at=started_at,
+            finished_at=finished_at,
+            metadata={},
+            meta=meta,
+        )
+
+
+def _derive_status_from_statuses(statuses: list[InspectorStatus]) -> ReportStatus:
+    """The single ARCHITECTURE §9 Failure-Semantics truth table over a list of
+    inspector statuses (the one source of truth for both the per-target and the
+    fleet derivation — keep it here so a §9 change can never drift between two
+    hand-maintained copies).
+
+    All `ok` → `ok`. Non-ok statuses that are *only* `timeout` with at least one
+    `ok` → `ok` (§9: a partial/single inspector timeout does not degrade —
+    "ok unless all timed out"). Any `target_unreachable` / `exception` /
+    `requires_unmet`, or *all* `timeout`, → `partial`.
     """
-    statuses = [ir.status for ir in inspector_results]
     if all(s == "ok" for s in statuses):
         return ReportStatus.OK
 
@@ -505,3 +634,21 @@ def _derive_report_status(inspector_results: list[InspectorResult]) -> ReportSta
         return ReportStatus.OK
 
     return ReportStatus.PARTIAL
+
+
+def _derive_report_status(inspector_results: list[InspectorResult]) -> ReportStatus:
+    """Per-target derivation: the §9 truth table over the raw inspector statuses."""
+    return _derive_status_from_statuses([ir.status for ir in inspector_results])
+
+
+def _derive_fleet_report_status(inspector_results: list[InspectorResult]) -> ReportStatus:
+    """Fleet (deterministic-mode) derivation: `requires_unmet` is an *expected*
+    skip (a fixed health set on a heterogeneous fleet routinely hits services
+    absent on some hosts), so it is re-mapped to `ok` **before** the shared §9
+    truth table — it must never degrade the report. Real degradation (all
+    `timeout` / any `target_unreachable` / `exception`) still degrades; this is
+    deliberately not an unconditional `ok`.
+    """
+    return _derive_status_from_statuses(
+        ["ok" if ir.status == "requires_unmet" else ir.status for ir in inspector_results]
+    )

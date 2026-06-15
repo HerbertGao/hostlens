@@ -39,6 +39,34 @@ def test_valid_manifest_parses() -> None:
     assert manifest.inspectors is None
 
 
+def test_mode_defaults_to_agent_when_omitted() -> None:
+    # A pre-existing manifest with no `mode` field parses as agent — the
+    # default keeps extra="forbid" back-compatible (spec §需求:无 mode 字段的
+    # 既有 manifest 默认 agent). Behaviour is identical to before the field
+    # was added.
+    manifest = ScheduleManifest.model_validate(_valid_interval_manifest())
+
+    assert manifest.mode == "agent"
+
+
+def test_mode_deterministic_accepted() -> None:
+    data = _valid_interval_manifest()
+    data["mode"] = "deterministic"
+    manifest = ScheduleManifest.model_validate(data)
+
+    assert manifest.mode == "deterministic"
+
+
+def test_mode_unknown_value_rejected() -> None:
+    data = _valid_interval_manifest()
+    data["mode"] = "auto"  # not a member of Literal["agent","deterministic"]
+
+    with pytest.raises(ValidationError) as exc:
+        ScheduleManifest.model_validate(data)
+
+    assert "mode" in str(exc.value)
+
+
 def test_valid_cron_manifest_parses() -> None:
     data = _valid_interval_manifest()
     data["schedule"] = {"cron": "0 3 * * *", "timezone": "UTC"}

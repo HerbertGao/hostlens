@@ -274,7 +274,7 @@ async def test_token_budget_report_maps_to_partial(tmp_path: Path) -> None:
     report = _degraded_report(ReportStatus.DEGRADED_TOKEN_BUDGET)
     run = await runner._map_outcome(
         manifest=_manifest(),
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=report,
@@ -367,7 +367,7 @@ async def test_orphan_save_maps_to_partial_with_orphan_storage(tmp_path: Path) -
     report = _degraded_report(ReportStatus.OK)
     run = await runner._map_outcome(
         manifest=_manifest(),
-        target_name=_TARGET,
+        targets=[_TARGET],
         triggered_at=datetime(2026, 5, 26, tzinfo=UTC),
         started_at=datetime(2026, 5, 26, tzinfo=UTC),
         report=report,

@@ -171,14 +171,21 @@ class ScheduleManifest(BaseModel):
 
     ``extra="forbid"``: an unknown top-level field (e.g. a misspelled
     ``scheduel``) raises ``ValidationError`` rather than being silently
-    dropped. ``targets`` is ``list[str]`` (list form reserved for future
-    fan-out) but the **loader** enforces exactly one member in M4.
+    dropped. ``targets`` is ``list[str]``; the **loader** enforces its
+    cardinality **per ``mode``** — ``agent`` requires exactly one member,
+    ``deterministic`` allows ``>=1`` (fan-out across the fleet).
+
+    ``mode`` selects the job-body route and the semantics of ``targets`` /
+    ``inspectors``. It defaults to ``"agent"`` so a pre-existing manifest
+    without a ``mode`` field parses as ``agent`` with **zero behaviour
+    change** — the default keeps ``extra="forbid"`` back-compatible.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
     schedule: ScheduleSpec
+    mode: Literal["agent", "deterministic"] = "agent"
     targets: list[str] = Field(min_length=1)
     intent: str = Field(min_length=1)
     inspectors: list[str] | None = None

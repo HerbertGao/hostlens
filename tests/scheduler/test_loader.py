@@ -116,6 +116,166 @@ def test_single_target_loads(tmp_path: Path) -> None:
 
     assert len(manifests) == 1
     assert manifests[0].targets == ["web-1"]
+    # No `mode` field in _VALID_BODY → defaults to agent.
+    assert manifests[0].mode == "agent"
+
+
+def test_agent_mode_multi_target_fail_loud(tmp_path: Path) -> None:
+    # Explicit `mode: agent` with >=2 targets is fail-loud — even when every
+    # member is registered (spec §场景:agent 模式多 target 仍 fail-loud).
+    _write(
+        tmp_path,
+        "a.yaml",
+        """
+        name: nightly
+        mode: agent
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets:
+          - web-1
+          - web-2
+        intent: check
+        """,
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_schedules(tmp_path, _registry("web-1", "web-2"))
+
+    msg = str(exc.value)
+    assert "a.yaml" in msg
+    assert "targets" in msg
+    assert "single target" in msg.lower()
+
+
+def test_deterministic_mode_multi_target_loads(tmp_path: Path) -> None:
+    # deterministic mode allows >=1 target (multi-target is its core use) —
+    # all registered members load (spec §场景:deterministic 模式多 target 正常
+    # 加载).
+    _write(
+        tmp_path,
+        "a.yaml",
+        """
+        name: fleet-health
+        mode: deterministic
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets:
+          - web-1
+          - web-2
+          - web-3
+        intent: fleet health sweep
+        """,
+    )
+    manifests = load_schedules(tmp_path, _registry("web-1", "web-2", "web-3"))
+
+    assert len(manifests) == 1
+    assert manifests[0].mode == "deterministic"
+    assert manifests[0].targets == ["web-1", "web-2", "web-3"]
+
+
+def test_single_target_loads_in_both_modes(tmp_path: Path) -> None:
+    # A single registered target loads under either mode (spec §场景:单 target
+    # manifest 在两种 mode 均正常加载).
+    for mode in ("agent", "deterministic"):
+        body = f"""
+        name: nightly
+        mode: {mode}
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets:
+          - web-1
+        intent: check
+        """
+        sub = tmp_path / mode
+        sub.mkdir()
+        _write(sub, "a.yaml", body)
+        manifests = load_schedules(sub, _registry("web-1"))
+
+        assert len(manifests) == 1
+        assert manifests[0].mode == mode
+        assert manifests[0].targets == ["web-1"]
+
+
+def test_deterministic_mode_empty_targets_fail_loud(tmp_path: Path) -> None:
+    # An empty `targets` list is rejected in deterministic mode too — the
+    # schema's min_length=1 fails at parse time, surfacing the file name.
+    _write(
+        tmp_path,
+        "a.yaml",
+        """
+        name: fleet-health
+        mode: deterministic
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets: []
+        intent: fleet health sweep
+        """,
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_schedules(tmp_path, _registry("web-1"))
+
+    assert "a.yaml" in str(exc.value)
+
+
+def test_deterministic_mode_empty_inspectors_fail_loud(tmp_path: Path) -> None:
+    # An explicit empty `inspectors: []` (distinct from omitting it, which uses
+    # the default health set) resolves to "run nothing" → every fire would fail.
+    # The loader rejects it at load so a typo fails loud here, not at fire time.
+    _write(
+        tmp_path,
+        "a.yaml",
+        """
+        name: fleet-health
+        mode: deterministic
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets: [web-1]
+        inspectors: []
+        intent: fleet health sweep
+        """,
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_schedules(tmp_path, _registry("web-1"))
+
+    assert exc.value.kind == "schedule_deterministic_empty_inspectors"
+    assert "a.yaml" in str(exc.value)
+
+
+def test_deterministic_mode_target_not_registered_fail_loud(tmp_path: Path) -> None:
+    # Unregistered members are fail-loud in deterministic mode too (the
+    # registry membership check is mode-independent).
+    _write(
+        tmp_path,
+        "a.yaml",
+        """
+        name: fleet-health
+        mode: deterministic
+        schedule:
+          interval:
+            hours: 1
+          timezone: UTC
+        targets:
+          - web-1
+          - ghost-host
+        intent: fleet health sweep
+        """,
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_schedules(tmp_path, _registry("web-1"))
+
+    msg = str(exc.value)
+    assert "a.yaml" in msg
+    assert "ghost-host" in msg
+    assert "registered" in msg.lower()
 
 
 def test_duplicate_name_across_files_fail_loud(tmp_path: Path) -> None:
