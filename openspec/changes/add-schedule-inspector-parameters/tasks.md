@@ -1,5 +1,3 @@
-# 任务:add-schedule-inspector-parameters
-
 ## 1. schedule-manifest schema
 
 - [ ] 1.1 `scheduler/schema.py`:`ScheduleManifest` 新增 `inspector_parameters: dict[str, dict[str, Any]] = Field(default_factory=dict)`,字段处注释说明内层不在调度层强类型化(裁判在 inspector `parameters` schema)、`Any` 为有意豁免

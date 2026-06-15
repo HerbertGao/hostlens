@@ -1,5 +1,3 @@
-# schedule-manifest 规格变更:add-schedule-inspector-parameters
-
 ## 新增需求
 
 ### 需求:`ScheduleManifest` 必须支持 `inspector_parameters` 给 deterministic 调度按 inspector 传参

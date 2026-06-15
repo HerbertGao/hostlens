@@ -1,5 +1,3 @@
-# 提案:add-schedule-inspector-parameters
-
 ## 为什么
 
 deterministic 调度（`add-deterministic-inspection-mode`，已上线 ts.mac-mini 每日全队巡检）目前**无法给固定 inspector 集传参**：`run_deterministic_inspection` 对每个 inspector 写死 `runner.run(..., parameters=None)`（`src/hostlens/orchestration/deterministic.py:214`），整队只能跑各 inspector 的默认参数。

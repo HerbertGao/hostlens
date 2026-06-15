@@ -1,5 +1,3 @@
-# deterministic-inspection-mode 规格变更:add-schedule-inspector-parameters
-
 ## 新增需求
 
 ### 需求:deterministic 模式必须把 `manifest.inspector_parameters` 透传给匹配的 inspector

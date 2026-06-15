@@ -1,5 +1,3 @@
-# 设计:add-schedule-inspector-parameters
-
 ## 决策 1:`inspector_parameters` 是 `dict[str, dict[str, Any]]`,不是按 inspector 的强类型联合
 
 manifest 字段定为 `inspector_parameters: dict[str, dict[str, Any]] = Field(default_factory=dict)`。外层 key 是 inspector canonical name（如 `net.listening_ports`），value 是参数对象（任意 JSON dict）。
