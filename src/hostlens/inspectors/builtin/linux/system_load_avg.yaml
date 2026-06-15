@@ -13,11 +13,16 @@ parameters:
     # Per-core load thresholds. The DSL gates on load5/load15 divided by the
     # core count, so these are dimensionless per-core ratios. Numeric
     # parameters cannot be shell-evaluated as text, so no `pattern` is needed.
+    # A threshold must be strictly positive — `exclusiveMinimum: 0` rejects a
+    # negative or zero schedule override, either of which would make
+    # `>= threshold` fire on every non-negative load and defeat the gate.
     warn_per_core:
       type: number
+      exclusiveMinimum: 0
       default: 1.0
     crit_per_core:
       type: number
+      exclusiveMinimum: 0
       default: 2.0
   additionalProperties: false
 

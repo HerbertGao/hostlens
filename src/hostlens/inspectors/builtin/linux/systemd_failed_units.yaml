@@ -20,13 +20,18 @@ parameters:
     # parameters flow only into the Finding DSL (never `| sh`), so no `pattern`.
     boot_window_seconds:
       type: integer
+      minimum: 0
       default: 180
     # The system must have been up at least this long before a boot-window
     # oneshot failure is downgraded to `warning` — on a freshly-rebooted box the
     # same boot-relative anchor cannot distinguish "historical residue" from
     # "just crashed", so we keep it `critical` until the box has run a while.
+    # `minimum: 0` rejects a negative override, which would make
+    # `uptime_seconds >= min_uptime_seconds` trivially true and silently defeat
+    # this fresh-reboot guard.
     min_uptime_seconds:
       type: integer
+      minimum: 0
       default: 3600
   additionalProperties: false
 
