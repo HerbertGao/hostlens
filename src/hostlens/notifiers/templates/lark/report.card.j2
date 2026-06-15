@@ -1,3 +1,11 @@
+{#-
+  飞书 Lark interactive card layout (spec: notifier-lark §需求 同构结构化布局).
+  Isomorphic to the Telegram layout: 抬头(非 intent) → 覆盖行 → 根因分析(置顶)
+  → 发现(四元组去重 + severity 降序 + 来源) → 健康态. Multi-target findings
+  section by host when distinct(non-None target_name) > 1; single-host degrades
+  to a flat list. Every dynamic value passes through `tojson` so the card body
+  is valid JSON by construction.
+-#}
 {
   "msg_type": "interactive",
   "card": {
@@ -6,51 +14,26 @@
       "template": {{ severity | lark_header_color | tojson }},
       "title": {
         "tag": "plain_text",
-        "content": {{ (report.intent or "巡检报告") | tojson }}
+        "content": {{ ("Hostlens 巡检 · " ~ report.target_name ~ " · " ~ (severity | sev_label)) | tojson }}
       }
     },
     "elements": [
+      {% if report.meta %}
       {
         "tag": "div",
         "text": {
           "tag": "lark_md",
-          "content": {{ ("**目标** " ~ report.target_name ~ " · **severity** " ~ severity) | tojson }}
+          "content": {{ ((report.meta.timestamp | fmt_time) ~ " · " ~ (report.meta.inspectors_used | coverage)) | tojson }}
         }
       },
-      {"tag": "hr"},
-      {% if report.findings %}
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ "**Findings**" | tojson }}
-        }
-      },
-      {% for f in report.findings %}
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ ((f.severity | sev_icon) ~ " " ~ f.message) | tojson }}
-        }
-      }{% if not loop.last %},{% endif %}
-      {% endfor %}
-      {% else %}
-      {
-        "tag": "div",
-        "text": {
-          "tag": "lark_md",
-          "content": {{ "无 findings" | tojson }}
-        }
-      }
       {% endif %}
       {% if report.hypotheses %}
-      ,{"tag": "hr"},
+      {"tag": "hr"},
       {
         "tag": "div",
         "text": {
           "tag": "lark_md",
-          "content": {{ "**根因假设**" | tojson }}
+          "content": {{ "**根因分析**" | tojson }}
         }
       },
       {% for h in report.hypotheses %}
@@ -58,10 +41,66 @@
         "tag": "div",
         "text": {
           "tag": "lark_md",
-          "content": {{ ("• " ~ h.description ~ " (" ~ h.confidence ~ ")") | tojson }}
+          "content": {{ ("• " ~ h.description ~ " (置信度 " ~ (h.confidence | conf_label) ~ ")") | tojson }}
         }
-      }{% if not loop.last %},{% endif %}
+      },
+      {% for action in h.suggested_actions %}
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ ("↳ " ~ action) | tojson }}
+        }
+      },
       {% endfor %}
+      {% endfor %}
+      {% endif %}
+      {"tag": "hr"},
+      {% if report.findings %}
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ "**发现**" | tojson }}
+        }
+      }
+      {% set sections = report.findings | dedup | group_by_target %}
+      {% for target_name, group in sections %}
+      {% if target_name is not none %}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ ((group | section_severity | sev_icon) ~ " **" ~ target_name ~ " · " ~ (group | section_severity | sev_label) ~ "**") | tojson }}
+        }
+      }
+      {% elif sections | length > 1 %}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ "**（未标注主机）**" | tojson }}
+        }
+      }
+      {% endif %}
+      {% for f in group | sort_sev %}
+      ,{
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ ((f.severity | sev_icon) ~ " " ~ f.message ~ " (" ~ f.inspector_name ~ ")") | tojson }}
+        }
+      }
+      {% endfor %}
+      {% endfor %}
+      {% else %}
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": {{ "✅ 未发现异常" | tojson }}
+        }
+      }
       {% endif %}
     ]
   }

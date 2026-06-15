@@ -22,6 +22,16 @@ from typing import TYPE_CHECKING, Final
 import httpx
 import jinja2
 
+from hostlens.notifiers._filters import (
+    conf_label,
+    coverage_line,
+    dedup_findings,
+    fmt_time,
+    group_by_target,
+    section_severity,
+    sev_label,
+    sort_sev,
+)
 from hostlens.notifiers.base import (
     DEFAULT_CHANNEL_HARD_TIMEOUT_SECONDS,
     DEFAULT_MAX_ATTEMPTS,
@@ -89,6 +99,14 @@ def _build_environment() -> jinja2.Environment:
     )
     env.filters["lark_header_color"] = _lark_header_color
     env.filters["sev_icon"] = _sev_icon
+    env.filters["sev_label"] = sev_label
+    env.filters["conf_label"] = conf_label
+    env.filters["coverage"] = coverage_line
+    env.filters["fmt_time"] = fmt_time
+    env.filters["dedup"] = dedup_findings
+    env.filters["sort_sev"] = sort_sev
+    env.filters["group_by_target"] = group_by_target
+    env.filters["section_severity"] = section_severity
     return env
 
 

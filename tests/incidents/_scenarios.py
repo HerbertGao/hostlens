@@ -178,7 +178,10 @@ SCENARIOS: tuple[IncidentScenario, ...] = (
             InspectorCall(
                 name="linux.systemd.failed_units",
                 params={},
-                main_stdout='{"failed":[{"unit":"nginx.service"},{"unit":"mysql.service"}]}',
+                main_stdout=(
+                    '{"failed":[{"unit":"nginx.service"},{"unit":"mysql.service"}],'
+                    '"failed_names":"nginx.service, mysql.service"}'
+                ),
             ),
         ),
         hypothesis=(

@@ -1,16 +1,42 @@
-*{{ (report.intent or "巡检报告") | mdv2_escape }}*
-目标 `{{ report.target_name | mdv2_escape }}` · severity {{ severity | sev_icon }} *{{ severity | mdv2_escape }}*
-{% if report.findings %}
-{% for f in report.findings %}
-{{ f.severity | sev_icon }} {{ f.message | mdv2_escape }}
-{%- endfor %}
-{% else %}
-_无 findings_
-{%- endif %}
+{#-
+  Telegram MarkdownV2 report layout (spec: notifier-telegram §需求 结构化布局).
+  Structure: 抬头(非 intent) → 覆盖行 → 根因分析(置顶) → 发现(四元组去重 +
+  severity 降序 + 来源) → 健康态. Multi-target findings section by host when
+  distinct(non-None target_name) > 1; single-host degrades to flat list.
+  Every dynamic value passes through `mdv2_escape`; `*` / `↳` / `·` are
+  structural / literal glyphs the truncation balancer accounts for.
+-#}
+{{ severity | sev_icon }} *Hostlens 巡检 · {{ report.target_name | mdv2_escape }} · {{ severity | sev_label | mdv2_escape }}*
+{% if report.meta %}
+{{ report.meta.timestamp | fmt_time | mdv2_escape }} · {{ report.meta.inspectors_used | coverage | mdv2_escape }}
+{% endif %}
 {% if report.hypotheses %}
 
-*根因假设*
+*根因分析*
 {% for h in report.hypotheses %}
-• {{ h.description | mdv2_escape }} \({{ h.confidence | mdv2_escape }}\)
-{%- endfor %}
-{%- endif %}
+• {{ h.description | mdv2_escape }} \(置信度 {{ h.confidence | conf_label | mdv2_escape }}\)
+{% for action in h.suggested_actions %}
+↳ {{ action | mdv2_escape }}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if report.findings %}
+{% set sections = report.findings | dedup | group_by_target %}
+
+*发现*
+{% for target_name, group in sections %}
+{% if target_name is not none %}
+
+{{ (group | section_severity) | sev_icon }} *{{ target_name | mdv2_escape }} · {{ (group | section_severity) | sev_label | mdv2_escape }}*
+{% elif sections | length > 1 %}
+
+*（未标注主机）*
+{% endif %}
+{% for f in group | sort_sev %}
+{{ f.severity | sev_icon }} {{ f.message | mdv2_escape }} \({{ f.inspector_name | mdv2_escape }}\)
+{% endfor %}
+{% endfor %}
+{% else %}
+
+✅ 未发现异常
+{% endif %}

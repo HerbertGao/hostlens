@@ -216,6 +216,98 @@ secrets and run
 `hostlens notify test --channel ops-telegram --yes` to deliver one ping to
 your own test chat.
 
+## 报告渲染示例（新布局）
+
+> 变更 `improve-report-rendering-and-i18n` 重做了 Telegram / 飞书 Lark 两个模板，
+> 让它们渲染**同构**的信息结构。下面的示例展示新布局的各块；模板代码见
+> `notifiers/templates/{telegram/report.md.j2, lark/report.card.j2}`，共享渲染
+> filter 见 `notifiers/_filters.py`。
+
+新布局自上而下五块（两通道一致）：
+
+1. **抬头（非 intent）**：severity 图标 + `Hostlens 巡检 · <target> · <中文 severity>`。
+   **不再**把整段巡检 intent 当标题。
+2. **覆盖行**：`<时间> · N/M 项检查 · K 项跳过[ · Y 项失败]`，一眼看全跑没。
+   计数来自 `meta.inspectors_used`：`ok`→ok、`requires_unmet`→跳过、
+   `timeout`/`target_unreachable`/`exception`→失败；不变量 `ok+跳过+失败==总数`；
+   `失败==0` 时省略「· Y 项失败」子句（不挂 `· 0 项失败` 噪声尾）。
+3. **根因分析（置顶）**：人最该看的放最前——中文叙述 + `↳` 处置命令（来自
+   Diagnostician 的 `description` / `suggested_actions`，约束为简体中文）。
+4. **发现**：渲染时**四元组去重**（`(target_name, inspector_name, message, severity)`
+   全字段相等才合并）+ **按 severity 降序**（critical → warning → info）+ 每条带
+   **来源 inspector**；多 target 报告**按主机分节**（单主机退化为无分节）。
+5. **健康态**：无 findings 时 `✅ 未发现异常` + 覆盖行（不吵）。
+
+> severity 图标：critical→`🔴`、warning→`⚠️`、info→`ℹ️`。
+> 中文 severity / confidence 标签：`严重` / `警告` / `信息`、`高` / `中` / `低`。
+
+### 单主机 · 有异常（Telegram，示意读法）
+
+下面按可读性展示**转义前**的内容（真实 MarkdownV2 payload 会对动态值做
+`mdv2_escape`，`*` / `↳` / `·` 是结构 / 字面字符）。
+
+```text
+🔴 Hostlens 巡检 · web-01 · 严重
+2026-06-15 03:00 · 5/6 项检查 · 1 项跳过
+
+根因分析
+• nginx upstream 连续 5xx 源于后端 mysql 连接耗尽，导致请求堆积。 (置信度 高)
+↳ systemctl restart mysql
+↳ 检查 max_connections 与连接池配置
+
+发现
+🔴 systemd 失败服务：nginx.service, mysql.service (linux.systemd.failed_units)
+⚠️ 磁盘使用率超阈值：/ 92% (linux.disk.usage)
+```
+
+要点：抬头是 `Hostlens 巡检 · web-01 · 严重`（不是 intent 整句）；覆盖行 `5/6 项检查
+· 1 项跳过`（无失败子句，因失败计数为 0）；根因置顶 + `↳` 处置；发现按 severity 降序、
+每条带来源 inspector；`systemd 失败服务：nginx.service, mysql.service` 注入的是干净
+join 串（`failed_names`），不是 raw 数组 repr（见
+[规则 10](inspector-authoring-contract.md#规则-10--findingrule-message-必须是简短中文标签--注入关键数据禁空指针--禁纯英文长句)）。
+
+### 多主机 · 确定性模式（Telegram，按主机分节）
+
+当一份报告含**两个及以上不同主机**的 findings（`finding.target_name` 多值），发现块
+**按主机分节**。同 message 跨主机因 `target_name` 不同**不**合并（四元组去重只在主机内
+全等才合并）：
+
+```text
+🔴 Hostlens 巡检 · fleet · 严重
+2026-06-15 03:00 · 12/12 项检查 · 0 项跳过
+
+发现
+
+web-01
+🔴 systemd 失败服务：nginx.service (linux.systemd.failed_units)
+
+web-02
+⚠️ 磁盘使用率超阈值：/ 88% (linux.disk.usage)
+```
+
+> 多 target 分节依赖 `Finding.target_name` 到达模板。notifier 渲染入口先
+> `redact_report_for_render` 脱敏再喂模板，故分节 / 去重消费的是**脱敏拷贝**——
+> `target_name` 能否到达模板取决于脱敏层透传该字段（见 design 的 redaction 边界说明）。
+
+### 健康态（无异常）
+
+无 findings 时只渲染抬头 + 覆盖行 + 一行 `✅ 未发现异常`，不刷屏：
+
+```text
+ℹ️ Hostlens 巡检 · web-01 · 信息
+2026-06-15 03:00 · 6/6 项检查 · 0 项跳过
+
+✅ 未发现异常
+```
+
+### 飞书 Lark 卡片
+
+Lark 渲染**同构**的结构（抬头 → 覆盖行 → 根因分析 → 发现 → 健康态），形态是交互式
+卡片 JSON：抬头走 card `header.title`（颜色由 severity 映射），覆盖行 / 根因 / 每条发现
+各是一个 `lark_md` div，多主机分节插入主机名 div。去重键 + 分节逻辑与 Telegram 完全一致
+（共用 `_filters.py` 的 `dedup` / `group_by_target` / `sort_sev`），只是包裹成卡片 JSON
+而非 MarkdownV2 文本。dry-run 渲染见 `hostlens notify render --channel <lark 通道>`。
+
 ## Known accepted risks
 
 - **At-most-3-attempt, at-least-once delivery**: a send is retried up to 3
