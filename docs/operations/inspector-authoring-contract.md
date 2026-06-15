@@ -381,6 +381,84 @@ if [ -z "$ids" ]; then printf '{"results":[]}'; exit 0; fi
 
 ---
 
+## 规则 10 — FindingRule `message` 必须是简短中文标签 + 注入关键数据（禁空指针 / 禁纯英文长句）
+
+FindingRule 的 `message` 是报告里运维**第一眼看到的那一行**。它走 Python `str.format`（**不是** Jinja，与命令模板的 Jinja2 不同引擎；见 [`project_manifest_parameters_must_wrap_type_object`] 邻近约定），用 `{field}` 注入 collector 输出字段。本规则把它从「作者手写的静态英文串」收口成「简短中文标签 + 具体数据」。
+
+> 落地于 OpenSpec 变更 `improve-report-rendering-and-i18n`。旗舰样板是
+> `linux.systemd.failed_units`；全量内置 inspector 的 message 改写是**分阶段多 PR 长尾**，
+> crosscheck 机审**按已迁移 allowlist 范围**生效（见下「机审边界」）。
+
+每条 `message` **必须**同时满足以下五点：
+
+- **(a) 简短中文标签**：用一句简短中文描述问题类别（如「systemd 失败服务」「磁盘使用率超阈值」「内存不足」），让人一眼知道是哪类问题。叙述性的根因分析归 Diagnostician（中文，见 diagnostician 系统提示），`message` 只做「标签 + 数据」，不写整段推理。
+- **(b) 注入关键数据**：对**有可变数据**的发现，用 `{field}` 注入 collector 输出的关键数据（哪个单元 / 什么值 / 什么阈值）。被注入的 `{field}` **必须**是 `output_schema` 保证存在的字段（`required` 或有容错默认），否则 `str.format` 抛 `KeyError`、该规则被静默跳过。
+- **(c) 注入干净人读串，禁 repr**：`str.format` 对**数组 / 对象类**输出会吐 **Python repr**（如 array-of-objects 渲染成 `[{'unit': 'foo.service'}]`），严禁直接注入这类字段。collector **必须额外 emit 一个已 join 的串字段**（如在 `failed: [{unit:...}]` 旁配一个 `failed_names: "foo.service, bar.service"`），`message` 注入那个干净串字段、而非 raw 对象数组。
+- **(d) 禁空指针**：禁止 `see X for details`（中英皆禁）这类**不含实际数据**的指针式措辞——发现必须自带具体指向，不必跳别处查。
+- **(e) 禁纯英文长句**：禁止整段英文叙述。技术术语 / 命令 / 字段名 / 路径可保留英文，但 message 主体是简体中文标签。
+
+**为什么**：本系统面向中文无人值守日报。手写静态英文串既不说**哪个**对象出了问题、又读着费劲；`see X for details` 把运维支到别处反而更慢；raw 数组注入吐 repr 让报告夹一坨 Python 字面量。中文标签 + 干净数据注入让每条发现**自带指向**。
+
+### 反例 / 正例（旗舰样板 `linux.systemd.failed_units`）
+
+`failed` 是 array-of-objects（`[{unit:...}]`）。直接注入 `{failed}` 会吐 repr；写英文静态串又违反 (a)(e)：
+
+```yaml
+# ❌ 英文静态串 + 空指针 + 不注入数据（改写前的旧 message）
+message: "One or more systemd units are in the failed state (see failed for details)"
+
+# ❌ 中文了但注入 raw 数组 → str.format 吐 "[{'unit': 'nginx.service'}]" repr
+message: "systemd 失败服务：{failed}"
+```
+
+```yaml
+# ✅ collector 在 awk 单遍里同时 emit `failed`（数组）与 `failed_names`（已 join 的干净串）
+collect:
+  command: |
+    systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null \
+      | awk '
+          { unit=$1; if (unit != "") { arr[n++]=unit } }
+          END {
+            printf "{\"failed\":[";
+            for (i=0;i<n;i++) { printf "%s{\"unit\":\"%s\"}", (i?",":""), arr[i] }
+            printf "],\"failed_names\":\"";
+            for (i=0;i<n;i++) { printf "%s%s", (i?", ":""), arr[i] }
+            printf "\"}";
+          }'
+output_schema:
+  type: object
+  properties:
+    failed:       { type: array, items: { type: object, properties: { unit: { type: string } } } }
+    failed_names: { type: string }          # 干净 join 串，供 message 注入
+  required: [failed, failed_names]           # 两者都 required，注入不会 KeyError
+findings:
+  - when: "len(failed) > 0"                   # 计数留在 when（str.format 不能调函数）
+    severity: critical
+    message: "systemd 失败服务：{failed_names}"   # ✅ 注入 "nginx.service, mysql.service"
+```
+
+> `message` 里**不能**写 `{len(failed)}`——`str.format` 不能在 `{}` 里调函数（会抛
+> `KeyError` 并跳过该规则），计数判断只留在 `when` 表达式里。
+
+### 凡注入数组 / 对象类字段，都须配套 emit 干净 join 串
+
+这不是 systemd 专属规约：**任何**要在 message 里展示一组对象（容器名 / 表名 / 端点）的 inspector，都须在 collector 里额外 emit 一个已 join 的串字段（`<name>_names` / `<name>_list` 之类），message 注入那个串，而非 raw 数组。
+
+### 机审边界（crosscheck 是静态检查、按 allowlist 范围、不验证运行时正确性）
+
+crosscheck 测试把上面的规约**部分**变机审，但有明确边界——它**不是**「全量必中文」的硬门：
+
+- **范围按已迁移 allowlist**：crosscheck 的「含中文 / 无空指针 / 注入字段已声明」断言**只**施加在「已迁移 allowlist」（初始 = `{linux.systemd.failed_units}`，各域长尾 PR 改写完逐个把 inspector 的 canonical `name` 加入）。**禁**对 allowlist 外未迁移 inspector 施加中文 / 注入断言——否则尚未改写的英文 message 会让 crosscheck 一上线即全红。
+- **防漂移断言**：每个内置 inspector **必须**恰好属于「已迁移 allowlist」或「待迁移 backlog」之一，且二者并集 == 全部内置 inspector。新增 inspector 若未分类（既不在 allowlist 也不在 backlog）则 crosscheck **失败**，强制作者把它纳入其一——使「全量 vs 长尾」边界显式可见，不靠「碰巧没人加新 inspector」逃逸。
+- **(c) 是 if-inject-then-declared 守卫**：crosscheck **若** message 含 `{field}` 注入**则**断言该字段在 `output_schema` 声明存在；它**不**机械强制「每条 message 必须注入」（「有可变数据必须注入」是作者目标契约，机械判定「哪些字段算可变数据」太模糊，留人审 + review）。genuinely 无可变数据的纯标签 inspector 无需注入、**也不需要任何豁免标记**。
+- **能力上限**：crosscheck 是**静态**检查（**不**实例化 collector、**不**跑命令）。它**不能**验证被注入的 `{field}` 运行时是否真实存在、**不能**验证注入值渲染是否干净（无 repr 泄漏）、**不**机械强制「该注入的有没有注入」——这些靠 collector 单测 + 真机 demo + 人审兜，本契约不宣称 crosscheck 覆盖运行时正确性。
+
+### finding id 一次性 churn（改 message 的已知副作用）
+
+`message` 是 `compute_finding_id(inspector_name, inspector_version, message)` 的输入（`severity` 被刻意排除以支持 `changed_severity` 检测）。因此**改写 message 会改变同一问题的 finding id**——批量重写 message 的那次升级，首跑 regression diff 会把旧 id 一次性报成 `resolved`、新 id 报成 `added`（同一真实问题 id 被重置，**非真实状态变化**）。这是 message 改写的已知且认可的一次性副作用，运维侧解读见 [MIGRATION.md](../MIGRATION.md#message-改写与-finding-id-一次性-churn)。
+
+---
+
 ## 速查清单（写完 inspector 自查）
 
 - [ ] 所有抽取 / 派生（比率 / 百分比 / 延迟秒）在 `collect.command` 算好，finding 只判标量（规则 1）
@@ -392,6 +470,7 @@ if [ -z "$ids" ]; then printf '{"results":[]}'; exit 0; fi
 - [ ] `requires_capabilities` 取自 enum、`requires_binaries` 声明依赖（规则 7）
 - [ ] backend 失败时 collector 非零退出 + 空/非-JSON stdout，**不**造 fallback 成功对象；genuine 空集与宕机走不同退出码（规则 8）
 - [ ] 外部 CLI 依赖用 `requires_binaries` 门控，**不**用惰性探测的 capability（如 `docker_cli`）当唯一门（规则 9）
+- [ ] FindingRule `message` 是简短中文标签 + `{field}` 注入关键数据；注入字段在 `output_schema` 声明（防 `KeyError`）；数组 / 对象类字段先在 collector emit 已 join 的干净串再注入（**禁** raw 数组吐 repr）；无 `see X for details` 空指针、无纯英文长句（规则 10）
 
 ---
 
@@ -403,3 +482,7 @@ if [ -z "$ids" ]; then printf '{"results":[]}'; exit 0; fi
   [`add-inspector-authoring-contract/design.md`](../../openspec/changes/add-inspector-authoring-contract/design.md)
 - 规范（5 条需求）：
   [`inspector-authoring-contract/spec.md`](../../openspec/changes/add-inspector-authoring-contract/specs/inspector-authoring-contract/spec.md)
+- message 规约（规则 10）规范：
+  [`improve-report-rendering-and-i18n/.../inspector-authoring-contract/spec.md`](../../openspec/changes/improve-report-rendering-and-i18n/specs/inspector-authoring-contract/spec.md)
+- 报告渲染新布局示例（抬头 / 覆盖行 / 根因置顶 / 四元组去重 / 多 target 分节 / 健康态）：
+  [notify.md §报告渲染示例](notify.md#报告渲染示例新布局)

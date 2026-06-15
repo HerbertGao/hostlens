@@ -104,7 +104,14 @@ def _end_turn(text: str) -> MessageResponse:
     return _msg(content=[TextBlock(type="text", text=text)], stop_reason="end_turn")
 
 
-def _correlate_tool_use(*, block_id: str, labels: list[str], desc: str = "hypo") -> MessageResponse:
+def _correlate_tool_use(
+    *,
+    block_id: str,
+    labels: list[str],
+    desc: str = "hypo",
+    confidence: str = "medium",
+    suggested_actions: list[str] | None = None,
+) -> MessageResponse:
     return _msg(
         content=[
             ToolUseBlock(
@@ -113,14 +120,23 @@ def _correlate_tool_use(*, block_id: str, labels: list[str], desc: str = "hypo")
                 name="correlate_findings",
                 input={
                     "description": desc,
-                    "confidence": "medium",
+                    "confidence": confidence,
                     "supporting_findings": labels,
-                    "suggested_actions": [],
+                    "suggested_actions": suggested_actions or [],
                 },
             )
         ],
         stop_reason="tool_use",
     )
+
+
+def _has_cjk(text: str) -> bool:
+    """True iff ``text`` contains at least one CJK Unified Ideograph.
+
+    Used to assert root-cause narratives are Simplified Chinese (spec §需求:
+    诊断根因叙述 必须用简体中文) without depending on a full language detector.
+    """
+    return any("一" <= ch <= "鿿" for ch in text)
 
 
 def _stamped(message: str, severity: str = "warning") -> Finding:
@@ -515,6 +531,86 @@ async def test_harvest_two_hypotheses_with_resolved_real_ids() -> None:
         for ref in h.supporting_findings:
             assert ref not in label_set
             assert len(ref) == 16 and all(c in "0123456789abcdef" for c in ref)
+
+
+async def test_chinese_root_cause_narrative_flows_through_to_hypothesis() -> None:
+    """A Chinese ``description`` + ``suggested_actions`` produced by the model
+    (replayed via ``FakeBackend``) survives the full plumbing and lands on the
+    harvested ``RootCauseHypothesis`` as Simplified Chinese, while ``confidence``
+    stays a valid enum value (spec §需求:诊断根因叙述 必须用简体中文).
+
+    This exercises the system-prompt-含中文约束 + 中文输出 plumbing offline (no
+    real API). The Playback cassette key excludes the system prompt, so switching
+    ``diagnostician.md`` to carry the Chinese constraint never invalidates the
+    existing planner/demo/diagnostician cassettes — this test pins that the
+    pipeline carries Chinese narratives intact end to end.
+    """
+    store = FindingStore()
+    f1 = _stamped("磁盘空间不足")
+    store.seed([f1])  # F1
+    registry = _correlate_only_registry(store)
+
+    description = "根因:磁盘写满导致 nginx worker 无法落盘日志,进而拒绝新连接。"
+    suggested_actions = [
+        "清理 /var/log 下的历史日志并配置 logrotate。",
+        "扩容数据盘或迁移大文件到对象存储。",
+    ]
+    backend = FakeBackend(
+        responses=[
+            _correlate_tool_use(
+                block_id="tu_zh",
+                labels=["F1"],
+                desc=description,
+                confidence="high",
+                suggested_actions=suggested_actions,
+            ),
+            _end_turn("诊断完成:磁盘耗尽是根因。"),
+        ]
+    )
+
+    loop_result = await _agent(cast(LLMBackend, backend), registry).run(
+        "为什么服务变慢", [SeededFinding(label="F1", finding=f1)]
+    )
+
+    hypotheses = harvest_hypotheses(loop_result, store)
+    assert len(hypotheses) == 1
+    hypo = hypotheses[0]
+
+    # description is Simplified Chinese (carries CJK), preserved verbatim.
+    assert hypo.description == description
+    assert _has_cjk(hypo.description)
+
+    # Every suggested_action is Chinese, preserved verbatim and order-stable.
+    assert hypo.suggested_actions == suggested_actions
+    assert all(_has_cjk(action) for action in hypo.suggested_actions)
+
+    # confidence stays a legal enum value (NOT localized).
+    assert hypo.confidence == "high"
+    assert hypo.confidence in {"low", "medium", "high"}
+    # supporting_findings stays a real 16-hex id, not a label.
+    assert hypo.supporting_findings == [f1.id]
+
+
+def test_diagnostician_prompt_mandates_simplified_chinese_narrative() -> None:
+    """The shipped ``diagnostician.md`` system prompt MUST carry the explicit
+    Simplified-Chinese constraint on ``description`` / ``suggested_actions``
+    (spec §需求: Diagnostician 系统提示 必须显式约束输出语言为简体中文).
+
+    Asserting on the byte-stable prompt constant keeps the language constraint a
+    fixed part of the cached system prompt — not a dynamic per-report injection.
+    """
+    store = FindingStore()
+    registry = _correlate_only_registry(store)
+    backend = FakeBackend(responses=[])
+    agent = _agent(cast(LLMBackend, backend), registry)
+
+    system = agent._loop._system
+    assert isinstance(system, list)
+    system_text = system[0]["text"]
+    assert "简体中文" in system_text
+    # The constraint names the two free-text fields it governs.
+    assert "description" in system_text
+    assert "suggested_actions" in system_text
 
 
 def test_harvest_skips_error_invocations() -> None:

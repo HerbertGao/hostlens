@@ -13,18 +13,24 @@ requires_binaries: [systemctl, awk]
 privilege: none
 
 collect:
-  # `systemctl --failed` lists failed units; awk extracts the unit name
-  # (first column) and emits a JSON array. The empty case still prints a
-  # valid top-level object ({"failed":[]}) so parse_json never crashes
-  # (trap b).
+  # `systemctl --failed` lists failed units; a single awk pass collects each
+  # unit name (first column) and emits BOTH a `failed` array-of-objects AND a
+  # `failed_names` join string ("foo.service, bar.service"). The finding
+  # message injects `{failed_names}` (a clean human-readable string) rather
+  # than `{failed}` — `str.format` on the array would render a Python repr.
+  # The empty case still prints a valid top-level object
+  # ({"failed":[],"failed_names":""}) so parse_json never crashes (trap b).
   command: |
     systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null \
-      | awk '{ unit=$1; if (unit != "") { printf "%s{\"unit\":\"%s\"}", (n++ ? "," : ""), unit } }' \
-      > /tmp/.hostlens_failed_$$ || true
-    printf '{"failed":['
-    cat /tmp/.hostlens_failed_$$ 2>/dev/null || true
-    printf ']}'
-    rm -f /tmp/.hostlens_failed_$$
+      | awk '
+          { unit=$1; if (unit != "") { arr[n++]=unit } }
+          END {
+            printf "{\"failed\":[";
+            for (i=0;i<n;i++) { printf "%s{\"unit\":\"%s\"}", (i?",":""), arr[i] }
+            printf "],\"failed_names\":\"";
+            for (i=0;i<n;i++) { printf "%s%s", (i?", ":""), arr[i] }
+            printf "\"}";
+          }'
   timeout_seconds: 10
 
 parse:
@@ -39,13 +45,16 @@ output_schema:
         type: object
         properties:
           unit: { type: string }
-  required: [failed]
+    # `failed_names` is the clean join string the finding message injects.
+    failed_names: { type: string }
+  required: [failed, failed_names]
   additionalProperties: false
 
 findings:
   # The message uses no `{len(...)}` — Python str.format cannot call
   # functions inside `{}` (it would raise KeyError and skip the rule), so
-  # the count stays in the `when` expression only.
+  # the count stays in the `when` expression only. `{failed_names}` injects
+  # the clean comma-joined unit list (e.g. "nginx.service, mysql.service").
   - when: "len(failed) > 0"
     severity: critical
-    message: "One or more systemd units are in the failed state (see failed for details)"
+    message: "systemd 失败服务：{failed_names}"

@@ -95,8 +95,11 @@ def test_truncate_does_not_leave_dangling_escape() -> None:
 
 def test_truncate_keeps_markdownv2_entities_balanced() -> None:
     notifier = _notifier(httpx.MockTransport(lambda r: httpx.Response(200)))
-    # A very long intent forces a clip; the clip must not land mid-``*bold*`` /
-    # mid-``\`code\``` and leave an unterminated entity (Telegram HTTP 400).
+    # A very long finding message forces a clip; the clip must not land
+    # mid-``*bold*`` (the section抬头 / 主机分节 markers) and leave an
+    # unterminated entity (Telegram HTTP 400). The new layout no longer
+    # renders ``intent`` in the body, so the overflow is driven by message
+    # content that actually appears in the 发现 section.
     report = Report.from_inspector_results(
         "web-1",
         [
@@ -107,12 +110,12 @@ def test_truncate_keeps_markdownv2_entities_balanced() -> None:
                 target_name="web-1",
                 duration_seconds=0.1,
                 output={},
-                findings=[Finding(severity="warning", message="ok")],
+                findings=[Finding(severity="warning", message="I" * 6000)],
             )
         ],
         started_at=datetime(2026, 1, 1),
         finished_at=datetime(2026, 1, 1),
-        intent="I" * 6000,
+        intent="nightly check",
     )
     payload = notifier.render(report, severity="warning")
     body = payload.body
