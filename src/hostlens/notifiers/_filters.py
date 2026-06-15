@@ -1,8 +1,8 @@
 """Shared Jinja filters for the notifier report templates.
 
-Spec: ``openspec/changes/improve-report-rendering-and-i18n/specs/notifier-telegram/spec.md``
-and ``.../notifier-lark/spec.md`` (§需求:结构化布局 — 抬头 / 覆盖 / 根因优先 /
-四元组去重 / 排序 / 多 target 分节 / 健康态).
+Spec: ``openspec/specs/notifier-telegram/spec.md`` and
+``openspec/specs/notifier-lark/spec.md`` (§需求:结构化布局 — 抬头 / 覆盖 /
+发现优先 / 四元组去重 / 排序 / 多 target 分节 / 健康态 / fleet 主机归因).
 
 These filters are **pure functions** registered into both the Telegram and
 the Lark Jinja environments (``telegram.py`` / ``lark.py``
@@ -23,7 +23,9 @@ Filter set (the seven names pinned by the change):
   (critical → warning → info), stable within a rank.
 - ``group_by_target`` — group findings by ``target_name`` into host sections,
   degrading to a single ``(None, findings)`` section when
-  ``distinct(non-None target_name) ≤ 1``.
+  ``distinct(non-None target_name) ≤ 1`` **且非 fleet**. A fleet report
+  (``fleet=True``) with ≥1 non-None target always sections by host (even a
+  single distinct host), so a single-host fleet finding keeps its attribution.
 """
 
 from __future__ import annotations
@@ -172,24 +174,37 @@ def sort_sev(findings: list[Finding]) -> list[Finding]:
     return sorted(findings, key=lambda f: _SEV_RANK.get(f.severity, 0), reverse=True)
 
 
-def group_by_target(findings: list[Finding]) -> list[tuple[str | None, list[Finding]]]:
+def group_by_target(
+    findings: list[Finding], *, fleet: bool = False
+) -> list[tuple[str | None, list[Finding]]]:
     """Group findings into host sections by ``target_name``.
 
     Returns a list of ``(target_name, findings)`` sections. The grouping
     degrades to a **single** ``(None, findings)`` section (no host sectioning)
-    when ``distinct(non-None target_name) ≤ 1`` — i.e. all findings carry
-    ``None``, or share one non-None target, or are a mix of ``None`` and one
-    single non-None value. Only when two or more *distinct* non-None target
-    names appear are real host sections produced.
+    when ``distinct(non-None target_name) ≤ 1`` **且非 fleet** (``fleet`` is
+    ``False``) — i.e. an agent single-host report whose findings all carry
+    ``None``, share one non-None target, or mix ``None`` with one single
+    non-None value (the header already names the machine, so per-host
+    sectioning is redundant).
 
-    When sectioning, sections are ordered by first appearance and each
-    section preserves the incoming finding order. Findings with a ``None``
-    ``target_name`` (partial fleet stamping) collect into their own section
-    keyed by ``None``, appended after the named sections in first-seen order.
+    A **fleet** report (``fleet=True``) with ≥1 non-None target always takes
+    the named-section path — *even when only one distinct host appears* — so a
+    single-host fleet finding keeps its attribution (the spec's core fix). An
+    **all-None fleet** report (``distinct == 0`` ∧ ``fleet``) falls through the
+    named path with an empty ``named`` map and a non-empty ``none_group``,
+    returning a single ``(None, findings)`` section; the template's "节数 > 1
+    才渲未标注主机头" guard then renders it as a headerless flat list.
+
+    Otherwise (``distinct ≥ 2``, or fleet with ``distinct ≥ 1``) real host
+    sections are produced. When sectioning, sections are ordered by first
+    appearance and each section preserves the incoming finding order. Findings
+    with a ``None`` ``target_name`` (partial fleet stamping) collect into their
+    own section keyed by ``None``, appended after the named sections in
+    first-seen order.
     """
 
     distinct_named = {f.target_name for f in findings if f.target_name is not None}
-    if len(distinct_named) <= 1:
+    if len(distinct_named) <= 1 and not fleet:
         return [(None, list(findings))]
 
     # Named sections in first-seen order; the unstamped (None) group is held
