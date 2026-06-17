@@ -8,7 +8,7 @@
 
 ### mysqld (pid 4242) 失控占用 CPU 是本次饱和的根因: 单进程 97.5% CPU 叠加持续负载 (5 分钟 12.10, 15 分钟 8.00) 远超 4 核容量, 过载已持续数分钟.
 - **Confidence:** high
-- **Supporting findings:** 6010bd422fab42a1
+- **Supporting findings:** 996c44992db27b32
 - **Suggested actions:**
   - 排查 mysqld 慢查询日志, 定位失控线程或全表扫描.
   - 必要时限流或重启 mysqld, 并观察负载是否回落.
