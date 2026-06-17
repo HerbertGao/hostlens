@@ -1,5 +1,5 @@
 name: linux.cpu.top_processes
-version: 1.0.0
+version: 1.1.0
 description: List the top CPU-consuming processes to diagnose CPU saturation.
 tags: [cpu, linux, performance]
 targets: [local, ssh]
@@ -7,16 +7,49 @@ requires_capabilities: [shell]
 requires_binaries: [ps]
 privilege: none
 
+parameters:
+  type: object
+  properties:
+    # Minimum process age (seconds) before a high `%cpu` reading is allowed to
+    # produce a finding. procps `ps %cpu` is `cputime/realtime` (cumulative CPU
+    # time / lifetime), NOT instantaneous utilisation: a just-spawned CPU-bound
+    # process that ran ~1-2s reads ~100% and would false-alarm without an age
+    # gate. `min_etimes` is the sustained-occupancy proxy (analogous to load_avg
+    # gating on load5/load15 instead of the single-sample load1). Numeric
+    # parameters only flow into the Finding DSL (never `| sh`), so no `pattern`;
+    # `exclusiveMinimum: 0` rejects a 0/negative schedule override that would
+    # make `>= min_etimes` trivially true and defeat the gate.
+    #
+    # Default `10` (NOT 60): a process lifetime is not a load EMA. 60s would let
+    # a genuinely runaway process (fork bomb / start-up-and-spin service) hide
+    # for a full minute and hurt this inspector's "diagnose CPU saturation"
+    # mission; 10s still filters the 0-2s one-off journalctl artefact while
+    # keeping the blind window minimal.
+    min_etimes:
+      type: number
+      exclusiveMinimum: 0
+      default: 10
+  additionalProperties: false
+
 collect:
   # Fixed -o field list locks column order across locale / kernel versions
   # (Risks: table parse column drift). `--sort=-pcpu` puts the hottest
   # processes first; `head` caps the row count so the table stays small.
-  command: "ps -eo pid,pcpu,pmem,comm --sort=-pcpu --no-headers | head -n 10"
+  #
+  # PROCPS-ONLY: `-eo` custom fields and `etimes` (process elapsed seconds) are
+  # procps-ng extensions; busybox/Alpine `ps` does NOT support them. On those
+  # platforms `ps` errors and prints nothing — but its non-zero exit is masked
+  # by the `| head` pipe (pipeline exit = head's = 0) and the runner does not
+  # gate the main collect command's exit code, so this does NOT fail loudly via
+  # exit code. The honest-failure guard is `output_schema.rows.minItems: 1`
+  # below (empty result → `status=exception`, not a silent `status=ok`). This
+  # only widens the pre-existing procps assumption already carried by `pcpu`/`-eo`.
+  command: "ps -eo pid,pcpu,pmem,etimes,comm --sort=-pcpu --no-headers | head -n 10"
   timeout_seconds: 10
 
 parse:
   format: table
-  columns: [pid, cpu_pct, mem_pct, comm]
+  columns: [pid, cpu_pct, mem_pct, etimes, comm]
   skip_header_rows: 0
 
 output_schema:
@@ -24,12 +57,22 @@ output_schema:
   properties:
     rows:
       type: array
+      # A working procps host ALWAYS has >=1 process (init + kernel threads),
+      # so `ps ... | head` yields >=1 row. Zero rows means collection failed /
+      # produced nothing (e.g. a non-procps `ps` that errored — its non-zero
+      # exit is masked by the `| head` pipe and the runner does not gate the
+      # main collect command's exit code). `minItems: 1` turns that empty result
+      # into a jsonschema failure -> `status=exception` instead of a silent
+      # `status=ok` with 0 findings (a false "all clear"). Inspector-level
+      # fail-loud guard for unsupported (busybox/BSD) platforms.
+      minItems: 1
       items:
         type: object
         properties:
           pid:     { type: string }
           cpu_pct: { type: string }
           mem_pct: { type: string }
+          etimes:  { type: string }
           comm:    { type: string }
   additionalProperties: false
 
@@ -38,11 +81,16 @@ findings:
   # dict keys. The message uses subscript form (`{p[comm]}`) because
   # Python str.format does getattr — not getitem — for the `.attr` form,
   # which would fail on a parsed dict row.
+  #
+  # The `int(p.etimes) >= min_etimes` conjunct is the age gate: a high `%cpu`
+  # reading only fires once the process has lived long enough to be a sustained
+  # occupant, suppressing the `%cpu = cputime/realtime` artefact of young /
+  # self-spawned (observer-caught-itself) processes.
   - for_each: "rows as p"
-    when: "float(p.cpu_pct) >= 90.0"
+    when: "int(p.etimes) >= min_etimes and float(p.cpu_pct) >= 90.0"
     severity: critical
     message: "Process {p[comm]} (pid {p[pid]}) is using {p[cpu_pct]}% CPU"
   - for_each: "rows as p"
-    when: "float(p.cpu_pct) >= 70.0 and float(p.cpu_pct) < 90.0"
+    when: "int(p.etimes) >= min_etimes and float(p.cpu_pct) >= 70.0 and float(p.cpu_pct) < 90.0"
     severity: warning
     message: "Process {p[comm]} (pid {p[pid]}) CPU usage elevated at {p[cpu_pct]}%"

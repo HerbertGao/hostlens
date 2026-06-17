@@ -87,7 +87,7 @@ SCENARIOS: tuple[IncidentScenario, ...] = (
             InspectorCall(
                 name="linux.cpu.top_processes",
                 params={},
-                main_stdout="4242 97.5 12.3 mysqld\n4310 64.2 3.1 python3\n1180 12.0 1.0 nginx\n",
+                main_stdout="4242 97.5 12.3 86400 mysqld\n4310 64.2 3.1 3600 python3\n1180 12.0 1.0 7200 nginx\n",
             ),
             InspectorCall(
                 name="linux.system.load_avg",
