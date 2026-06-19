@@ -24,7 +24,7 @@ repos:
         files: ^src/
         additional_dependencies:
           - pydantic>=2.13.4
-          - pydantic-settings>=2.14.1
+          - pydantic-settings>=2.14.2
           - structlog>=26.1.0
           - typer>=0.25.1,<0.26
           - click>=8.4.1,<9
