@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -45,6 +46,7 @@ from hostlens.targets.config import (
     load_targets_config,
     save_targets_config,
 )
+from hostlens.targets.import_plan import ImportPlan
 from hostlens.targets.onboard import assemble_save_entries, build_import_plan
 from hostlens.targets.registry import build_registry_from_config
 
@@ -458,11 +460,123 @@ def test_cmd(
         raise typer.Exit(code=1)
 
 
+def _import_from_plan(
+    plan_path: str,
+    *,
+    dry_run: bool,
+    yes: bool,
+    include_unreachable: bool,
+    json_output: bool,
+) -> None:
+    """Land a serialised ``ImportPlan`` from ``--from-plan`` (own write branch).
+
+    This is a self-contained branch that decides exit code + rendering **before**
+    the shared ref-mode write tail (the ``candidates_failed`` heuristic). Its
+    semantics differ deliberately: an empty ``to_add`` is exit 0 (not exit 1 — it
+    does not re-probe so the candidates-failed heuristic does not apply), and the
+    ``--yes`` happy path does NOT render a diff (file-source trust; an operator
+    who wants to audit runs ``--from-plan --dry-run`` first).
+
+    Failure modes (unreadable / malformed / schema or version mismatch /
+    invariant violation) are normalised by ``ImportPlan.load`` to ``ConfigError``
+    and mapped here to exit 2 — never a bare traceback, never a partial write.
+    """
+
+    def _quiet_stdout() -> contextlib.AbstractContextManager[Any]:
+        # See the ref-mode rationale: keep ``--json`` stdout a single JSON doc by
+        # routing the absent-config DEBUG line (during the write's internal load)
+        # to stderr. The plan load itself does not touch ``targets.yaml``.
+        if json_output:
+            return contextlib.redirect_stdout(sys.stderr)
+        return contextlib.nullcontext()
+
+    # Load + re-validate the plan (trust boundary). ``ImportPlan.load`` wraps
+    # read / parse / schema / invariant failures into ``ConfigError``; map to
+    # exit 2. No write has happened, so this is fail-closed.
+    try:
+        plan = ImportPlan.load(Path(plan_path))
+    except (ConfigError, ValidationError) as exc:
+        typer.echo(f"hostlens target import: invalid --from-plan file: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    will_write = yes
+    # Preview (``--dry-run`` or no ``--yes``): render the loaded plan, write
+    # nothing, exit 0. Root is tolerated on this read-only path.
+    if not will_write:
+        if json_output:
+            sys.stdout.write(plan.render_json())
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            console = Console(highlight=False, soft_wrap=True)
+            console.print(plan.render_diff(), markup=False)
+        typer.echo(
+            "DRY-RUN: nothing written. Pass --yes to land this plan.",
+            err=json_output,
+        )
+        raise typer.Exit(code=0)
+
+    # Write path: refuse root before any side-effect (mirrors ref mode).
+    _refuse_root_for_write("import")
+
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        typer.echo(f"hostlens target import: configuration error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    cfg_path = settings.targets_config_path
+
+    # ``--json`` is a machine-output contract: emit the loaded plan to stdout even
+    # on the ``--yes`` write path (matches ref mode; status trailers go to stderr
+    # so stdout stays a single JSON doc). The HUMAN diff stays suppressed on
+    # ``--yes`` (file-source trust) — only the explicitly-requested ``--json``
+    # surface is emitted.
+    if json_output:
+        sys.stdout.write(plan.render_json())
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    # ``--yes`` happy path: project the plan and save verbatim WITHOUT rendering a
+    # diff (file-source trust). ``assemble_save_entries`` honours
+    # ``--include-unreachable``; ``save_targets_config`` keeps ``${VAR}`` refs and
+    # is idempotent on name collisions.
+    save_entries = assemble_save_entries(plan, include_unreachable=include_unreachable)
+
+    def _status(message: str) -> None:
+        typer.echo(message, err=json_output)
+
+    if not save_entries:
+        # Empty ``to_add`` (e.g. all ``skipped``, or all ``failed_probe`` without
+        # ``--include-unreachable``) is NOT a failure: ``--from-plan`` does not
+        # re-probe, so the ref-mode candidates-failed heuristic does not apply.
+        _status("nothing to import; targets.yaml unchanged.")
+        raise typer.Exit(code=0)
+
+    try:
+        with _quiet_stdout():
+            added = save_targets_config(cfg_path, save_entries)
+    except (ConfigError, ValidationError) as exc:
+        typer.echo(f"hostlens target import: failed to write targets config: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    skipped_existing = len(save_entries) - added
+    suffix = f" ({skipped_existing} already present, skipped)" if skipped_existing else ""
+    _status(f"imported {added} target(s) into {cfg_path}{suffix}")
+
+
 @target_app.command("import")
 def import_cmd(
-    inventory: str = typer.Argument(
-        ...,
-        help="Path to the inventory source (ssh_config file or yaml inventory).",
+    inventory: str | None = typer.Argument(
+        None,
+        help="Path to the inventory source (ssh_config file or yaml inventory). "
+        "Mutually exclusive with --from-plan; exactly one is required.",
+    ),
+    from_plan: str | None = typer.Option(
+        None,
+        "--from-plan",
+        help="Land a serialised ImportPlan file (YAML or JSON) directly, skipping "
+        "source parse + probe. Mutually exclusive with the inventory argument.",
     ),
     source: str | None = typer.Option(
         None,
@@ -489,10 +603,10 @@ def import_cmd(
         "--include-unreachable",
         help="Also register probe-failed candidates with enabled=False (escape hatch).",
     ),
-    concurrency: int = typer.Option(
-        10,
+    concurrency: int | None = typer.Option(
+        None,
         "--concurrency",
-        help="Max simultaneous probe connections (semaphore bound).",
+        help="Max simultaneous probe connections (semaphore bound; default 10).",
     ),
     json_output: bool = typer.Option(
         False,
@@ -507,11 +621,17 @@ def import_cmd(
     ``to_add`` (and, with ``--include-unreachable``, the failed candidates as
     ``enabled=False``). There is no per-row prompt — absence of ``--yes`` is the
     dry-run preview, which is why missing ``--yes`` exits 0 rather than 1.
+
+    ``--from-plan <path>`` lands a serialised ``ImportPlan`` (an MCP
+    ``propose_target_import`` artefact a client serialised, or a dry-run
+    ``ImportPlan.save`` YAML) verbatim, skipping source parse + probe. Exactly
+    one of the inventory argument and ``--from-plan`` is required.
     """
 
     # ``--dry-run`` and ``--yes`` are mutually exclusive: passing both is a
     # fail-safe parameter error (prevents muscle-memory ``--dry-run`` plus an
-    # added ``--yes`` from silently writing). Exit 2 (parameter error).
+    # added ``--yes`` from silently writing). Exit 2 (parameter error). Checked
+    # before the inventory/--from-plan split so it applies to both modes.
     if dry_run and yes:
         typer.echo(
             "hostlens target import: --dry-run and --yes are mutually exclusive",
@@ -519,8 +639,22 @@ def import_cmd(
         )
         raise typer.Exit(code=2)
 
+    # ``inventory`` and ``--from-plan`` are exactly-one-of. Manual bare-str
+    # validation → ``typer.Exit(2)`` (a required Typer Argument would route a
+    # missing value through Click UsageError → exit 3, breaking the exit-2
+    # parameter-error contract). Both given / both missing are parameter errors.
+    if (inventory is None) == (from_plan is None):
+        typer.echo(
+            "hostlens target import: provide exactly one of the inventory argument or --from-plan",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     # ``--skip-unreachable`` (default) and ``--include-unreachable`` are
-    # opposites; passing both is a parameter error (exit 2).
+    # opposites; passing both is a parameter error (exit 2). Checked before the
+    # inventory/--from-plan split so it applies to both modes (``--from-plan``
+    # honours ``--include-unreachable`` for landing ``failed_probe`` entries, so
+    # the contradiction must be rejected there too — no silent no-op).
     if skip_unreachable and include_unreachable:
         typer.echo(
             "hostlens target import: --skip-unreachable and --include-unreachable "
@@ -528,6 +662,36 @@ def import_cmd(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    if from_plan is not None:
+        # ``--source`` / ``--concurrency`` are pure parse/probe-period knobs;
+        # ``--from-plan`` skips both, so passing either is a silent no-op →
+        # reject it (exit 2) rather than ignore it. ``--concurrency`` defaults to
+        # the ``None`` sentinel precisely so an explicit ``--concurrency 10`` is
+        # distinguishable from the default here.
+        if source is not None or concurrency is not None:
+            typer.echo(
+                "hostlens target import: --source / --concurrency have no meaning "
+                "with --from-plan (it skips parse + probe)",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        _import_from_plan(
+            from_plan,
+            dry_run=dry_run,
+            yes=yes,
+            include_unreachable=include_unreachable,
+            json_output=json_output,
+        )
+        return
+
+    # ``inventory`` is narrowed to ``str`` here: the exactly-one-of check above
+    # exits when both are ``None``, and the ``--from-plan`` branch returned, so
+    # reaching here means ``inventory`` is set.
+    assert inventory is not None
+    # Derive the probe concurrency from the sentinel default (``None`` exists so
+    # ``--from-plan`` can detect an explicit ``--concurrency``; ref mode uses 10).
+    probe_concurrency = concurrency if concurrency is not None else 10
 
     # ``--source`` is a bare str validated here so an unknown value maps to
     # exit 2 (a Typer Choice/Enum would route through Click UsageError → exit
@@ -594,7 +758,7 @@ def import_cmd(
                     source=source,
                     settings=settings,
                     existing_names=existing_names,
-                    concurrency=concurrency,
+                    concurrency=probe_concurrency,
                 )
             )
         except ConfigError as exc:

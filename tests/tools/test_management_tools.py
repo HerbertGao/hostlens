@@ -1336,8 +1336,8 @@ async def test_dispatch_run_schedule_now_unknown_name_envelope_scrubbed() -> Non
 # --------------------------------------------------------------------------- #
 # 7.2 — Demo Path offline walkthrough (no SSH, no paid API). Each leg of the
 # proposal's Demo Path is exercised here against the FakeBackend / temp stores:
-# serve assembles 10 tools (asserted by
-# tests/mcp_server/test_serve_assembly.py::test_serve_assembles_ten_tools); the
+# serve assembles 11 tools (asserted by
+# tests/mcp_server/test_serve_assembly.py::test_serve_assembles_eleven_tools); the
 # six query tools dispatch offline; and run_schedule_now replays through the
 # FakeBackend `_happy_script` (the offline "no paid API" stand-in — the report
 # pipeline never reaches a real Anthropic endpoint).

@@ -529,6 +529,64 @@ See the [`target-import` / `inventory-source` specs](../../openspec/specs/) for
 the precise `CandidateTarget` / `ProbeResult` / `ImportPlan` schemas, the
 `error_kind` closed set, and the fingerprint key allowlist.
 
+### `--from-plan` — land a pre-built `ImportPlan`
+
+`hostlens target import --from-plan <path>` lands a **serialised `ImportPlan`**
+directly, **skipping the source-parse and probe stages**. It exists so a plan
+produced elsewhere — most notably by the MCP `propose_target_import` tool (a
+remote LLM proposes the plan, never lands it; see
+[`docs/integrations/mcp-tools.md`](../integrations/mcp-tools.md#propose_target_import))
+— lands **verbatim and deterministically**: the plan's probe results are taken
+as-is rather than re-probed, so the `enabled` flags cannot drift between propose
+and land.
+
+```bash
+hostlens target import --from-plan <path> [--dry-run|--yes] \
+    [--include-unreachable] [--json]
+```
+
+The `<path>` file may be **YAML or JSON** — both are accepted (`ImportPlan.load`
+uses `yaml.safe_load`, and JSON is a subset of YAML). Two producers feed it:
+
+- an MCP `propose_target_import` result a client serialised to a file, or
+- a `ImportPlan.save` artefact (the YAML a dry-run can persist).
+
+`--from-plan` and the positional `<inventory>` are **exactly one-of**: passing
+both, or neither, is a parameter error (exit 2). `--source` and `--concurrency`
+are pure parse/probe-period knobs — `--from-plan` skips both, so passing either
+alongside it is rejected (exit 2) rather than silently ignored. `--dry-run`,
+`--yes`, `--include-unreachable`, and `--json` all still apply.
+
+#### `--from-plan --yes` trusts the file's author (no diff is rendered)
+
+The `--yes` happy path lands the plan **without rendering a diff** — it trusts
+the file's authorship the same way `target add --yes` trusts its command-line
+arguments. To **audit** an untrusted plan before landing, run
+`--from-plan --dry-run` first: that renders the loaded plan (with control chars
+stripped from the display) and writes nothing (exit 0). Absence of `--yes` is
+the dry-run preview, exactly as in ref mode.
+
+`ImportPlan.load` is the **trust boundary**: before landing, it re-validates the
+promotion invariants on every land-bound entry (`to_add` always; `failed_probe`
+when `--include-unreachable` is set) — bare env-var names matching
+`^[A-Z_][A-Z0-9_]*$` (not `${VAR}` form), no control / bidi characters in an
+SSH entry's `host` / `user` / `key_path`, `to_add` entries `enabled=True`, and
+no inline plaintext `password` / `passphrase`. A tampered or malformed plan
+(disabled `to_add`, a malformed `*_env` placeholder, a control-char host, or a
+`version` other than `"1"`) is rejected with **exit 2** and nothing is written.
+A plan from the old `.save` format with no `version` key loads as v1 (backward
+compatible).
+
+#### `--from-plan` exit-code differences from ref mode
+
+`--from-plan` does **not** re-probe, so it does **not** reuse ref mode's
+candidates-failed heuristic. An empty `to_add` (e.g. everything is `skipped`,
+or everything is `failed_probe` without `--include-unreachable`) is **exit 0**
+("nothing to import; `targets.yaml` unchanged") — not the exit 1 ref mode
+returns when all probed candidates failed. Other exit codes match: file
+unreadable / malformed / schema-or-version mismatch / invariant violation →
+exit 2; refusing to run as root on the `--yes` write path → exit 1.
+
 ### Demo Path
 
 Two paths, offline-first (path 1 needs no SSH and no paid API).
