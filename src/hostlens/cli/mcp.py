@@ -12,6 +12,7 @@ when it is not installed the command prints an install hint to stderr and exits
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -31,9 +32,14 @@ from hostlens.reporting.store import ReportStore
 from hostlens.scheduler.loader import load_schedules
 from hostlens.scheduler.store import RunStore
 from hostlens.targets.config import TargetsConfig, load_targets_config
+from hostlens.targets.onboard import default_source_registry
 from hostlens.targets.registry import TargetRegistry, build_registry_from_config
 from hostlens.tools.base import NoopApprovalService, ToolContext
 from hostlens.tools.default_tools import register_default_tools
+from hostlens.tools.import_propose_tool import (
+    ImportProposeToolDeps,
+    register_import_propose_tool,
+)
 from hostlens.tools.management_tools import (
     ManagementToolDeps,
     make_build_runner,
@@ -178,6 +184,47 @@ def _build_management_deps(
     )
 
 
+def _build_import_propose_deps(
+    settings: Settings,
+    target_registry: TargetRegistry,
+) -> ImportProposeToolDeps:
+    """Assemble ``ImportProposeToolDeps`` for the ``propose_target_import`` tool.
+
+    Mirrors ``_build_management_deps``: closure-binds ``settings`` + the source
+    registry and a **fresh-read** existing-names callable. ``target_registry``
+    is accepted to match the helper convention but is deliberately NOT read for
+    existing names — ``read_existing_names`` re-reads ``targets.yaml`` on every
+    propose so a target added by a local CLI after serve boot still buckets into
+    ``skipped`` (design D4); ``target_registry.names()`` would return the
+    serve-boot-frozen set and miss it.
+
+    The fresh-read uses ``expand_env=False`` (only names are needed, never
+    secrets) and tolerates an absent file. A malformed ``targets.yaml`` raises
+    ``ConfigError`` from the callable at dispatch time, which the MCP dispatch
+    general-except scrubs into a structured error envelope (it never reaches
+    serve assembly, so it cannot exit the process).
+    """
+
+    del target_registry
+
+    def _read_existing_names() -> set[str]:
+        # Absent config → empty set without a (pointless) loader call, mirroring
+        # ``_build_target_registry``'s ``.exists()`` guard. Protocol-stream safety
+        # under stdio MCP is guaranteed by ``serve_cmd`` routing all structlog
+        # output to stderr (so even the loader's not-found DEBUG would be safe);
+        # this guard is a micro-optimisation, not the stdout protection.
+        if not settings.targets_config_path.exists():
+            return set()
+        config = load_targets_config(settings.targets_config_path, expand_env=False)
+        return {entry.name for entry in config.targets}
+
+    return ImportProposeToolDeps(
+        settings=settings,
+        source_registry=default_source_registry(),
+        read_existing_names=_read_existing_names,
+    )
+
+
 @mcp_app.command("serve")
 def serve_cmd() -> None:
     """Start the MCP Server on stdio (foreground; managed by the MCP host)."""
@@ -196,7 +243,11 @@ def serve_cmd() -> None:
         raise typer.Exit(code=1) from None
 
     settings = _load_settings_or_exit()
-    configure_logging(settings.log_mode)
+    # stdio MCP: stdout IS the JSON-RPC protocol stream, so ALL structlog output
+    # must go to stderr — otherwise any dispatch-time log (e.g. the ssh_config
+    # parser while `propose_target_import` parses an inventory) corrupts the
+    # client frame. This is the single correct sink fix (covers every call-site).
+    configure_logging(settings.log_mode, stream=sys.stderr)
     logger = structlog.get_logger("hostlens.mcp.serve")
 
     target_registry = _build_target_registry(settings)
@@ -229,6 +280,15 @@ def serve_cmd() -> None:
         raise typer.Exit(code=2) from None
 
     register_mcp_management_tools(registry, deps=deps)
+
+    # MCP propose-only target-import tool (add-mcp-target-import-propose): a
+    # read-only ToolSpec that projects ``build_import_plan`` into an
+    # ``ImportPlan`` and NEVER writes ``targets.yaml``. Its deps are assembled
+    # here (not in ``mcp_server/server.py``, which only receives an already-wired
+    # registry) and carry a fresh-read existing-names callable (design D4).
+    register_import_propose_tool(
+        registry, deps=_build_import_propose_deps(settings, target_registry)
+    )
 
     context_factory = _context_factory(settings, target_registry, inspector_registry, logger)
 
