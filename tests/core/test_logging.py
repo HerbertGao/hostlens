@@ -204,3 +204,27 @@ def test_redact_sensitive_is_pure_function() -> None:
     assert result["name"] == "alice"
     # The nested mapping in the result must be a fresh dict, not the same object.
     assert result["nested"] is not original["nested"]
+
+
+# ---------------------------------------------------------------------------
+# (e) `stream=` selects the sink (stdio-MCP requirement: serve passes stderr)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_param_routes_logs_off_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+    """`configure_logging(stream=...)` routes ALL output to the given sink,
+    keeping stdout byte-clean. `hostlens mcp serve` relies on this (stdout is the
+    JSON-RPC protocol stream); a debug emitted after configuring a non-stdout
+    sink must not leak onto stdout."""
+
+    import io
+
+    buf = io.StringIO()
+    configure_logging("prod", stream=buf)
+    structlog.get_logger().debug("routed_event", k="v")
+
+    captured = capsys.readouterr()
+    assert captured.out == "", "log leaked onto stdout despite stream= sink"
+    payload = json.loads(buf.getvalue().strip().splitlines()[-1])
+    assert payload["event"] == "routed_event"
+    assert payload["k"] == "v"

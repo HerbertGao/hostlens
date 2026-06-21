@@ -6,6 +6,8 @@
 >
 > **已裁决（2026-06-14）**：① **Gate 0 通过**（asyncssh 直连 Tailscale SSH，6/6 cred-less 连通，见 §3）；
 > ② **`add-mcp-write-approval-flow` 正式废弃**，按 §5 拆为 `add-cli-target-import`（主）+ `add-mcp-target-import-propose`（次）。
+>
+> **落地进度**：§5 提案 A `add-cli-target-import` 已 merged+archived（#102）；提案 B `add-mcp-target-import-propose`（MCP `propose_target_import` propose-only + CLI `target import --from-plan` 本地落地）已实现（待 PR）。`test_channel` / `notify_report` 独立小提案未起；`remove_target` 不上 MCP。
 
 ---
 

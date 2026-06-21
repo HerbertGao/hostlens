@@ -2,7 +2,7 @@
 
 Covers the management-tool wiring added to ``cli/mcp.py serve``:
 
-- ``list_tools`` projects 10 tools (read-only trio + 7 management);
+- ``list_tools`` projects 11 tools (read-only trio + 7 management + 1 propose);
 - a daemon-unsafe / unimplemented backend (placeholder → ``NotImplementedError``)
   is rejected at the boot-time eager probe with **exit 1** (no raw traceback);
 - an unreadable / malformed ``notifiers.yaml`` (``ConfigError``) fails before
@@ -17,6 +17,7 @@ backend + key) never leaks into the assembly under test.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -59,16 +60,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 5.1 — list_tools == 10 (read-only trio + 7 management)
+# 5.1 — list_tools == 11 (read-only trio + 7 management + 1 import-propose)
 # --------------------------------------------------------------------------- #
 
 
-def test_serve_assembles_ten_tools(
+def test_serve_assembles_eleven_tools(
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """serve registers the 3 default + 7 management tools = 10 on the mcp surface.
+    """serve registers 3 default + 7 management + 1 propose = 11 on the mcp surface.
 
     ``build_server`` is replaced with a capturing stub so we assert the wired
     registry's mcp projection without entering the stdio run loop. A ``fake``
@@ -99,7 +100,7 @@ def test_serve_assembles_ten_tools(
     assert result.exit_code == 0, result.stdout + result.stderr
 
     names = captured["mcp_names"]
-    assert len(names) == 10, sorted(names)
+    assert len(names) == 11, sorted(names)
     assert names == {
         "list_inspectors",
         "list_targets",
@@ -111,8 +112,47 @@ def test_serve_assembles_ten_tools(
         "list_reports",
         "show_report",
         "diff_reports",
+        "propose_target_import",
     }
     assert captured["ran"] is True
+
+
+def test_serve_routes_structlog_to_stderr(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """stdio MCP: ``serve`` must configure logging with a ``sys.stderr`` sink, so
+    no dispatch-time log (e.g. the ssh_config parser while ``propose_target_import``
+    parses an inventory) can reach the stdout JSON-RPC protocol stream."""
+    _isolate_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOSTLENS_BACKEND__TYPE", "fake")
+
+    import hostlens.cli.mcp as mcp_cli
+
+    captured: dict[str, bool] = {}
+
+    def _spy_configure(mode: str, *, stream: Any = None) -> None:
+        # Compare at call time: CliRunner swaps sys.stdout/sys.stderr during
+        # ``invoke``, so the runtime stderr serve passed is only identity-equal to
+        # ``sys.stderr`` observed here inside the call (not in the test frame).
+        captured["is_stderr"] = stream is sys.stderr
+        captured["is_stdout"] = stream is sys.stdout
+
+    async def _noop_run_stdio(_server: Any) -> None:
+        return None
+
+    monkeypatch.setattr(mcp_cli, "configure_logging", _spy_configure)
+    monkeypatch.setattr(
+        mcp_cli,
+        "_import_mcp_server",
+        lambda: (lambda _registry, _ctx: object(), _noop_run_stdio),
+    )
+
+    result = runner.invoke(app, ["mcp", "serve"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert captured["is_stderr"] is True  # logs routed to stderr...
+    assert captured["is_stdout"] is False  # ...never the stdout protocol stream
 
 
 # --------------------------------------------------------------------------- #
