@@ -606,7 +606,7 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
 
 > **P3 实际形态变更**：原提案 `add-remediation-lark-approval`（飞书远程审批）在实施时按红线「AI 不代做中高风险操作」（见 memory `feedback_ai_no_auto_exec_elevated_risk`）**翻转**为 `add-risk-tiered-remediation-execution`——仅 **low** 风险走自动执行闭环，**medium/high 只产 runbook 不代执行**；飞书远程审批 / high-risk 远程触发被否。下面 P3 任务（9.6）按此 reconcile。
 >
-> **⚠️ 未完成的 follow-up**：本段末「Follow-up：文档遗留清理」四项**未随 M9 提案落地**（`_in_m2` 后缀仍在 4 处、ARCHITECTURE.md 仍留 `apply_remediation_step`/`docker_prune_images` 早期反例、`targets/base.py:39` 仍写「M9 会加 FILE_WRITE」而 M9 实际撤回了该承诺）——是孤儿 tech-debt，含代码注释改动（需走 PR），建议单独起一个小 `chore` 收口。
+> **✅ follow-up 已收口**（`reconcile-permanent-readonly-invariant`，#128 merged + #129 archived）：本段末「Follow-up：文档遗留清理」三项全部落地——`approval_flow_not_supported_in_m2` → `approval_flow_not_supported`（Literal + 3 raise-sites + 5 测试断言）、M2/M9 临时性措辞升格为永久不变量、撤回 `FILE_WRITE` 承诺（`targets/base.py` + `tools/schemas/list_targets.py` + `test_capability.py`）、ARCHITECTURE.md §4.10 写类示例改只读。
 
 ### 架构不变量（贯穿所有 M9 提案，先于切分确立）
 
@@ -669,11 +669,11 @@ HOSTLENS_INSPECTORS_SEARCH_PATHS=./examples/m1-report/inspectors \
   - [x] **medium / high** 风险：不代执行，渲染 `remediation/runbook.py` + Jinja2 模板（`templates/runbook.md.j2`）产出人工 runbook，交还操作者在自己终端执行
   - [x] 飞书远程审批 / high-risk 远程触发**被否**（AI 担不了中高风险责任）
 
-### Follow-up：文档遗留清理（在对应 M9 提案里改，不预先动）
+### Follow-up：文档遗留清理 ✅（由 `reconcile-permanent-readonly-invariant` 收口，#128 merged + #129 archived）
 
-- [ ] P1a/P2 提案需清理 `docs/ARCHITECTURE.md` 两处与「Agent 表面永久只读」矛盾的早期示例：§4.10 图里的 `apply_remediation_step` ToolSpec（spec3）、`docker_prune_images(surfaces={"agent","cli"}, side_effects="destructive")` 实战例子
-- [ ] `agent/tools_adapter.py` dispatch gate 的 reason 字符串去 `_in_m2` 后缀（误示临时），语义升格为不变量
-- [ ] `targets/base.py` Capability 注释撤回 `FILE_WRITE` 的 M9 承诺；`tools/base.py` `NoopApprovalService` / `ToolContext` 注释从「M9 will replace」改为「永久 noop，审批属 Remediation 子系统」
+- [x] 清理 `docs/ARCHITECTURE.md` 两处与「Agent 表面永久只读」矛盾的早期示例：§4.10 图里的 `apply_remediation_step` ToolSpec（spec3 → `diff_reports` 只读）、`docker_prune_images` 实战例子（→ 只读 `dump_internal_state`，project_to_mcp 对齐真实 list_for_mcp）
+- [x] `agent/tools_adapter.py`（及 `mcp_server/tools_adapter.py` / `tools/base.py` / `core/exceptions.py`）dispatch gate 的 reason 字符串去 `_in_m2` 后缀（`approval_flow_not_supported_in_m2` → `approval_flow_not_supported`），语义升格为永久不变量
+- [x] `targets/base.py`（及 `tools/schemas/list_targets.py`）Capability 注释撤回 `FILE_WRITE` 的 M9 承诺；`tools/base.py` `ApprovalService` / `NoopApprovalService` / `ToolContext` 注释从「M9 will replace」改为「永久 noop，审批属 Remediation 子系统的 `ApprovalGate`」
 
 ---
 
