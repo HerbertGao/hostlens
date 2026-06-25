@@ -458,6 +458,7 @@ class SSHTarget:
                         kind="ssh_connect_timeout",
                         target=self.name,
                         host=self._entry.host if self._entry is not None else None,
+                        port=self._entry.port if self._entry is not None else None,
                     )
 
                 # ③ First connect (single open when no budget; budget
@@ -528,6 +529,7 @@ class SSHTarget:
             kind="ssh_connect_timeout",
             target=self.name,
             host=self._entry.host if self._entry is not None else None,
+            port=self._entry.port if self._entry is not None else None,
         )
 
     async def _close_conn_locked(self) -> None:

@@ -1164,6 +1164,9 @@ async def test_budget_exhaust_raises_caps_and_stays_within_budget(
     # requires host:port) but never credentials / key path.
     rendered = str(exc_info.value)
     assert "remote.example" in rendered  # host surfaced
+    # host:port both surfaced so non-22 endpoints stay distinguishable.
+    assert exc_info.value.extra.get("host") == "remote.example"
+    assert exc_info.value.extra.get("port") == 22
     assert "password" not in rendered.lower()
 
     # Negative-cache stamp written exactly once on exhaustion.

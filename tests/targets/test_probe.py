@@ -217,6 +217,32 @@ def _patch_build_one_target(monkeypatch: pytest.MonkeyPatch, target: _FakeTarget
     monkeypatch.setattr(probe_mod, "build_one_target", lambda entry, settings, **kwargs: target)
 
 
+async def test_probe_forwards_cold_connect_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Onboarding probe must forward the cold-connect retry budget to
+    ``build_one_target`` so a slow Tailscale candidate gets the same first-connect
+    retry the fleet path does. Without this assertion, dropping the kwarg in
+    ``probe.py`` would leave the wiring silently uncovered.
+    """
+
+    import hostlens.targets.probe as probe_mod
+    from hostlens.targets.ssh import _DEFAULT_COLD_CONNECT_RETRY_BUDGET_SECONDS
+
+    res = ExecResult(exit_code=0, stdout="", stderr="", duration_seconds=0.1, timed_out=False)
+    captured: dict[str, object] = {}
+
+    def _capture(entry: object, settings: object, **kwargs: object) -> _FakeTarget:
+        captured.update(kwargs)
+        return _FakeTarget("ok", result=res)
+
+    monkeypatch.setattr(probe_mod, "build_one_target", _capture)
+    await TargetProbe(Settings()).probe(SSHEntry(name="ok", type="ssh", host="h", user="u"))
+
+    assert (
+        captured.get("cold_connect_retry_budget_seconds")
+        == _DEFAULT_COLD_CONNECT_RETRY_BUDGET_SECONDS
+    )
+
+
 async def test_probe_timed_out_is_not_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Spec §场景:exec 超时判 failed_probe(不误判 reachable).
 
