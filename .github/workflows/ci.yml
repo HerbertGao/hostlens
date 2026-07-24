@@ -58,7 +58,7 @@ jobs:
 
       - name: Set up Python ${{ matrix.python-version }}
         if: needs.detect.outputs.code == 'true'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
